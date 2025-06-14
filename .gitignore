@@ -1,0 +1,5 @@
+# venv
+.venv/
+
+# images directory
+images/
