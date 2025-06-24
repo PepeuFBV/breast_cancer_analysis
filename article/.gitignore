@@ -26,6 +26,3 @@
 *.snm
 *.vrb
 *.bak0
-
-# Latex source files
-*.tex
