@@ -1,5 +1,7 @@
 # venv
 .venv/
 
-# images directory
-images/
+# dataset directory
+INbreast Release 1.0/
+INbreast\ Release\ 1.0/
+"Inbreast Release 1.0"/
