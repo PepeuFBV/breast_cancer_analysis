@@ -4,7 +4,14 @@ This repository contains a machine learning project focused on breast cancer ana
 
 ## Dataset
 
-TODO
+Classes:
+
+- 1: Negative
+- 2: Benign finding
+- 3: Probably Benign
+- 4: Suspicious finding (4a, 4b, 4c)
+- 5: Highly suggestive of malignancy
+- 6: Malignant (biopsy proven)
 
 ## Installation
 
