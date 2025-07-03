@@ -67,6 +67,9 @@ The project is run in a Jupyter Notebook environment. To set up the environment,
 
 7. Run the `preprocessing-and-model.ipynb` notebook to train and evaluate the machine learning model through the various possible preprocessing techniques.
 
+> ![NOTE]
+> The recommended python version for the notebook is 3.12.3, as some libraries may not be compatible with earlier versions.
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
