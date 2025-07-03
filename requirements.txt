@@ -3,3 +3,8 @@ matplotlib
 pandas
 keras
 tensorflow
+opencv-python
+albumentations
+pydicom
+tqdm
+scikit-learn
