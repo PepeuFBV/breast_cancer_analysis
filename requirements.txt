@@ -1,8 +1,9 @@
+ipynb
 numpy
 matplotlib
 pandas
 keras
-tensorflow
+tensorflow==2.15.0
 opencv-python
 albumentations
 pydicom
