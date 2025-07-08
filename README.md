@@ -17,27 +17,16 @@ The dataset used in this project is the [CBIS-DDSM: Breast Cancer Image Dataset]
 - 5: Highly suggestive of malignancy
 - 6: Malignant (biopsy proven)
 
-The classes are re-mapped into the csv files to 7-14, where:
+The classes are re-mapped to a one-hot encoding format for easier processing in machine learning models. The mapping is as follows:
 
-- 7: Negative
-- 8: Benign finding
-- 9: Probably Benign
-- 10: Suspicious finding (4a)
-- 11: Suspicious finding (4b)
-- 12: Suspicious finding (4c)
-- 13: Highly suggestive of malignancy
-- 14: Malignant (biopsy proven)
-
-Then they are re-mapped to 0-7 for model usage, where:
-
-- 0: Negative
-- 1: Benign finding
-- 2: Probably Benign
-- 3: Suspicious finding (4a)
-- 4: Suspicious finding (4b)
-- 5: Suspicious finding (4c)
-- 6: Highly suggestive of malignancy
-- 7: Malignant (biopsy proven)
+- 10000000: Negative
+- 01000000: Benign finding
+- 00100000: Probably Benign
+- 00010000: Suspicious finding (4a)
+- 00001000: Suspicious finding (4b)
+- 00000100: Suspicious finding (4c)
+- 00000010: Highly suggestive of malignancy
+- 00000001: Malignant (biopsy proven)
 
 ## Installation
 

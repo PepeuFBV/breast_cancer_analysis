@@ -1,5 +1,5 @@
 # venv
-.venv/
+.venv*/
 
 # dataset directory
 INbreast Release 1.0/
