@@ -1,11 +1,15 @@
 ipynb
-numpy
+numpy<=1.24.4
 matplotlib
 pandas
 keras
-tensorflow==2.15.0
+tensorflow==2.13.0
 opencv-python
 albumentations
 pydicom
 tqdm
 scikit-learn
+typing-extensions==4.5.0
+pydantic==1.10.15
+ipython==8.12.3
+# typing-inspection==0.1.0
