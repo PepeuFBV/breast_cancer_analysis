@@ -1,10 +1,14 @@
 # Breast Cancer Analysis
 
-This repository contains a machine learning project focused on breast cancer analysis using the CBIS-DDSM: Breast Cancer Image Dataset. The project's focus is on the pre-processing of mammogram images, feature extraction, and the application of various machine learning algorithms to classify breast cancer.
+This repository contains a machine learning project focused on breast cancer analysis using the CBIS-DDSM: Breast Cancer Image Dataset. This work's focus is on the pre-processing of mammogram images, feature extraction, and the application of various machine learning algorithms to classify breast cancer.
 
 ## Features
 
-TODO
+The project includes the following features:
+
+- **Case Study Paper**: [A detailed paper discussing the case study, methodologies, and results of the breast cancer analysis.](main.pdf)
+- **Data Preprocessing**: Implementation of various preprocessing techniques such as denoising, binarization, low-pass filtering, and morphological operations to enhance image quality and improve classification accuracy.
+- **Model Training**: Training of multiple machine learning models, including custom convolutional neural networks (CNNs) and transfer learning models based on ResNet50 and DenseNet121, to classify breast cancer images.
 
 ## Dataset
 
@@ -16,17 +20,6 @@ The dataset used in this project is the [CBIS-DDSM: Breast Cancer Image Dataset]
 - 4: Suspicious finding (4a, 4b, 4c)
 - 5: Highly suggestive of malignancy
 - 6: Malignant (biopsy proven)
-
-The classes are re-mapped to a one-hot encoding format for easier processing in machine learning models. The mapping is as follows:
-
-- 10000000: Negative
-- 01000000: Benign finding
-- 00100000: Probably Benign
-- 00010000: Suspicious finding (4a)
-- 00001000: Suspicious finding (4b)
-- 00000100: Suspicious finding (4c)
-- 00000010: Highly suggestive of malignancy
-- 00000001: Malignant (biopsy proven)
 
 ## Installation
 
