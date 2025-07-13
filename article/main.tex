@@ -81,7 +81,7 @@ import albumentations as A
 augment = A.Compose([
     A.HorizontalFlip(p=1.0),
     A.VerticalFlip(p=1.0),
-    A.RandomBrightnessContrast(brightness_limit=0.15, p=1.0),
+    A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=1.0),
     A.Rotate(limit=360, p=1.0, border_mode=cv2.BORDER_REPLICATE),
     A.Affine(scale=(0.6, 1.4), rotate=(-90, 90), p=1.0)
 ])
@@ -89,9 +89,9 @@ augment = A.Compose([
 
 For each image, the five new augmented versions were generated and saved, in addition to the original. All images were then resized to $224 \times 224$ pixels to ensure compatibility with standard deep learning architectures.
 
-After augmentation, the dataset was split into training and test sets using an 80/20 ratio, maintaining the class distribution (stratified split). Only images with valid BI-RADS labels (1, 2, 3, 4a, 4b, 4c, 5, 6) were retained for further analysis (no images were discarded).
+After augmentation, the dataset was split into training and test sets using an 75/25 ratio, maintaining the class distribution (stratified split). Only images with valid BI-RADS labels (1, 2, 3, 4a, 4b, 4c, 5, 6) were retained for further analysis (no images were discarded).
 
-This augmentation strategy significantly increased the effective dataset size and diversity, from 410 to y, helping to prevent overfitting and improve the robustness of the trained models. The resulting dataset was used as input for the subsequent preprocessing and model training steps described in the following sections.
+This augmentation strategy significantly increased the effective dataset size and diversity, from 410 to 1640, helping to prevent overfitting and improve the robustness of the trained models. The resulting dataset was used as input for the subsequent preprocessing and model training steps described in the following sections.
 
 \section*{3. Image Preprocessing}
 

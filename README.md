@@ -43,7 +43,7 @@ The project is run in a Jupyter Notebook environment. To set up the environment,
 
 4. Open the notebook files in your browser.
 
-5. Download the dataset from [INbreast Release 1.0](https://www.kaggle.com/datasets/ramanathansp20/inbreast-dataset) and place it the project's root directory.
+5. Download the dataset from [INbreast Release 1.0](https://www.kaggle.com/datasets/ramanathansp20/inbreast-dataset) and place it the project's `/data` directory.
 
 6. Run the `data.ipynb` notebook to preprocess the data and generate the augmented dataset.
 
