@@ -3,17 +3,12 @@ from keras.layers import (
     Input, Conv2D, MaxPooling2D, GlobalAveragePooling2D,
     Dense, Dropout, BatchNormalization, Activation
 )
-from keras.metrics import AUC
+from keras.metrics import AUC, Precision, Recall, TopKCategoricalAccuracy
 from keras.optimizers import Adam
 from keras.applications import ResNet50
 from keras.models import Model
 from keras.layers import Dense, Dropout, GlobalAveragePooling2D, Input, Flatten
-from keras.applications import DenseNet121
-from keras.applications import EfficientNetB3
-from keras.applications import MobileNetV3Large
-from keras.applications import InceptionV3
-from keras.applications import NASNetMobile
-from vit_keras import vit
+from keras.applications import DenseNet121, EfficientNetB3, MobileNetV3Large, InceptionV3, NASNetMobile
 
 
 def build_model(input_shape, num_classes, loss='categorical_crossentropy'):
@@ -65,7 +60,13 @@ def build_model(input_shape, num_classes, loss='categorical_crossentropy'):
     model.compile(
         optimizer=Adam(learning_rate=1e-4),
         loss=loss,
-        metrics=['accuracy']
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
     )
     
     return model
@@ -96,7 +97,13 @@ def build_resnet_model(input_shape, num_classes, loss='categorical_crossentropy'
     model.compile(
         optimizer=Adam(1e-4),
         loss=loss,
-        metrics=['accuracy']
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
     )
     
     return model
@@ -127,7 +134,13 @@ def build_densenet_model(input_shape, num_classes, loss='categorical_crossentrop
     model.compile(
         optimizer=Adam(1e-4),
         loss=loss,
-        metrics=['accuracy']
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
     )
     
     return model
@@ -154,7 +167,19 @@ def build_efficientnet_model(input_shape, num_classes, loss='categorical_crossen
     output = Dense(num_classes, activation='softmax')(x)
 
     model = Model(inputs=base_model.input, outputs=output)
-    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy'])
+    
+    model.compile(
+        optimizer=Adam(1e-4),
+        loss=loss,
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
+    )
+    
     return model
 
 
@@ -179,7 +204,19 @@ def build_mobilenetv3_model(input_shape, num_classes, loss='categorical_crossent
     output = Dense(num_classes, activation='softmax')(x)
 
     model = Model(inputs=base_model.input, outputs=output)
-    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy'])
+    
+    model.compile(
+        optimizer=Adam(1e-4),
+        loss=loss,
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
+    )
+    
     return model
 
 
@@ -204,7 +241,19 @@ def build_inception_model(input_shape, num_classes, loss='categorical_crossentro
     output = Dense(num_classes, activation='softmax')(x)
 
     model = Model(inputs=base_model.input, outputs=output)
-    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy'])
+    
+    model.compile(
+        optimizer=Adam(1e-4),
+        loss=loss,
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
+    )
+    
     return model
 
 
@@ -229,7 +278,19 @@ def build_nasnet_model(input_shape, num_classes, loss='categorical_crossentropy'
     output = Dense(num_classes, activation='softmax')(x)
 
     model = Model(inputs=base_model.input, outputs=output)
-    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy'])
+    
+    model.compile(
+        optimizer=Adam(1e-4),
+        loss=loss, 
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
+    )
+    
     return model
 
 
@@ -254,7 +315,18 @@ def build_bcnet_model(input_shape, num_classes, loss='categorical_crossentropy')
         Dense(num_classes, activation='softmax')
     ])
 
-    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy'])
+    model.compile(
+        optimizer=Adam(1e-4),
+        loss=loss,
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
+    )
+    
     return model
 
 
@@ -268,31 +340,17 @@ def build_chexnet_model(input_shape, num_classes, loss='categorical_crossentropy
     output = Dense(num_classes, activation='softmax')(x)  # softmax for one-hot
 
     model = Model(inputs=base_model.input, outputs=output)
-    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy', AUC(name="auc")])
-    return model
-
-
-def build_vit_model(input_shape, num_classes, loss='categorical_crossentropy'): # TODO: fix this
-    """
-    Build a Vision Transformer (ViT) model for image classification.
-    Parameters:
-        input_shape (tuple): Shape of the input images (height, width, channels).
-        num_classes (int): Number of output classes.
-        loss (str): Loss function to use. Default is 'categorical_crossentropy'.
-    Returns:
-        keras.models.Model: Compiled ViT model.
-    """
-    model = vit.vit_b32(
-        num_classes=num_classes,
-        input_shape=input_shape,
-        include_rescaling=True,
-        pretrained="imagenet"
-    )
     
     model.compile(
-        optimizer=Adam(learning_rate=1e-4),
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
+        optimizer=Adam(1e-4),
+        loss=loss,
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
     )
     
     return model
@@ -307,6 +365,5 @@ MODEL_BUILDERS = {
     "inception": build_inception_model,
     "nasnet": build_nasnet_model,
     "bcnet": build_bcnet_model,
-    "chexnet": build_chexnet_model,
-    # "vit": build_vit_model
+    "chexnet": build_chexnet_model
 }

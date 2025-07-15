@@ -195,7 +195,7 @@ preprocessing_methods = {
         'func': binarize_image,
         'params': {
             'threshold': [100, 127, 150],
-            'max_value': [255],
+            'max_value': [127, 255],
             'method': ['fixed', 'adaptive_mean', 'adaptive_gaussian']
         }
     },
