@@ -49,8 +49,10 @@ The project is run in a Jupyter Notebook environment. To set up the environment,
 
 7. Run the `preprocessing-and-model.ipynb` notebook to train and evaluate the machine learning model through the various possible preprocessing techniques.
 
+8. The results will be generated and saved in the `data/results` directory.
+
 > ![NOTE]
-> The recommended python version for the notebook is 3.11.8, as some libraries may not be compatible with earlier versions. This is also the most recent version compatible with TensorFlow GPU usage.
+> The recommended python version for the notebook is 3.12.3
 
 ## License
 
