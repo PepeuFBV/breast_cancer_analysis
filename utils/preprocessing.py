@@ -173,7 +173,7 @@ def clahe_image(image, tile_grid_size=(3, 3), iterations=1, show=False):
     Returns:
         numpy.ndarray: Enhanced image.
     """
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size, iterations=iterations)
     clahe_image = clahe.apply(image)
     if show:
         plt.imshow(clahe_image, cmap='gray')
@@ -187,14 +187,14 @@ preprocessing_methods = {
     'denoise': {
         'func': denoise_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7)],
-            'sigma': [0, 1, 2]
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'sigma': [0, 1, 2, 3, 5, 7]
         }
     },
     'binarize': {
         'func': binarize_image,
         'params': {
-            'threshold': [100, 127, 150],
+            'threshold': [50, 100, 127, 150, 200, 255],
             'max_value': [127, 255],
             'method': ['fixed', 'adaptive_mean', 'adaptive_gaussian']
         }
@@ -202,42 +202,42 @@ preprocessing_methods = {
     'lowpass_filter': {
         'func': lowpass_filter_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7)]
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)]
         }
     },
     'erode': {
         'func': erode_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7)],
-            'iterations': [1, 2, 3, 5]
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
     'dilate': {
         'func': dilate_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7)],
-            'iterations': [1, 2, 3, 5]
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
     'open': {
         'func': open_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7)],
-            'iterations': [1, 2, 3, 5]
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
     'close': {
         'func': close_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7)],
-            'iterations': [1, 2, 3, 5]
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
     'clahe': {
         'func': clahe_image,
         'params': {
-            'tile_grid_size': [(3, 3), (5, 5), (7, 7)],
-            'iterations': [1, 2, 3, 5]
+            'tile_grid_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'iterations': [1, 2, 3, 5, 7]
         }
     }
 }

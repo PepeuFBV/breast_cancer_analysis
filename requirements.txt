@@ -16,3 +16,5 @@ ipython
 vit_keras
 tensorflow-addons
 seaborn
+nbconvert
+papermill

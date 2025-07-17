@@ -1,2 +1,5 @@
 # venv
 .venv*/
+
+# output for papermill
+output/
