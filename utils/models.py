@@ -5,10 +5,9 @@ from keras.layers import (
 )
 from keras.metrics import AUC, Precision, Recall, TopKCategoricalAccuracy
 from keras.optimizers import Adam
-from keras.applications import ResNet50
 from keras.models import Model
 from keras.layers import Dense, Dropout, GlobalAveragePooling2D, Input, Flatten
-from keras.applications import DenseNet121, EfficientNetB3, MobileNetV3Large, InceptionV3, NASNetMobile
+from keras.applications import ResNet50, DenseNet121, EfficientNetB3, MobileNetV3Large, InceptionV3, NASNetMobile, VGG19
 
 
 def build_model(input_shape, num_classes, loss='categorical_crossentropy'):
@@ -356,6 +355,22 @@ def build_chexnet_model(input_shape, num_classes, loss='categorical_crossentropy
     return model
 
 
+def build_vgg19_model(input_shape, num_classes, loss='categorical_crossentropy'):
+    base_model = VGG19(weights='imagenet', include_top=False, input_tensor=Input(shape=input_shape))
+    base_model.trainable = False  # Fine-tune later if needed
+
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = Dropout(0.5)(x)
+    x = Dense(128, activation='relu')(x)
+    x = Dropout(0.5)(x)
+    output = Dense(num_classes, activation='softmax')(x)
+
+    model = Model(inputs=base_model.input, outputs=output)
+    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy'])
+    return model
+
+
 MODEL_BUILDERS = {
     "custom cnn": build_model,
     "resnet": build_resnet_model,
@@ -365,5 +380,6 @@ MODEL_BUILDERS = {
     "inception": build_inception_model,
     "nasnet": build_nasnet_model,
     "bcnet": build_bcnet_model,
-    "chexnet": build_chexnet_model
+    "chexnet": build_chexnet_model,
+    "vgg19": build_vgg19_model
 }

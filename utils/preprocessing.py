@@ -1,6 +1,7 @@
 import matplotlib as plt
 import cv2
 import numpy as np
+import itertools
 import sys
 sys.path.append('../utils')
 
@@ -183,6 +184,27 @@ def clahe_image(image, tile_grid_size=(3, 3), iterations=1, show=False):
     return clahe_image
 
 
+def add_all_2_method_combinations(preprocessing_methods):
+    method_names = list(preprocessing_methods.keys())
+    for m1, m2 in itertools.permutations(method_names, 2):
+        func1 = preprocessing_methods[m1]['func']
+        params1 = preprocessing_methods[m1]['params']
+        func2 = preprocessing_methods[m2]['func']
+        params2 = preprocessing_methods[m2]['params']
+
+        def combined_func(image, params1, params2, func1=func1, func2=func2):
+            return func2(func1(image, **params1), **params2)
+
+        combo_name = f"{m1}__{m2}"
+        preprocessing_methods[combo_name] = {
+            'func': combined_func,
+            'params': {
+                f"{m1}_params": params1,
+                f"{m2}_params": params2
+            }
+        }
+        
+
 preprocessing_methods = {
     'denoise': {
         'func': denoise_image,
@@ -194,7 +216,7 @@ preprocessing_methods = {
     'binarize': {
         'func': binarize_image,
         'params': {
-            'threshold': [50, 100, 127, 150, 200, 255],
+            'threshold': [50, 100, 127, 150, 200, 255], 
             'max_value': [127, 255],
             'method': ['fixed', 'adaptive_mean', 'adaptive_gaussian']
         }
@@ -241,3 +263,5 @@ preprocessing_methods = {
         }
     }
 }
+
+add_all_2_method_combinations(preprocessing_methods) # adding all combinations of two methods (will create a ton of new methods)
