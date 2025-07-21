@@ -357,7 +357,7 @@ def build_chexnet_model(input_shape, num_classes, loss='categorical_crossentropy
 
 def build_vgg19_model(input_shape, num_classes, loss='categorical_crossentropy'):
     base_model = VGG19(weights='imagenet', include_top=False, input_tensor=Input(shape=input_shape))
-    base_model.trainable = False  # Fine-tune later if needed
+    base_model.trainable = False  # fine-tune later if needed
 
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
