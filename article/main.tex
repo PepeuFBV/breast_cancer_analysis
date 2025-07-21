@@ -59,7 +59,7 @@ This document is structured as follows: Section 2 describes the data augmentatio
 
 The dataset used in this analysis is the \textit{CBIS-DDSM: Breast Cancer Image Dataset}, which is a collection of mammography images annotated with BI-RADS (Breast Imaging Reporting and Data System) labels. This dataset is widely used in the field of medical imaging and provides a rich source of data for training and evaluating machine learning models. Although the dataset is relatively small, with only 410 images, it is well-suited for this case study due to its high-quality annotations and the presence of various breast cancer cases. It will also be augmented to increase the effective dataset size and diversity.
 
-\subsection*{2.2. Data Augmentation}
+\subsection*{2.2. Data Augmentation and Selection}
 
 In this section, we describe the techniques applied to prepare the images in the database before their use in the machine learning model. The steps follow modern practices of data augmentation and image normalization, in order to improve the model's generalization and increase robustness against common variations in real-world environments.
 
@@ -89,9 +89,9 @@ augment = A.Compose([
 
 For each image, the five new augmented versions were generated and saved, in addition to the original. All images were then resized to $224 \times 224$ pixels to ensure compatibility with standard deep learning architectures.
 
-After augmentation, the dataset was split into training and test sets using an 75/25 ratio, maintaining the class distribution (stratified split). Only images with valid BI-RADS labels (1, 2, 3, 4a, 4b, 4c, 5, 6) were retained for further analysis (no images were discarded).
+After augmentation, it was observed that the distribution of BI-RADS labels in the dataset was highly imbalanced, with some classes significantly underrepresented. To ensure fair model training and evaluation, we applied a balancing procedure by limiting the number of samples per class to a fixed maximum (e.g., 35 images per class). This trimming step reduced the total number of images from 1640 to 274, with each class represented equally. The balanced dataset was then split into training and test sets using a 75/25 ratio, maintaining the class distribution (stratified split). Only images with valid BI-RADS labels (1, 2, 3, 4a, 4b, 4c, 5, 6) were retained for further analysis (no images were discarded).
 
-This augmentation strategy significantly increased the effective dataset size and diversity, from 410 to 1640, helping to prevent overfitting and improve the robustness of the trained models. The resulting dataset was used as input for the subsequent preprocessing and model training steps described in the following sections.
+This augmentation and selection strategy significantly increased the effectiveness of the dataset diversity, with a final count of 274 of vastly different images, helping to prevent overfitting and improve the robustness of the trained models. The resulting dataset was used as input for the subsequent preprocessing and model training steps described in the following sections.
 
 \section*{3. Image Preprocessing}
 
@@ -102,11 +102,36 @@ In this study, we selected a set of fundamental image preprocessing algorithms t
     \item \textbf{Binarization (Thresholding):} Converts grayscale images to binary by applying a fixed threshold, which can highlight regions of interest and simplify feature extraction.
     \item \textbf{Low-pass Filtering (Averaging):} Smooths the image by averaging pixel values in a local neighborhood, further reducing noise and minor variations.
     \item \textbf{Morphological Operations:} Includes erosion, dilation, opening (erosion followed by dilation), and closing (dilation followed by dilation). These operations are used to remove small artifacts, fill gaps, and enhance the shape of anatomical structures in the mammograms.
+    \item \textbf{Contrast Limited Adaptive Histogram Equalization (CLAHE):} Enhances local contrast in the image, making it easier to distinguish features in regions with varying illumination.
 \end{itemize}
 
-Each preprocessing function was applied to the dataset as a separate experiment, and all possible pairs of transformations (in both orders) were also tested to assess the effect of combining techniques. This systematic approach allowed us to identify which preprocessing strategies most effectively enhance model performance, while keeping the computational requirements low and the pipeline easily reproducible.
+Each preprocessing function was applied to the dataset as a separate experiment, with varying parameters. This systematic approach allowed us to identify which preprocessing strategies most effectively enhance model performance, while keeping the computational requirements low and the pipeline easily reproducible.
 
 The implementation of these transformations is modular, enabling straightforward integration into the training workflow. This design ensures that the preprocessing steps can be adapted or extended for future studies or different datasets with minimal effort.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Method} & \textbf{Parameter} & \textbf{Values Tested} \\
+\hline
+Gaussian Blur & Kernel Size & 3, 5, 7 \\
+              & Sigma       & 0.5, 1.0, 2.0 \\
+\hline
+Thresholding  & Threshold Value & 80, 120, 160 \\
+\hline
+Averaging     & Kernel Size & 3, 5, 7 \\
+\hline
+Morphological & Operation & Erosion, Dilation, Opening, Closing \\
+              & Kernel Size & 3, 5 \\
+\hline
+CLAHE         & Clip Limit & 2.0, 4.0 \\
+              & Tile Grid Size & (8,8), (16,16) \\
+\hline
+\end{tabular}
+\caption{Parameter variations tested for each preprocessing method.}
+\label{tab:preprocessing_params}
+\end{table}
 
 \section*{4. Model Selection and Training}
 

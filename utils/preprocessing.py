@@ -174,14 +174,16 @@ def clahe_image(image, tile_grid_size=(3, 3), iterations=1, show=False):
     Returns:
         numpy.ndarray: Enhanced image.
     """
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size, iterations=iterations)
-    clahe_image = clahe.apply(image)
+    # Only pass tileGridSize to createCLAHE
+    clahe = cv2.createCLAHE(tileGridSize=tile_grid_size)
+    result = image.copy()
+    for _ in range(iterations):
+        result = clahe.apply(result)
     if show:
-        plt.imshow(clahe_image, cmap='gray')
-        plt.title('CLAHE Image')
-        plt.axis('off')
-        plt.show()
-    return clahe_image
+        cv2.imshow('CLAHE', result)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    return result
 
 
 def add_all_2_method_combinations(preprocessing_methods):
@@ -196,69 +198,74 @@ def add_all_2_method_combinations(preprocessing_methods):
             return func2(func1(image, **params1), **params2)
 
         combo_name = f"{m1}__{m2}"
+
+        # build param dictionaries for each method 
+        param_dicts1 = [dict(zip(params1.keys(), values)) for values in itertools.product(*params1.values())]
+        param_dicts2 = [dict(zip(params2.keys(), values)) for values in itertools.product(*params2.values())]
+
         preprocessing_methods[combo_name] = {
             'func': combined_func,
             'params': {
-                f"{m1}_params": params1,
-                f"{m2}_params": params2
+                f"{m1}_params": param_dicts1,
+                f"{m2}_params": param_dicts2
             }
         }
         
 
-preprocessing_methods = {
-    'denoise': {
+preprocessing_methods = { # 332 total combinations x ammount of models
+    'denoise': { # 42 combinations
         'func': denoise_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
             'sigma': [0, 1, 2, 3, 5, 7]
         }
     },
-    'binarize': {
+    'binarize': { # 108 combinations
         'func': binarize_image,
         'params': {
             'threshold': [50, 100, 127, 150, 200, 255], 
-            'max_value': [127, 255],
+            'max_value': [50, 100, 127, 150, 200, 255],
             'method': ['fixed', 'adaptive_mean', 'adaptive_gaussian']
         }
     },
-    'lowpass_filter': {
+    'lowpass': { # 7 combinations
         'func': lowpass_filter_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)]
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)]
         }
     },
-    'erode': {
+    'erode': { # 35 combinations
         'func': erode_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'dilate': {
+    'dilate': { # 35 combinations
         'func': dilate_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'open': {
+    'open': { # 35 combinations
         'func': open_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'close': {
+    'close': { # 35 combinations
         'func': close_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'clahe': {
+    'clahe': { # 35 combinations
         'func': clahe_image,
         'params': {
-            'tile_grid_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11)],
+            'tile_grid_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     }
