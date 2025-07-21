@@ -212,60 +212,60 @@ def add_all_2_method_combinations(preprocessing_methods):
         }
         
 
-preprocessing_methods = { # 332 total combinations x ammount of models
-    'denoise': { # 42 combinations
+preprocessing_methods = { # 203 total combinations
+    'denoise': { # 25 combinations
         'func': denoise_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
-            'sigma': [0, 1, 2, 3, 5, 7]
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
+            'sigma': [0, 1, 3, 5, 7]
         }
     },
-    'binarize': { # 108 combinations
+    'binarize': { # 48 combinations
         'func': binarize_image,
         'params': {
-            'threshold': [50, 100, 127, 150, 200, 255], 
-            'max_value': [50, 100, 127, 150, 200, 255],
+            'threshold': [70, 127, 200, 255], 
+            'max_value': [70, 127, 200, 255],
             'method': ['fixed', 'adaptive_mean', 'adaptive_gaussian']
         }
     },
-    'lowpass': { # 7 combinations
+    'lowpass': { # 5 combinations
         'func': lowpass_filter_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)]
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)]
         }
     },
-    'erode': { # 35 combinations
+    'erode': { # 25 combinations
         'func': erode_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'dilate': { # 35 combinations
+    'dilate': { # 25 combinations
         'func': dilate_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'open': { # 35 combinations
+    'open': { # 25 combinations
         'func': open_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'close': { # 35 combinations
+    'close': { # 25 combinations
         'func': close_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
-    'clahe': { # 35 combinations
+    'clahe': { # 25 combinations
         'func': clahe_image,
         'params': {
-            'tile_grid_size': [(3, 3), (5, 5), (7, 7), (9, 9), (11, 11), (13, 13), (15, 15)],
+            'tile_grid_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     }
