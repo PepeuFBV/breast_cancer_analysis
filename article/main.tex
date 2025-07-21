@@ -89,7 +89,9 @@ augment = A.Compose([
 
 For each image, the five new augmented versions were generated and saved, in addition to the original. All images were then resized to $224 \times 224$ pixels to ensure compatibility with standard deep learning architectures.
 
-After augmentation, it was observed that the distribution of BI-RADS labels in the dataset was highly imbalanced, with some classes significantly underrepresented. To ensure fair model training and evaluation, we applied a balancing procedure by limiting the number of samples per class to a fixed maximum (e.g., 35 images per class). This trimming step reduced the total number of images from 1640 to 274, with each class represented equally. The balanced dataset was then split into training and test sets using a 75/25 ratio, maintaining the class distribution (stratified split). Only images with valid BI-RADS labels (1, 2, 3, 4a, 4b, 4c, 5, 6) were retained for further analysis (no images were discarded).
+After augmentation, it was observed that the distribution of BI-RADS labels in the dataset was highly imbalanced, with some classes significantly underrepresented. To ensure fair model training and evaluation, we applied a balancing procedure by limiting the number of samples per class to a fixed maximum (e.g., 35 images per class). This trimming step reduced the total number of images from 1640 to 274, with each class represented equally. The balanced dataset was then split into training and test sets using a 75/25 ratio, maintaining the class distribution (stratified split). Only images with valid BI-RADS labels (1, 2, 3, 4a, 4b, 4c, 5, 6) were retained for further analysis (no images were discarded from the selected).
+
+For all experiments, BI-RADS labels were later converted to one-hot encoded vectors to enable the use of categorical cross-entropy loss during training.
 
 This augmentation and selection strategy significantly increased the effectiveness of the dataset diversity, with a final count of 274 of vastly different images, helping to prevent overfitting and improve the robustness of the trained models. The resulting dataset was used as input for the subsequent preprocessing and model training steps described in the following sections.
 
@@ -108,30 +110,43 @@ In this study, we selected a set of fundamental image preprocessing algorithms t
 Each preprocessing function was applied to the dataset as a separate experiment, with varying parameters. This systematic approach allowed us to identify which preprocessing strategies most effectively enhance model performance, while keeping the computational requirements low and the pipeline easily reproducible.
 
 The implementation of these transformations is modular, enabling straightforward integration into the training workflow. This design ensures that the preprocessing steps can be adapted or extended for future studies or different datasets with minimal effort.
-
+% ...existing code...
+\renewcommand{\arraystretch}{1.5}
 \begin{table}[H]
-\centering
-\begin{tabular}{|l|l|l|}
-\hline
-\textbf{Method} & \textbf{Parameter} & \textbf{Values Tested} \\
-\hline
-Gaussian Blur & Kernel Size & 3, 5, 7 \\
-              & Sigma       & 0.5, 1.0, 2.0 \\
-\hline
-Thresholding  & Threshold Value & 80, 120, 160 \\
-\hline
-Averaging     & Kernel Size & 3, 5, 7 \\
-\hline
-Morphological & Operation & Erosion, Dilation, Opening, Closing \\
-              & Kernel Size & 3, 5 \\
-\hline
-CLAHE         & Clip Limit & 2.0, 4.0 \\
-              & Tile Grid Size & (8,8), (16,16) \\
-\hline
-\end{tabular}
-\caption{Parameter variations tested for each preprocessing method.}
-\label{tab:preprocessing_params}
+    \centering
+    \begin{tabular}{|l|l|l|}
+        \hline
+        \textbf{Method}      & \textbf{Parameter} & \textbf{Values Tested}                    \\
+        \hline
+        Gaussian Blur        & Kernel Size        & 3, 5, 9, 11, 15                           \\
+                             & Sigma              & 0, 1, 3, 5, 7                             \\
+        \hline
+        Thresholding         & Threshold Value    & 70, 127, 200, 255                         \\
+                             & Max Value          & 70, 127, 200, 255                         \\
+                             & Method             & fixed, adaptive\_mean, adaptive\_gaussian \\
+        \hline
+        Averaging (Low-pass) & Kernel Size        & 3, 5, 9, 11, 15                           \\
+        \hline
+        Erosion              & Kernel Size        & 3, 5, 9, 11, 15                           \\
+                             & Iterations         & 1, 2, 3, 5, 7                             \\
+        \hline
+        Dilation             & Kernel Size        & 3, 5, 9, 11, 15                           \\
+                             & Iterations         & 1, 2, 3, 5, 7                             \\
+        \hline
+        Opening              & Kernel Size        & 3, 5, 9, 11, 15                           \\
+                             & Iterations         & 1, 2, 3, 5, 7                             \\
+        \hline
+        Closing              & Kernel Size        & 3, 5, 9, 11, 15                           \\
+                             & Iterations         & 1, 2, 3, 5, 7                             \\
+        \hline
+        CLAHE                & Tile Grid Size     & (3,3), (5,5), (9,9), (11,11), (15,15)     \\
+                             & Iterations         & 1, 2, 3, 5, 7                             \\
+        \hline
+    \end{tabular}
+    \caption{Parameter variations tested for each preprocessing method.}
+    \label{tab:preprocessing_params}
 \end{table}
+\renewcommand{\arraystretch}{1.0}
 
 \section*{4. Model Selection and Training}
 
@@ -139,17 +154,27 @@ To systematically evaluate the impact of each preprocessing strategy, we trained
 
 \begin{itemize}
     \item \textbf{Preprocessing Application:} Each image in the training and test sets was processed using one of the defined preprocessing functions (denoising, binarization, low-pass filtering, or morphological operations), as well as all possible pairs of these operations in both sequential orders. This resulted in multiple distinct datasets, each corresponding to a unique preprocessing pipeline.
-    \item \textbf{Model Architectures:} For each preprocessed dataset, three types of neural network models were trained:
+    \item \textbf{Model Architectures:} For each preprocessed dataset, a range of neural network models were trained:
           \begin{itemize}
               \item A custom convolutional neural network (CNN) with three convolutional layers, max pooling, and dense layers.
-              \item A transfer learning model based on ResNet50, with the convolutional base frozen and custom dense layers added for classification.
-              \item A transfer learning model based on DenseNet121, similarly adapted for the task.
+              \item Transfer learning models based on popular architectures, each with the convolutional base frozen and custom dense layers added for classification. The tested architectures included:
+                    \begin{itemize}
+                        \item ResNet50
+                        \item DenseNet121
+                        \item CheXNet (DenseNet121 variant)
+                        \item EfficientNetB3
+                        \item MobileNetV3Large
+                        \item InceptionV3
+                        \item NASNetMobile
+                        \item VGG19
+                    \end{itemize}
+              \item A custom architecture named BCNet, designed specifically for this task.
           \end{itemize}
-    \item \textbf{Training Procedure:} Each model was trained for up to 15 epochs using the Adam optimizer and categorical cross-entropy loss. Early stopping was not used to ensure comparability across runs. For transfer learning models, grayscale images were repeated across three channels to match the expected input shape.
-    \item \textbf{Evaluation:} After training, the best validation accuracy achieved for each model and preprocessing combination was recorded, along with the corresponding epoch. This allowed for a direct comparison of the effectiveness of each preprocessing strategy and model architecture.
+    \item \textbf{Training Procedure:} Each model was trained for up to 15 epochs using the Adam optimizer and categorical cross-entropy loss. Early stopping was not used to ensure comparability across runs. For transfer learning models, grayscale images were repeated across three channels to match the expected input shape, while the custom CNN and BCNet operated on single-channel input. Batch size was set to 8 for the custom CNN and BCNet, and 4 for transfer learning models.
+    \item \textbf{Evaluation:} Multiple metrics were tracked during training, including validation accuracy, AUC, Precision, Recall, and Top-K Categorical Accuracy. After training, the best validation accuracy achieved for each model and preprocessing combination was recorded, along with the corresponding epoch. Optionally, k-fold cross-validation was used for more robust evaluation. All results, including predictions and training histories, were saved to disk for reproducibility and further analysis.
 \end{itemize}
 
-The entire process was automated to ensure reproducibility and fairness in comparison. The results, including the best validation accuracies for all combinations, are summarized in the next section. This systematic approach enabled us to identify which preprocessing techniques and model architectures yielded the highest classification performance on the breast cancer image dataset.
+The entire process was automated to ensure reproducibility and fairness in comparison. The results, including the best validation accuracies for all combinations, are summarized in the next section. This systematic approach enabled us to identify which preprocessing techniques and model architectures yielded the highest classification performance on the breast
 
 \section*{5. Results and Discussion}
 
