@@ -231,7 +231,7 @@ preprocessing_methods = { # 203 total combinations
             'method': ['fixed', 'adaptive_mean', 'adaptive_gaussian']
         }
     },
-    'lowpass': { # 5 combinations
+    'lowpass': { # 25 combinations
         'func': lowpass_filter_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11), (15, 15)]
@@ -259,20 +259,20 @@ preprocessing_methods = { # 203 total combinations
             'iterations': [1, 2]#, 3]#, 5, 7]
         }
     },
-    'close': { # 25 combinations
-        'func': close_image,
-        'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2]#, 3, 5, 7]
-        }
-    },
-    'clahe': { # 25 combinations
-        'func': clahe_image,
-        'params': {
-            'tile_grid_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2]#, 3, 5, 7]
-        }
-    }
+    # 'close': { # 25 combinations
+    #     'func': close_image,
+    #     'params': {
+    #         'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
+    #         'iterations': [1, 2]#, 3, 5, 7]
+    #     }
+    # },
+    # 'clahe': { # 25 combinations
+    #     'func': clahe_image,
+    #     'params': {
+    #         'tile_grid_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
+    #         'iterations': [1, 2]#, 3, 5, 7]
+    #     }
+    # }
 }
 
 add_all_2_method_combinations(preprocessing_methods) # adding all combinations of two methods (will create a ton of new methods)

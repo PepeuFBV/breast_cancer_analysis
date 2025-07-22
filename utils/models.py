@@ -367,7 +367,19 @@ def build_vgg19_model(input_shape, num_classes, loss='categorical_crossentropy')
     output = Dense(num_classes, activation='softmax')(x)
 
     model = Model(inputs=base_model.input, outputs=output)
-    model.compile(optimizer=Adam(1e-4), loss=loss, metrics=['accuracy'])
+    
+    model.compile(
+        optimizer=Adam(1e-4),
+        loss=loss,
+        metrics=[
+            'accuracy',
+            AUC(name="auc"),
+            Precision(name="precision"),
+            Recall(name="recall"),
+            TopKCategoricalAccuracy(name="top_k_accuracy")
+        ]
+    )
+    
     return model
 
 
