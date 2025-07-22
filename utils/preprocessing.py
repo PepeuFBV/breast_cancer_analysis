@@ -60,17 +60,19 @@ def binarize_image(image, threshold=127, max_value=255, method='fixed', show=Fal
     return binary
 
 
-def lowpass_filter_image(image, kernel_size=(5, 5), show=False):
+def lowpass_filter_image(image, kernel_size=(5, 5), iterations=1, show=False):
     """
     Apply a low-pass filter (Gaussian blur) to an image.
     Parameters:
         image (numpy.ndarray): Input image to be filtered.
         kernel_size (tuple): Size of the Gaussian kernel. Default is (5, 5).
+        iterations (int): Number of times the filter is applied. Default is 1.
         show (bool): If True, display the filtered image. Default is False.
     Returns:
         numpy.ndarray: Low-pass filtered image.
     """
-    blurred = cv2.blur(image, kernel_size)
+    kernel = np.ones(kernel_size, np.uint8)
+    blurred = cv2.blur(image, kernel, iterations=iterations)
     if show:
         plt.imshow(blurred, cmap='gray')
         plt.title('Low-pass Filtered Image')
@@ -232,41 +234,42 @@ preprocessing_methods = { # 203 total combinations
         'func': lowpass_filter_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11), (15, 15)]
+            'iterations': [1, 2]#, 3, 5, 7]
         }
     },
     'erode': { # 25 combinations
         'func': erode_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3]#, 5, 7]
+            'iterations': [1, 2]#, 3, 5, 7]
         }
     },
     'dilate': { # 25 combinations
         'func': dilate_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3]#, 5, 7]
+            'iterations': [1, 2]#, 3, 5, 7]
         }
     },
     'open': { # 25 combinations
         'func': open_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3]#, 5, 7]
+            'iterations': [1, 2]#, 3]#, 5, 7]
         }
     },
     'close': { # 25 combinations
         'func': close_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3]#, 5, 7]
+            'iterations': [1, 2]#, 3, 5, 7]
         }
     },
     'clahe': { # 25 combinations
         'func': clahe_image,
         'params': {
             'tile_grid_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3]#, 5, 7]
+            'iterations': [1, 2]#, 3, 5, 7]
         }
     }
 }
