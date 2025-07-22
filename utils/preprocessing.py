@@ -238,35 +238,35 @@ preprocessing_methods = { # 203 total combinations
         'func': erode_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3, 5]#, 7]
+            'iterations': [1, 2, 3]#, 5, 7]
         }
     },
     'dilate': { # 25 combinations
         'func': dilate_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3, 5]#, 7]
+            'iterations': [1, 2, 3]#, 5, 7]
         }
     },
     'open': { # 25 combinations
         'func': open_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3, 5]#, 7]
+            'iterations': [1, 2, 3]#, 5, 7]
         }
     },
     'close': { # 25 combinations
         'func': close_image,
         'params': {
             'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3, 5]#, 7]
+            'iterations': [1, 2, 3]#, 5, 7]
         }
     },
     'clahe': { # 25 combinations
         'func': clahe_image,
         'params': {
             'tile_grid_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2, 3, 5]#, 7]
+            'iterations': [1, 2, 3]#, 5, 7]
         }
     }
 }
