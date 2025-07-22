@@ -71,8 +71,9 @@ def lowpass_filter_image(image, kernel_size=(5, 5), iterations=1, show=False):
     Returns:
         numpy.ndarray: Low-pass filtered image.
     """
-    kernel = np.ones(kernel_size, np.uint8)
-    blurred = cv2.blur(image, kernel, iterations=iterations)
+    blurred = image.copy()
+    for _ in range(iterations):
+        blurred = cv2.blur(blurred, kernel_size)
     if show:
         plt.imshow(blurred, cmap='gray')
         plt.title('Low-pass Filtered Image')
