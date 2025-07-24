@@ -60,26 +60,27 @@ def binarize_image(image, threshold=127, max_value=255, method='fixed', show=Fal
     return binary
 
 
-def lowpass_filter_image(image, kernel_size=(5, 5), iterations=1, show=False):
+def lowpass_filter_image(image, kernel_size=(5, 5), iterations=1, method='mean', show=False):
     """
-    Apply a low-pass filter (Gaussian blur) to an image.
-    Parameters:
-        image (numpy.ndarray): Input image to be filtered.
-        kernel_size (tuple): Size of the Gaussian kernel. Default is (5, 5).
-        iterations (int): Number of times the filter is applied. Default is 1.
-        show (bool): If True, display the filtered image. Default is False.
-    Returns:
-        numpy.ndarray: Low-pass filtered image.
+    Apply a low-pass filter to an image.
+    method: 'mean', 'gaussian', or 'median'
     """
-    blurred = image.copy()
+    filtered = image.copy()
     for _ in range(iterations):
-        blurred = cv2.blur(blurred, kernel_size)
+        if method == 'mean':
+            filtered = cv2.blur(filtered, kernel_size)
+        elif method == 'gaussian':
+            filtered = cv2.GaussianBlur(filtered, kernel_size, 0)
+        elif method == 'median':
+            filtered = cv2.medianBlur(filtered, kernel_size[0])
+        else:
+            raise ValueError("Unknown method: choose 'mean', 'gaussian', or 'median'")
     if show:
-        plt.imshow(blurred, cmap='gray')
-        plt.title('Low-pass Filtered Image')
+        plt.imshow(filtered, cmap='gray')
+        plt.title(f'Low-pass Filtered Image ({method})')
         plt.axis('off')
         plt.show()
-    return blurred
+    return filtered
 
 
 def erode_image(image, kernel_size=(3, 3), iterations=1, show=False):
@@ -215,64 +216,65 @@ def add_all_2_method_combinations(preprocessing_methods):
         }
         
 
-preprocessing_methods = { # 203 total combinations
+preprocessing_methods = { # 333 methods
     'denoise': { # 25 combinations
         'func': denoise_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11), (15, 15)],
-            'sigma': [0, 1, 3, 5],#, 7]
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
+            'sigma': [0, 1, 3, 5, 7]
         }
     },
-    'binarize': { # 48 combinations
+    'binarize': { # 108 combinations
         'func': binarize_image,
         'params': {
-            'threshold': [70, 127, 200, 255], 
-            'max_value': [70, 127, 200, 255],
+            'threshold': [70, 100, 127, 200, 220, 255], 
+            'max_value': [70, 100, 127, 200, 220, 255],
             'method': ['fixed', 'adaptive_mean', 'adaptive_gaussian']
         }
     },
-    'lowpass': { # 25 combinations
+    'lowpass': { # 75 combinations
         'func': lowpass_filter_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11), (15, 15)]
-            'iterations': [1, 2]#, 3, 5, 7]
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'method': ['mean', 'gaussian', 'median'],
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
     'erode': { # 25 combinations
         'func': erode_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2]#, 3, 5, 7]
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
     'dilate': { # 25 combinations
         'func': dilate_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2]#, 3, 5, 7]
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
     'open': { # 25 combinations
         'func': open_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-            'iterations': [1, 2]#, 3]#, 5, 7]
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'iterations': [1, 2, 3, 5, 7]
         }
     },
-    # 'close': { # 25 combinations
-    #     'func': close_image,
-    #     'params': {
-    #         'kernel_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-    #         'iterations': [1, 2]#, 3, 5, 7]
-    #     }
-    # },
-    # 'clahe': { # 25 combinations
-    #     'func': clahe_image,
-    #     'params': {
-    #         'tile_grid_size': [(3, 3), (5, 5), (9, 9)],#, (11, 11)],#, (15, 15)],
-    #         'iterations': [1, 2]#, 3, 5, 7]
-    #     }
-    # }
+    'close': { # 25 combinations
+        'func': close_image,
+        'params': {
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'iterations': [1, 2, 3, 5, 7]
+        }
+    },
+    'clahe': { # 25 combinations
+        'func': clahe_image,
+        'params': {
+            'tile_grid_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'iterations': [1, 2, 3, 5, 7]
+        }
+    }
 }
 
 add_all_2_method_combinations(preprocessing_methods) # adding all combinations of two methods (will create a ton of new methods)

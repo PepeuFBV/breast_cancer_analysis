@@ -383,7 +383,7 @@ def build_vgg19_model(input_shape, num_classes, loss='categorical_crossentropy')
     return model
 
 
-MODEL_BUILDERS = {
+MODEL_BUILDERS = { # 8 active models
     "custom cnn": build_model,
     "resnet": build_resnet_model,
     "densenet": build_densenet_model,
@@ -392,6 +392,6 @@ MODEL_BUILDERS = {
     "inception": build_inception_model,
     "nasnet": build_nasnet_model,
     # "bcnet": build_bcnet_model,
-    # "chexnet": build_chexnet_model,
+    "chexnet": build_chexnet_model,
     # "vgg19": build_vgg19_model
 }
