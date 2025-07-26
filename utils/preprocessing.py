@@ -193,6 +193,8 @@ def clahe_image(image, tile_grid_size=(3, 3), iterations=1, show=False):
 def add_all_2_method_combinations(preprocessing_methods):
     method_names = list(preprocessing_methods.keys())
     for m1, m2 in itertools.permutations(method_names, 2):
+        if m1 == 'none' or m2 == 'none': # skip combinations with 'none'
+            continue
         func1 = preprocessing_methods[m1]['func']
         params1 = preprocessing_methods[m1]['params']
         func2 = preprocessing_methods[m2]['func']
@@ -216,7 +218,11 @@ def add_all_2_method_combinations(preprocessing_methods):
         }
         
 
-preprocessing_methods = { # 333 methods
+preprocessing_methods = { # 333 methods + 1 method for no preprocessing
+    'none': { # 1 combination
+        'func': lambda image: image,
+        'params': {}
+    },
     'denoise': { # 25 combinations
         'func': denoise_image,
         'params': {
@@ -224,7 +230,7 @@ preprocessing_methods = { # 333 methods
             'sigma': [0, 1, 3, 5, 7]
         }
     },
-    'binarize': { # 108 combinations
+    'binarize': { # 6x6x3 = 
         'func': binarize_image,
         'params': {
             'threshold': [70, 100, 127, 200, 220, 255], 
@@ -235,7 +241,7 @@ preprocessing_methods = { # 333 methods
     'lowpass': { # 75 combinations
         'func': lowpass_filter_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'method': ['mean', 'gaussian', 'median'],
             'iterations': [1, 2, 3, 5, 7]
         }
@@ -243,35 +249,35 @@ preprocessing_methods = { # 333 methods
     'erode': { # 25 combinations
         'func': erode_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
     'dilate': { # 25 combinations
         'func': dilate_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
     'open': { # 25 combinations
         'func': open_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
     'close': { # 25 combinations
         'func': close_image,
         'params': {
-            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'kernel_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     },
     'clahe': { # 25 combinations
         'func': clahe_image,
         'params': {
-            'tile_grid_size': [(3, 3), (5, 5), (9, 9), (11, 11)], # READD 15
+            'tile_grid_size': [(3, 3), (5, 5), (9, 9), (11, 11), (15, 15)],
             'iterations': [1, 2, 3, 5, 7]
         }
     }
