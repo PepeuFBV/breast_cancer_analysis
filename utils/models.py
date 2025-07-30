@@ -391,7 +391,7 @@ MODEL_BUILDERS = { # 8 active models
     "mobilenetv3": build_mobilenetv3_model,
     "inception": build_inception_model,
     "nasnet": build_nasnet_model,
-    # "bcnet": build_bcnet_model,
+    "bcnet": build_bcnet_model,
     "chexnet": build_chexnet_model,
-    # "vgg19": build_vgg19_model
+    "vgg19": build_vgg19_model
 }

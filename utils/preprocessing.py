@@ -230,7 +230,7 @@ preprocessing_methods = { # 333 methods + 1 method for no preprocessing
             'sigma': [0, 1, 3, 5, 7]
         }
     },
-    'binarize': { # 6x6x3 = 
+    'binarize': { # 108 combinations
         'func': binarize_image,
         'params': {
             'threshold': [70, 100, 127, 200, 220, 255], 
