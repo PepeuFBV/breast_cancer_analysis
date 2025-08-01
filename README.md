@@ -1,6 +1,6 @@
 # Breast Cancer Analysis
 
-This repository contains a machine learning project focused on breast cancer analysis using the CBIS-DDSM: Breast Cancer Image Dataset. This work's focus is on the pre-processing of mammogram images, feature extraction, and the application of various machine learning algorithms to classify breast cancer.
+This repository presents a comprehensive study on breast cancer analysis using the INbreast mammography dataset. The project emphasizes advanced image preprocessing, data augmentation, and the application of deep learning models—including custom CNNs and state-of-the-art architectures—to improve the classification of breast cancer in mammogram images. All experiments, results, and the full study PDF are included for reproducibility and further research.
 
 ## Features
 
