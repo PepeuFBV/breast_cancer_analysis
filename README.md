@@ -10,6 +10,10 @@ The project includes the following features:
 - **Data Preprocessing**: Implementation of various preprocessing techniques such as denoising, binarization, low-pass filtering, and morphological operations to enhance image quality and improve classification accuracy.
 - **Model Training**: Training of multiple machine learning models, including custom convolutional neural networks (CNNs) and transfer learning models based on ResNet50 and DenseNet121, to classify breast cancer images.
 
+## Study PDF
+
+The repository includes the full study as a PDF document. You can find and read the detailed paper in the `article/main.pdf` file.
+
 ## Dataset
 
 The dataset used in this project is the [CBIS-DDSM: Breast Cancer Image Dataset](https://www.kaggle.com/datasets/ramanathansp20/inbreast-dataset). It contains mammogram images with annotations for breast cancer classification. The dataset includes:
