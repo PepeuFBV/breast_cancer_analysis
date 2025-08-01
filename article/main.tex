@@ -124,32 +124,39 @@ The implementation of these transformations is modular, enabling straightforward
 \renewcommand{\arraystretch}{1.5}
 \begin{table}[H]
     \centering
+    \small % or \scriptsize if needed
     \begin{tabular}{|l|l|l|}
         \hline
-        \textbf{Method}      & \textbf{Parameter}                                                                                                                                      & \textbf{Values Tested}                  \\
+        \textbf{Method}      & \textbf{Parameter} & \textbf{Values Tested}                  \\
         \hline
-        Gaussian Blur        & Kernel Size                                                                                                                                             & 3, 5, 9, 11, 15                         \\
-                             & Sigma                                                                                                                                                   & 0, 1, 3, 5, 7                           \\
+        None
+                             & -                  & -                                       \\
         \hline
-        Thresholding         & Threshold Value                                                                                                                                         & 70, 100, 127, 200, 220, 255             \\
-                             & Max Value                                                                                                                                               & 70, 100, 127, 200, 220, 255             \\
-                             & Method                                                                                                                                                  & fixed, adaptive mean, adaptive gaussian \\
-                             & \multicolumn{2}{l|}{\textit{Method:} 'fixed' uses a constant threshold; 'adaptive mean' and 'adaptive gaussian' use local statistics for thresholding.}                                           \\
+        Gaussian Blur        & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Sigma              & 0, 1, 3, 5, 7                           \\
         \hline
-        Averaging (Low-pass) & Kernel Size                                                                                                                                             & 3, 5, 9, 11, 15                         \\
-                             & Iterations                                                                                                                                              & 1, 2, 3, 5, 7                           \\
+        Thresholding         & Threshold Value    & 70, 100, 127, 200, 220, 255             \\
+                             & Max Value          & 70, 100, 127, 200, 220, 255             \\
+                             & Method             & fixed, adaptive mean, adaptive gaussian \\
         \hline
-        Erosion              & Kernel Size                                                                                                                                             & 3, 5, 9, 11, 15                         \\
-                             & Iterations                                                                                                                                              & 1, 2, 3, 5, 7                           \\
+        Averaging (Low-pass) & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+                             & Method             & mean, median, gaussian                  \\
         \hline
-        Dilation             & Kernel Size                                                                                                                                             & 3, 5, 9, 11, 15                         \\
-                             & Iterations                                                                                                                                              & 1, 2, 3, 5, 7                           \\
+        Erosion              & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
         \hline
-        Opening              & Kernel Size                                                                                                                                             & 3, 5, 9, 11, 15                         \\
-                             & Iterations                                                                                                                                              & 1, 2, 3, 5, 7                           \\
+        Dilation             & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
         \hline
-        Closing              & Kernel Size                                                                                                                                             & 3, 5, 9, 11, 15                         \\
-                             & Iterations                                                                                                                                              & 1, 2, 3, 5, 7                           \\
+        Opening              & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+        \hline
+        Closing              & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+        \hline
+        CLAHE                & Tile Grid Size     & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
         \hline
     \end{tabular}
     \caption{Parameter variations tested for each preprocessing method. For thresholding, 'Method' refers to the type of thresholding: 'fixed' uses a constant value, while 'adaptive mean' and 'adaptive gaussian' use local statistics.}
@@ -163,10 +170,10 @@ To systematically evaluate the impact of each preprocessing strategy, we trained
 
 \begin{itemize}
     \item \textbf{Preprocessing Application:} Each image in the training and test sets was processed using one of the defined preprocessing functions (denoising, binarization, low-pass filtering, or morphological operations). This resulted in multiple distinct datasets, each corresponding to a unique preprocessing pipeline.
-    \item \textbf{Model Architectures:} For each preprocessed dataset, a range of neural network models were trained:
+    \item \textbf{Model Architectures:} For each preprocessed dataset, a comprehensive set of neural network models was trained:
           \begin{itemize}
-              \item A custom convolutional neural network (CNN) with three convolutional layers, max pooling, and dense layers.
-              \item Transfer learning models based on popular architectures, each with the convolutional base frozen and custom dense layers added for classification. The tested architectures included:
+              \item A custom convolutional neural network (CNN) with three convolutional blocks (convolution, batch normalization, activation, pooling, dropout) followed by dense layers. An additional custom architecture, BCNet, with a similar structure but different dropout and dense configurations, was also included.
+              \item Transfer learning models based on widely used architectures, each with the convolutional base frozen and custom dense layers added for classification. The tested architectures included:
                     \begin{itemize}
                         \item ResNet50
                         \item DenseNet121
@@ -174,10 +181,11 @@ To systematically evaluate the impact of each preprocessing strategy, we trained
                         \item MobileNetV3Large
                         \item InceptionV3
                         \item NASNetMobile
-                        \item CheXNet
+                        \item VGG19
+                        \item CheXNet (DenseNet121 variant)
                     \end{itemize}
           \end{itemize}
-    \item \textbf{Training Procedure:} Each model was trained for up to 15 epochs using the Adam optimizer and categorical cross-entropy loss. Early stopping was not used to ensure comparability across runs. For transfer learning models, grayscale images were repeated across three channels to match the expected input shape, while the custom CNN operated on single-channel input. Batch size was set to 8 for the custom CNN, and 4 for transfer learning models; due to the custom CNN's simplicity, it allowed for larger batch sizes without running out of GPU memory.
+    \item \textbf{Training Procedure:} Each model was trained for up to 15 epochs using the Adam optimizer and categorical cross-entropy loss. Early stopping was not used to ensure comparability across runs. For transfer learning models, grayscale images were repeated across three channels to match the expected input shape, while the custom CNNs operated on single-channel input. Batch size was set to 8 for the custom CNNs, and 4 for transfer learning models; due to the custom CNNs' simplicity, they allowed for larger batch sizes without running out of GPU memory.
     \item \textbf{Evaluation:} Multiple metrics were tracked during training, including validation accuracy, AUC, Precision, Recall, and Top-K Categorical Accuracy. After training, the best validation accuracy achieved for each model and preprocessing combination was recorded, along with the corresponding epoch. Optionally, k-fold cross-validation (4 folds) was used for more robust evaluation. All results, including predictions and training histories, were saved to disk for reproducibility and further analysis.
 \end{itemize}
 
