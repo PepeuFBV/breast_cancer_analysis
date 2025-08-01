@@ -1,0 +1,17 @@
+# model's results history
+results/
+
+# dataset directory
+INbreast Release 1.0/
+INbreast\ Release\ 1.0/
+"Inbreast Release 1.0"/
+
+# generated train-test split csv
+test_split.csv
+train_split.csv
+
+# augmented dataset
+augmented_images/
+
+# final results csv
+# final_comprehensive_results.csv

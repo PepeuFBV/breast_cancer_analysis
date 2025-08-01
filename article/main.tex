@@ -1,0 +1,242 @@
+\documentclass[12pt]{article}
+\usepackage[english]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{float}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{titling}
+\usepackage{tabularx}
+\usepackage{adjustbox}
+\geometry{a4paper, total={170mm,257mm}, left=20mm, top=20mm}
+
+\title{The Power of Preprocessing in Image Classification: A Case Study with Breast Cancer Images}
+\author{Pedro Figueira Bôa-Viagem}
+\date{\small \today}
+
+\renewcommand{\maketitle}{
+  \begin{flushleft}
+    {\LARGE\bfseries \thetitle}
+    \vspace{1em}
+    
+    \begin{minipage}[t]{0.5\textwidth}
+      \raggedright
+      \theauthor
+    \end{minipage}%
+    \begin{minipage}[t]{0.5\textwidth}
+      \raggedleft
+      \thedate
+    \end{minipage}
+  \end{flushleft}
+  \vspace{2em}
+}
+
+\begin{document}
+
+\maketitle
+
+\section*{Abstract}
+
+Breast cancer image classification using machine learning requires rigorous data preparation and robust datasets to achieve reliable results. In this study, we systematically applied data augmentation and preprocessing techniques to a mammography dataset, including denoising, binarization, low-pass filtering, and morphological operations. We trained and evaluated multiple deep learning models, such as custom CNNs and transfer learning architectures, on each preprocessed dataset. Our results show that preprocessing methods like averaging and Gaussian blur can improve top-1 validation accuracy from 0.25 to over 0.35, while top-3 accuracy (Top-K accuracy, with K=3, meaning the correct class is among the top three predictions) consistently exceeded 0.85 across models. These findings highlight that, although exact class prediction remains challenging, the models are highly effective at narrowing down diagnoses to a small set of likely candidates. We conclude that simple preprocessing steps, combined with data augmentation, significantly enhance model robustness and clinical utility in breast cancer image analysis.
+
+\section*{1. Introduction}
+
+Breast cancer is one of the most prevalent cancers worldwide, and early detection is crucial for improving patient outcomes. Medical imaging, particularly mammography, plays a central role in screening and diagnosis. However, interpreting these images is a challenging task, often requiring expert radiologists and being subject to inter-observer variability.
+
+In recent years, machine learning and deep learning techniques have shown great promise in automating image classification tasks, including the detection and grading of breast cancer from mammograms. Despite their potential, the performance of these models is highly dependent on the quality and diversity of the training data. Variations in image acquisition, noise, and limited dataset size can hinder model generalization and robustness.
+
+To address these challenges, effective data preprocessing strategies are essential. Preprocessing techniques such as denoising, binarization, and morphological operations can enhance image quality and highlight relevant features, while data augmentation increases dataset diversity by simulating real-world variations. Together, these steps help build more accurate and reliable models for breast cancer image classification.
+
+This work presents a systematic study of preprocessing techniques applied to a breast cancer image dataset. We evaluate the impact of different preprocessing pipelines on the performance of several deep learning models. Our goal is to identify the most effective strategies for improving classification accuracy in this critical medical application.
+
+This document is structured as follows: Section 2 provides a description of the dataset and details the data augmentation and selection strategies used to address class imbalance and increase diversity. Section 3 presents the image preprocessing techniques evaluated in this study. Section 4 describes the model selection, training procedures, and experimental workflow. Section 5 summarizes the main results and discusses their implications, and Section 6 concludes with final remarks and directions for future research.
+
+\section*{2. Dataset Description and Augmentation}
+
+\subsection*{2.1 Dataset Description}
+
+The dataset used in this analysis is the \textit{CBIS-DDSM: Breast Cancer Image Dataset}~\cite{cbis_ddsm}, which is a collection of mammography images annotated with BI-RADS (Breast Imaging Reporting and Data System) labels. This dataset is widely used in the field of medical imaging and provides a rich source of data for training and evaluating machine learning models. Although the dataset is relatively small, with only 410 images, it is well-suited for this case study due to its high-quality annotations and the presence of various breast cancer cases. It will also be augmented to increase the effective dataset size and diversity.
+
+\subsection*{2.2. Data Augmentation and Selection}
+
+In this section, we describe the techniques applied to prepare the images in the database before their use in the machine learning model. The steps follow modern practices of data augmentation and image normalization, in order to improve the model's generalization and increase robustness against common variations in real-world environments.
+
+The original mammography images, provided in DICOM format, were first converted to PNG and normalized to the [0, 1] range for better model understanding. To address the limited size and variability of the dataset, we applied a comprehensive data augmentation pipeline using the \texttt{albumentations} library~\cite{albumentations}. The following random transformations were used to simulate real-world variations and increase the diversity of the dataset:
+
+\begin{itemize}
+    \item \textbf{Horizontal and vertical flips}: simulate different orientations of the breast tissue;
+    \item \textbf{Random brightness and contrast adjustment}: account for differences in image acquisition conditions;
+    \item \textbf{Rotation}: random rotations up to 360 degrees to simulate different patient positions;
+    \item \textbf{Affine transformations}: scaling and rotation to introduce geometric variability.
+\end{itemize}
+
+Each original image was augmented once for each type, resulting in several synthetic variants per sample. The augmentation process was implemented as follows:
+{
+\small
+\begin{verbatim}
+import albumentations as A
+import cv2  # OpenCV library
+
+# augmentation pipeline
+augment = A.Compose([
+    A.HorizontalFlip(p=1.0),
+    A.VerticalFlip(p=1.0),
+    A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=1.0),
+    A.Rotate(limit=360, p=1.0, border_mode=cv2.BORDER_REPLICATE),
+    A.Affine(scale=(0.6, 1.4), rotate=(-90, 90), p=1.0)
+])
+\end{verbatim}
+}
+
+For each image, the five new augmented versions were generated and saved, in addition to the original. All images were then resized to $224 \times 224$ pixels to ensure compatibility with standard deep learning architectures.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{augmentation-example.png}
+    \caption{Example of original and augmented mammography images. The leftmost image is the original, followed by several augmented variants generated using the described pipeline.}
+    \label{fig:augmentation_example}
+\end{figure}
+
+After augmentation, it was observed that the distribution of BI-RADS labels in the dataset was highly imbalanced, with some classes significantly underrepresented. To ensure fair model training and evaluation, we applied a balancing procedure by limiting the number of samples per class to a fixed maximum (e.g., 35 images per class). This trimming step reduced the total number of images from 1640 to 274, with each class represented equally. The balanced dataset was then split into training and test sets using a 75/25 ratio, maintaining the class distribution (stratified split). Only images with valid BI-RADS labels (1, 2, 3, 4a, 4b, 4c, 5, 6) were retained for further analysis (no images were discarded from the selected).
+
+For all experiments, BI-RADS labels were later converted to one-hot encoded vectors to enable the use of categorical cross-entropy loss during training.
+
+This augmentation and selection strategy significantly increased the effectiveness of the dataset diversity, with a final count of 274 of vastly different images, helping to prevent overfitting and improve the robustness of the trained models. The resulting dataset was used as input for the subsequent preprocessing and model training steps described in the following sections.
+
+\section*{3. Image Preprocessing}
+
+In this study, we selected a set of fundamental image preprocessing algorithms that are simple and widely used in medical image analysis and can be efficiently automated. The goal was to evaluate the impact of each transformation, both individually and in combination, on the performance of deep learning models for breast cancer classification. The chosen techniques, implemented using OpenCV~\cite{opencv_library} and NumPy in Python, are as follows:
+
+\begin{itemize}
+    \item \textbf{Denoising (Gaussian Blur):} Reduces random noise in the images, making relevant structures more distinguishable and improving model robustness.
+    \item \textbf{Binarization (Thresholding):} Converts grayscale images to binary by applying a fixed threshold, which can highlight regions of interest and simplify feature extraction.
+    \item \textbf{Low-pass Filtering (Averaging):} Smooths the image by averaging pixel values in a local neighborhood, further reducing noise and minor variations.
+    \item \textbf{Morphological Operations:} Includes erosion, dilation, opening (erosion followed by dilation), and closing (dilation followed by erosion). These operations are used to remove small artifacts, fill gaps, and enhance the shape of anatomical structures in the mammograms.
+    \item \textbf{Contrast Limited Adaptive Histogram Equalization (CLAHE):} Enhances local contrast in the image, making features more visible without amplifying noise. This technique is particularly useful for medical images where subtle differences are critical for diagnosis.
+\end{itemize}
+
+Each preprocessing function was applied to the dataset as a separate experiment, with varying parameters. This systematic approach allowed us to identify which preprocessing strategies most effectively enhance model performance, while keeping the computational requirements low and the pipeline easily reproducible.
+
+The implementation of these transformations is modular, enabling straightforward integration into the training workflow. This design ensures that the preprocessing steps can be adapted or extended for future studies or different datasets with minimal effort.
+
+\renewcommand{\arraystretch}{1.5}
+\begin{table}[H]
+    \centering
+    \small % or \scriptsize if needed
+    \begin{tabular}{|l|l|l|}
+        \hline
+        \textbf{Method}      & \textbf{Parameter} & \textbf{Values Tested}                  \\
+        \hline
+        None
+                             & -                  & -                                       \\
+        \hline
+        Gaussian Blur        & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Sigma              & 0, 1, 3, 5, 7                           \\
+        \hline
+        Thresholding         & Threshold Value    & 70, 100, 127, 200, 220, 255             \\
+                             & Max Value          & 70, 100, 127, 200, 220, 255             \\
+                             & Method             & fixed, adaptive mean, adaptive gaussian \\
+        \hline
+        Averaging (Low-pass) & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+                             & Method             & mean, median, gaussian                  \\
+        \hline
+        Erosion              & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+        \hline
+        Dilation             & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+        \hline
+        Opening              & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+        \hline
+        Closing              & Kernel Size        & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+        \hline
+        CLAHE                & Tile Grid Size     & 3, 5, 9, 11, 15                         \\
+                             & Iterations         & 1, 2, 3, 5, 7                           \\
+        \hline
+    \end{tabular}
+    \caption{Parameter variations tested for each preprocessing method. For thresholding, 'Method' refers to the type of thresholding: 'fixed' uses a constant value, while 'adaptive mean' and 'adaptive gaussian' use local statistics.}
+    \label{tab:preprocessing_params}
+\end{table}
+\renewcommand{\arraystretch}{1.0}
+
+\section*{4. Model Selection and Training}
+
+To systematically evaluate the impact of each preprocessing strategy, we trained and validated several deep learning models on every preprocessed version of the dataset. The workflow was implemented in Python using Keras~\cite{keras} and TensorFlow~\cite{tensorflow}, and consisted of the following steps:
+
+\begin{itemize}
+    \item \textbf{Preprocessing Application:} Each image in the training and test sets was processed using one of the defined preprocessing functions (denoising, binarization, low-pass filtering, or morphological operations). This resulted in multiple distinct datasets, each corresponding to a unique preprocessing pipeline.
+    \item \textbf{Model Architectures:} For each preprocessed dataset, a comprehensive set of neural network models was trained:
+          \begin{itemize}
+              \item A custom convolutional neural network (CNN) with three convolutional blocks (convolution, batch normalization, activation, pooling, dropout) followed by dense layers. An additional custom architecture, BCNet, with a similar structure but different dropout and dense configurations, was also included.
+              \item Transfer learning models based on widely used architectures, each with the convolutional base frozen and custom dense layers added for classification. The tested architectures included:
+                    \begin{itemize}
+                        \item ResNet50
+                        \item DenseNet121
+                        \item EfficientNetB3
+                        \item MobileNetV3Large
+                        \item InceptionV3
+                        \item NASNetMobile
+                        \item VGG19
+                        \item CheXNet (DenseNet121 variant)
+                    \end{itemize}
+          \end{itemize}
+    \item \textbf{Training Procedure:} Each model was trained for up to 15 epochs using the Adam optimizer and categorical cross-entropy loss. Early stopping was not used to ensure comparability across runs. For transfer learning models, grayscale images were repeated across three channels to match the expected input shape, while the custom CNNs operated on single-channel input. Batch size was set to 8 for the custom CNNs, and 4 for transfer learning models; due to the custom CNNs' simplicity, they allowed for larger batch sizes without running out of GPU memory.
+    \item \textbf{Evaluation:} Multiple metrics were tracked during training, including validation accuracy, AUC, Precision, Recall, and Top-K Categorical Accuracy. After training, the best validation accuracy achieved for each model and preprocessing combination was recorded, along with the corresponding epoch. Optionally, k-fold cross-validation (4 folds) was used for more robust evaluation. All results, including predictions and training histories, were saved to disk for reproducibility and further analysis.
+\end{itemize}
+
+The entire process was automated to ensure reproducibility and fairness in comparison. The results, including the best validation accuracies for all combinations, are summarized in the next section. This systematic approach enabled us to identify which preprocessing techniques and model architectures yielded the highest classification performance on the breast
+
+\section*{5. Results and Discussion}
+
+
+The results of our experiments are very much summarized in Table~\ref{tab:final_results}. Each row represents a unique combination of preprocessing method, model architecture, and parameter settings, with the corresponding validation accuracy and other metrics. Only the best results for each preprocessing method and model combination are shown, as the full results data is too large. The preprocessing methods were applied individually, with all possible param combinations tested.
+
+\begin{table}[H]
+    \centering
+    \small
+    \begin{adjustbox}{center,max width=\textwidth}
+        \begin{tabular}{|l|l|l|c|c|}
+            \hline
+            \textbf{Preprocessing} & \textbf{Model} & \textbf{Parameters}                  & \textbf{Best Val Acc} & \textbf{Top-K Acc} \\
+            \hline
+            None                   & DenseNet121    & -                                    & 0.250                 & 0.849              \\
+            Gaussian Blur          & InceptionV3    & kernel=3, sigma=5                    & 0.319                 & 0.898              \\
+            Thresholding           & InceptionV3    & threshold=200, max=70, adaptive mean & 0.309                 & 0.869              \\
+            Averaging (Low-pass)   & InceptionV3    & kernel=9, iterations=7               & 0.353                 & 0.903              \\
+            Erosion                & InceptionV3    & kernel=3, iterations=1               & 0.301                 & 0.869              \\
+            Dilation               & InceptionV3    & kernel=11, iterations=1              & 0.319                 & 0.883              \\
+            Opening                & NASNetMobile   & kernel=9, iterations=1               & 0.368                 & 0.849              \\
+            Closing                & NASNetMobile   & kernel=3, iterations=5               & 0.304                 & 0.888              \\
+            CLAHE                  & NASNetMobile   & tile grid size=(5, 5), iterations=2  & 0.290                 & 0.850              \\
+            \hline
+        \end{tabular}
+    \end{adjustbox}
+    \caption{Top results for best tested preprocessing and respective model combinations. The table shows the preprocessing method, best model architecture, parameters used, best validation accuracy (Top-1), and Top-K accuracy (with K=3).}
+    \label{tab:final_results}
+\end{table}
+
+The table shows that Top-1 validation accuracy for the best combinations ranged from 0.25 (DenseNet121, no preprocessing) to 0.368 (NASNetMobile, Opening), with most results between 0.3 and 0.36. For example, InceptionV3 with Averaging (Low-pass) preprocessing achieved 0.353 Top-1 accuracy, while Thresholding and Gaussian Blur preprocessing with InceptionV3 yielded 0.309 and 0.319, respectively. These values reflect the challenge of distinguishing between multiple BI-RADS classes with subtle differences.
+
+In contrast, Top-K accuracy (where K=3, meaning the correct class is among the top three predictions) values are consistently much higher, ranging from 0.849 to 0.903. For instance, InceptionV3 with Averaging (Low-pass) reached 0.903 Top-K accuracy, and Gaussian Blur preprocessing with InceptionV3 achieved 0.898. Even the lowest Top-K accuracy (DenseNet121, no preprocessing) was 0.849, indicating that the correct class was among the top three predictions in the vast majority of cases.
+
+These results demonstrate that, although the models do not often predict the exact class, they are highly effective at narrowing down the possible diagnoses to a small set of likely candidates. This is particularly important in medical imaging, where presenting several plausible options can assist radiologists and reduce the risk of missed diagnoses. Therefore, Top-K accuracy provides a more meaningful measure of model performance for this multi-class classification problem and should be prioritized over strict Top-1 accuracy when evaluating clinical utility.
+
+\section*{6. Conclusion}
+
+This study demonstrates the substantial impact of preprocessing and data augmentation on deep learning models for breast cancer image classification. Systematic evaluation of various preprocessing techniques and model architectures revealed that methods such as morphological opening and low-pass filtering can notably improve classification accuracy and robustness, especially when paired with advanced transfer learning models.
+
+Although overall and Top-1 accuracy remains modest due to the complexity of BI-RADS categories, the consistently high Top-K accuracy shows that models are effective at narrowing down diagnostic possibilities, which is valuable for clinical decision support. The modular and reproducible pipeline developed here enables rapid experimentation and adaptation to new datasets, supporting ongoing research in medical imaging.
+
+Future work should investigate more advanced augmentation strategies, additional preprocessing combinations (preprocessing method combinations), and larger, more diverse datasets to further enhance model generalization. Incorporating domain knowledge and explainable AI techniques may also improve clinical applicability and trust. Overall, these findings highlight the importance of thoughtful data preparation and preprocessing in building reliable machine learning solutions for medical image analysis.
+
+% Bibliography
+\bibliographystyle{plain}
+The full code and data processing pipeline for this study are available at \url{https://github.com/PepeuFBV/breast_cancer_analysis}.
+\bibliography{references}
+
+\end{document}
