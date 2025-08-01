@@ -212,13 +212,13 @@ The results of our experiments are very much summarized in Table~\ref{tab:final_
             Dilation               & InceptionV3    & kernel=11, iterations=1              & 0.319                 & 0.883              \\
             Opening                & NASNetMobile   & kernel=9, iterations=1               & 0.368                 & 0.849              \\
             Closing                & NASNetMobile   & kernel=3, iterations=5               & 0.304                 & 0.888              \\
+            CLAHE                  & NASNetMobile   & tile grid size=(5, 5), iterations=2  & 0.290                 & 0.850              \\
             \hline
         \end{tabular}
     \end{adjustbox}
-    \caption{Top results for all tested preprocessing and model combinations.}
+    \caption{Top results for best tested preprocessing and respective model combinations. The table shows the preprocessing method, best model architecture, parameters used, best validation accuracy (Top-1), and Top-K accuracy (with K=3).}
     \label{tab:final_results}
 \end{table}
-
 
 The table shows that Top-1 validation accuracy for the best combinations ranged from 0.25 (DenseNet121, no preprocessing) to 0.368 (NASNetMobile, Opening), with most results between 0.3 and 0.36. For example, InceptionV3 with Averaging (Low-pass) preprocessing achieved 0.353 Top-1 accuracy, while Thresholding and Gaussian Blur preprocessing with InceptionV3 yielded 0.309 and 0.319, respectively. These values reflect the challenge of distinguishing between multiple BI-RADS classes with subtle differences.
 
@@ -230,7 +230,7 @@ These results demonstrate that, although the models do not often predict the exa
 
 This study demonstrates the substantial impact of preprocessing and data augmentation on deep learning models for breast cancer image classification. Systematic evaluation of various preprocessing techniques and model architectures revealed that methods such as morphological opening and low-pass filtering can notably improve classification accuracy and robustness, especially when paired with advanced transfer learning models.
 
-Although Top-1 accuracy remains modest due to the complexity of BI-RADS categories, the consistently high Top-K accuracy shows that models are effective at narrowing down diagnostic possibilities, which is valuable for clinical decision support. The modular and reproducible pipeline developed here enables rapid experimentation and adaptation to new datasets, supporting ongoing research in medical imaging.
+Although overall and Top-1 accuracy remains modest due to the complexity of BI-RADS categories, the consistently high Top-K accuracy shows that models are effective at narrowing down diagnostic possibilities, which is valuable for clinical decision support. The modular and reproducible pipeline developed here enables rapid experimentation and adaptation to new datasets, supporting ongoing research in medical imaging.
 
 Future work should investigate more advanced augmentation strategies, additional preprocessing combinations (preprocessing method combinations), and larger, more diverse datasets to further enhance model generalization. Incorporating domain knowledge and explainable AI techniques may also improve clinical applicability and trust. Overall, these findings highlight the importance of thoughtful data preparation and preprocessing in building reliable machine learning solutions for medical image analysis.
 
