@@ -51,7 +51,7 @@ The project is run in a Jupyter Notebook environment. To set up the environment,
 
 8. The results will be generated and saved in the `data/results` directory.
 
-> ![NOTE]
+> [!NOTE]
 > The recommended python version for the notebook is 3.12.3
 
 ## License
