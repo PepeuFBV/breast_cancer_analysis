@@ -114,12 +114,13 @@ In this study, we selected a set of fundamental image preprocessing algorithms t
     \item \textbf{Binarization (Thresholding):} Converts grayscale images to binary by applying a fixed threshold, which can highlight regions of interest and simplify feature extraction.
     \item \textbf{Low-pass Filtering (Averaging):} Smooths the image by averaging pixel values in a local neighborhood, further reducing noise and minor variations.
     \item \textbf{Morphological Operations:} Includes erosion, dilation, opening (erosion followed by dilation), and closing (dilation followed by erosion). These operations are used to remove small artifacts, fill gaps, and enhance the shape of anatomical structures in the mammograms.
+    \item \textbf{Contrast Limited Adaptive Histogram Equalization (CLAHE):} Enhances local contrast in the image, making features more visible without amplifying noise. This technique is particularly useful for medical images where subtle differences are critical for diagnosis.
 \end{itemize}
 
 Each preprocessing function was applied to the dataset as a separate experiment, with varying parameters. This systematic approach allowed us to identify which preprocessing strategies most effectively enhance model performance, while keeping the computational requirements low and the pipeline easily reproducible.
 
 The implementation of these transformations is modular, enabling straightforward integration into the training workflow. This design ensures that the preprocessing steps can be adapted or extended for future studies or different datasets with minimal effort.
-% ...existing code...
+
 \renewcommand{\arraystretch}{1.5}
 \begin{table}[H]
     \centering
