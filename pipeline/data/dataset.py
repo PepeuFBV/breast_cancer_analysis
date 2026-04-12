@@ -62,10 +62,19 @@ class DatasetPreparationArtifacts:
     test_samples: int
 
 
+def normalize_file_number(value: object) -> str:
+    normalized = str(value).strip()
+    if normalized.endswith(".0"):
+        normalized = normalized[:-2]
+    if normalized.isdigit():
+        return str(int(normalized))
+    return normalized
+
+
 def load_metadata(metadata_path: Path) -> pd.DataFrame:
     dataframe = pd.read_csv(metadata_path, delimiter=";")
     dataframe.columns = dataframe.columns.str.strip()
-    dataframe["File Name"] = dataframe["File Name"].astype(str).str.strip()
+    dataframe["File Name"] = dataframe["File Name"].map(normalize_file_number)
     dataframe["Bi-Rads"] = dataframe["Bi-Rads"].astype(str).str.strip().str.lower()
     dataframe = dataframe[dataframe["Bi-Rads"].isin(VALID_LABELS)].reset_index(drop=True)
     return dataframe
@@ -76,7 +85,7 @@ def build_dicom_mapping(dicom_dir: Path) -> dict[str, str]:
     for file_name in dicom_dir.iterdir():
         if file_name.suffix.lower() != ".dcm":
             continue
-        mapping[file_name.name.split("_")[0]] = file_name.name
+        mapping[normalize_file_number(file_name.name.split("_")[0])] = file_name.name
     return mapping
 
 
@@ -143,6 +152,9 @@ def export_augmented_dataset(
 
 
 def balance_df_trim_above(dataframe: pd.DataFrame, samples_per_class: int, random_state: int) -> pd.DataFrame:
+    if dataframe.empty:
+        raise ValueError("No images were generated during dataset export. Check metadata labels and DICOM filename mapping.")
+
     balanced_frames: list[pd.DataFrame] = []
     for label in dataframe["label"].unique():
         subset = dataframe[dataframe["label"] == label]

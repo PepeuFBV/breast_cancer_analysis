@@ -6,16 +6,21 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipeline.data.dataset import balance_df_trim_above, load_metadata, split_dataset
+from pipeline.data.dataset import balance_df_trim_above, load_metadata, normalize_file_number, split_dataset
 
 
 class DatasetHelpersTest(unittest.TestCase):
+    def test_normalize_file_number_handles_numeric_formats(self) -> None:
+        self.assertEqual(normalize_file_number("0007"), "7")
+        self.assertEqual(normalize_file_number("20586908.0"), "20586908")
+        self.assertEqual(normalize_file_number(12), "12")
+
     def test_load_metadata_filters_invalid_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             csv_path = Path(tmp_dir) / "INbreast.csv"
             pd.DataFrame(
                 {
-                    "File Name": ["100", "101", "102"],
+                    "File Name": ["0100", "101", "102.0"],
                     "Bi-Rads": ["1", "7", "4A"],
                 }
             ).to_csv(csv_path, sep=";", index=False)
