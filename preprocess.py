@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from pipeline.data.constants import (
     DEFAULT_AUGMENTATIONS_PER_IMAGE,
@@ -22,12 +23,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_raw_dataset_layout(raw_data_dir: Path) -> None:
+    required_csv = raw_data_dir / "INbreast.csv"
+    dicom_dir = raw_data_dir / "AllDICOMs"
+
+    missing_items: list[str] = []
+    if not raw_data_dir.exists():
+        missing_items.append(f"dataset directory: {raw_data_dir}")
+    if not required_csv.exists():
+        missing_items.append(f"metadata CSV: {required_csv}")
+    if not dicom_dir.exists():
+        missing_items.append(f"DICOM directory: {dicom_dir}")
+    elif not any(dicom_dir.glob("*.dcm")):
+        missing_items.append(f"DICOM files under: {dicom_dir}")
+
+    if not missing_items:
+        return
+
+    details = "\n".join(f"- missing {item}" for item in missing_items)
+    raise FileNotFoundError(
+        "INbreast dataset layout is incomplete.\n"
+        f"{details}\n"
+        "Expected structure:\n"
+        f"- {raw_data_dir / 'INbreast.csv'}\n"
+        f"- {raw_data_dir / 'AllDICOMs' / '*.dcm'}"
+    )
+
+
 def main() -> int:
     from pipeline.data.dataset import DatasetPreparationConfig, prepare_dataset
     from pipeline.utils.paths import build_project_paths
 
     args = build_parser().parse_args()
     paths = build_project_paths(args.raw_data_dir, args.artifacts_dir).ensure_artifact_dirs()
+    validate_raw_dataset_layout(paths.raw_data_dir)
     config = DatasetPreparationConfig(
         raw_data_dir=paths.raw_data_dir,
         images_output_dir=paths.processed_images_dir,
