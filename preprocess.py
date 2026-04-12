@@ -3,23 +3,20 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from pipeline.data.constants import (
-    DEFAULT_AUGMENTATIONS_PER_IMAGE,
-    DEFAULT_IMAGE_SIZE,
-    DEFAULT_SAMPLES_PER_CLASS,
-    DEFAULT_TEST_SIZE,
-)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare the INbreast dataset into reusable pipeline artifacts.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to an experiment JSON config. Defaults to configs/experiment.default.json.",
+    )
     parser.add_argument("--raw-data-dir", default=None, help="Raw dataset directory. Defaults to data/INbreast Release 1.0/.")
     parser.add_argument("--artifacts-dir", default=None, help="Artifacts root directory. Defaults to artifacts/.")
-    parser.add_argument("--augmentations-per-image", type=int, default=DEFAULT_AUGMENTATIONS_PER_IMAGE)
-    parser.add_argument("--samples-per-class", type=int, default=DEFAULT_SAMPLES_PER_CLASS)
-    parser.add_argument("--test-size", type=float, default=DEFAULT_TEST_SIZE)
-    parser.add_argument("--resize-width", type=int, default=DEFAULT_IMAGE_SIZE[0])
-    parser.add_argument("--resize-height", type=int, default=DEFAULT_IMAGE_SIZE[1])
+    parser.add_argument("--augmentations-per-image", type=int, default=None)
+    parser.add_argument("--samples-per-class", type=int, default=None)
+    parser.add_argument("--test-size", type=float, default=None)
+    parser.add_argument("--resize-width", type=int, default=None)
+    parser.add_argument("--resize-height", type=int, default=None)
     return parser
 
 
@@ -50,24 +47,37 @@ def validate_raw_dataset_layout(raw_data_dir: Path) -> None:
     )
 
 
-def main() -> int:
-    from pipeline.data.dataset import DatasetPreparationConfig, prepare_dataset
-    from pipeline.utils.paths import build_project_paths
+def build_dataset_config_from_args(args: argparse.Namespace):
+    from pipeline.config import load_experiment_config
 
-    args = build_parser().parse_args()
-    paths = build_project_paths(args.raw_data_dir, args.artifacts_dir).ensure_artifact_dirs()
-    validate_raw_dataset_layout(paths.raw_data_dir)
-    config = DatasetPreparationConfig(
-        raw_data_dir=paths.raw_data_dir,
-        images_output_dir=paths.processed_images_dir,
-        splits_output_dir=paths.processed_splits_dir,
-        resize_dim=(args.resize_width, args.resize_height),
+    experiment_config = load_experiment_config(args.config)
+    project_paths = experiment_config.resolve_project_paths(
+        raw_data_dir=args.raw_data_dir,
+        artifacts_dir=args.artifacts_dir,
+    ).ensure_artifact_dirs()
+    resize_dim = None
+    if args.resize_width is not None or args.resize_height is not None:
+        resize_dim = (
+            args.resize_width if args.resize_width is not None else experiment_config.preprocess.image_size[0],
+            args.resize_height if args.resize_height is not None else experiment_config.preprocess.image_size[1],
+        )
+    return experiment_config.build_dataset_preparation_config(
+        project_paths,
+        image_size=resize_dim,
         augmentations_per_image=args.augmentations_per_image,
         samples_per_class=args.samples_per_class,
         test_size=args.test_size,
     )
+
+
+def main() -> int:
+    from pipeline.data.dataset import prepare_dataset
+
+    args = build_parser().parse_args()
+    config = build_dataset_config_from_args(args)
+    validate_raw_dataset_layout(config.raw_data_dir)
     artifacts = prepare_dataset(config)
-    print(f"Prepared dataset from: {paths.raw_data_dir}")
+    print(f"Prepared dataset from: {config.raw_data_dir}")
     print(f"Images directory: {artifacts.images_output_dir}")
     print(f"Train split: {artifacts.train_split_path}")
     print(f"Test split: {artifacts.test_split_path}")
