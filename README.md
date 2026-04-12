@@ -1,59 +1,168 @@
 # Breast Cancer Analysis
 
-This repository contains a machine learning project focused on breast cancer analysis using the CBIS-DDSM: Breast Cancer Image Dataset. This work's focus is on the pre-processing of mammogram images, feature extraction, and the application of various machine learning algorithms to classify breast cancer.
+This repository contains a reproducible Python pipeline for mammogram classification experiments based on the INbreast dataset. The preprocessing, training, and evaluation logic now lives in reusable Python modules under `pipeline/`, while the notebooks remain available as exploratory and reporting interfaces.
 
-## Features
+The repository also includes the paper source in [`article/main.tex`](article/main.tex) and the compiled PDF in [`article/main.pdf`](article/main.pdf).
 
-The project includes the following features:
+## What Changed
 
-- **Case Study Paper**: [A detailed paper discussing the case study, methodologies, and results of the breast cancer analysis.](main.pdf)
-- **Data Preprocessing**: Implementation of various preprocessing techniques such as denoising, binarization, low-pass filtering, and morphological operations to enhance image quality and improve classification accuracy.
-- **Model Training**: Training of multiple machine learning models, including custom convolutional neural networks (CNNs) and transfer learning models based on ResNet50 and DenseNet121, to classify breast cancer images.
+The project used to be notebook-first. The main workflow is now organized around Python entrypoints:
+
+- `preprocess.py` builds processed images and train/test splits
+- `train.py` runs the experiment grid and stores model artifacts
+- `evaluate.py` aggregates run outputs into a final report
+
+The notebooks in [`notebooks/`](notebooks) now consume those modules instead of owning the full pipeline logic.
+
+## Project Layout
+
+```text
+pipeline/
+  data/
+  train/
+  evaluate/
+  utils/
+artifacts/
+  processed/
+  runs/
+  reports/
+data/
+  INbreast Release 1.0/
+notebooks/
+preprocess.py
+train.py
+evaluate.py
+```
 
 ## Dataset
 
-The dataset used in this project is the [CBIS-DDSM: Breast Cancer Image Dataset](https://www.kaggle.com/datasets/ramanathansp20/inbreast-dataset). It contains mammogram images with annotations for breast cancer classification. The dataset includes:
+The code is built around **INbreast Release 1.0**.
 
-- 1: Negative
-- 2: Benign finding
-- 3: Probably Benign
-- 4: Suspicious finding (4a, 4b, 4c)
-- 5: Highly suggestive of malignancy
-- 6: Malignant (biopsy proven)
+Expected raw dataset layout:
+
+```text
+data/INbreast Release 1.0/
+  INbreast.csv
+  AllDICOMs/*.dcm
+```
+
+Valid BI-RADS labels handled by the pipeline are:
+
+- `1`
+- `2`
+- `3`
+- `4a`
+- `4b`
+- `4c`
+- `5`
+- `6`
+
+The dataset is not tracked by Git and must be placed locally in the path above.
 
 ## Installation
 
-The project is run in a Jupyter Notebook environment. To set up the environment, follow these steps:
+Create a local environment and install the project dependencies:
 
-1. Clone and navigate to the repository:
-   ```bash
-    git clone TODO
-    cd breast-cancer-analysis
-   ```
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
 
-2. Install the required packages:
-   ```bash
-    pip install -r requirements.txt
-    ```
+The editable install is recommended so notebook imports like `from pipeline...` work cleanly.
 
-3. Start Jupyter Notebook:
-    ```bash
-    jupyter notebook
-    ```
+## Reproducible Pipeline
 
-4. Open the notebook files in your browser.
+### 1. Prepare the dataset
 
-5. Download the dataset from [INbreast Release 1.0](https://www.kaggle.com/datasets/ramanathansp20/inbreast-dataset) and place it the project's `/data` directory.
+```bash
+python preprocess.py
+```
 
-6. Run the `data.ipynb` notebook to preprocess the data and generate the augmented dataset.
+Default behavior:
 
-7. Run the `preprocessing-and-model.ipynb` notebook to train and evaluate the machine learning model through the various possible preprocessing techniques.
+- reads `data/INbreast Release 1.0/INbreast.csv`
+- filters to valid BI-RADS labels before generating splits
+- converts DICOMs to normalized `224x224` PNG files
+- writes processed images to `artifacts/processed/images/`
+- creates `3` augmented images per source image
+- trims each class to `35` samples
+- writes splits to:
+  - `artifacts/processed/splits/train_split.csv`
+  - `artifacts/processed/splits/test_split.csv`
 
-8. The results will be generated and saved in the `data/results` directory.
+### 2. Train the models
 
-> ![NOTE]
-> The recommended python version for the notebook is 3.12.3
+```bash
+python train.py
+```
+
+Default behavior:
+
+- reads the processed split CSVs from `artifacts/processed/splits/`
+- maps BI-RADS labels to 8 numeric classes
+- runs the configured preprocessing and model registry
+- uses `folds=4`, `epochs=15`, `batch_size=8`, and `run_skip=True`
+- stores artifacts in:
+  - `artifacts/runs/history/<preproc_id>/<model_name>/`
+  - `artifacts/runs/predictions/<preproc_id>/<model_name>/`
+
+Useful options:
+
+```bash
+python train.py --models "custom cnn" --preprocessing none --no-combined-preprocessing
+python train.py --folds 0
+```
+
+For long unattended runs, use:
+
+```bash
+bash scripts/run_models_loop.sh
+```
+
+### 3. Aggregate the report
+
+```bash
+python evaluate.py
+```
+
+Default behavior:
+
+- reads run outputs from `artifacts/runs/`
+- computes top-k metrics and derived rankings
+- writes the final report to:
+  - `artifacts/reports/final_comprehensive_results.csv`
+
+## Notebooks
+
+The notebooks are still useful, but their role is now lighter:
+
+- [`notebooks/data.ipynb`](notebooks/data.ipynb): dataset exploration and augmentation preview
+- [`notebooks/run-models.ipynb`](notebooks/run-models.ipynb): thin training demo using `pipeline.train`
+- [`notebooks/post-trainning-analysis.ipynb`](notebooks/post-trainning-analysis.ipynb): report generation and result inspection
+
+## Legacy Compatibility
+
+The old modules under `utils/` remain as compatibility wrappers that forward to the new `pipeline/` implementation. The new package is the source of truth.
+
+## Stored Artifacts
+
+Generated artifacts now live under `artifacts/`:
+
+- `artifacts/processed/images/`
+- `artifacts/processed/splits/`
+- `artifacts/runs/history/`
+- `artifacts/runs/predictions/`
+- `artifacts/reports/final_comprehensive_results.csv`
+
+The tracked file [`data/final_comprehensive_results.csv`](data/final_comprehensive_results.csv) is kept only as a historical artifact from the previous workflow.
+
+## Research-Use Note
+
+This repository is intended for academic and research use only. It is not a clinical device, not a validated diagnostic tool, and must not be used to make medical decisions.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See [`LICENSE`](LICENSE) for details.
