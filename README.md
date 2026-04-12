@@ -34,7 +34,11 @@ train.py
 evaluate.py
 ```
 
-## Dataset
+- converts INbreast DICOM images to normalized PNG files,
+- applies data augmentation and a balanced sampling strategy,
+- trains multiple model architectures on different preprocessing variants,
+- stores per-run histories and predictions, and
+- aggregates results into a final CSV for comparison.
 
 The code is built around **INbreast Release 1.0**.
 
