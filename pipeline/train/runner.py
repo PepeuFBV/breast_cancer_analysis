@@ -12,17 +12,13 @@ import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
 from pipeline.data.constants import DEFAULT_RANDOM_STATE, LABEL_MAPPING
-from pipeline.train.models import MODEL_BUILDERS, ModelBuilder
+from pipeline.train.models import MODEL_BUILDERS, ModelBuilder, ModelRuntimeConfig
 from pipeline.train.preprocessing import PreprocessingTask, iter_preprocessing_tasks
 from pipeline.utils.naming import param_dict_to_display
 from pipeline.utils.runtime import format_duration
 
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-
-
-SINGLE_CHANNEL_MODEL_NAMES = {"custom cnn"}
-
 
 @dataclass(frozen=True)
 class TrainingConfig:
@@ -39,6 +35,10 @@ class TrainingConfig:
     model_names: list[str] | None = None
     preprocessing_ids: list[str] | None = None
     include_combinations: bool = True
+    loss: str = "categorical_crossentropy"
+    learning_rate: float = 1e-4
+    model_runtime: dict[str, ModelRuntimeConfig] | None = None
+    preprocessing_grids: dict[str, dict[str, list[Any]]] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,13 +87,31 @@ def preprocess_images(dataframe: pd.DataFrame, preproc_fn) -> tuple[np.ndarray, 
     return np.stack(images), np.asarray(labels)
 
 
-def _prepare_model_inputs(images: np.ndarray, model_name: str, batch_size: int) -> tuple[np.ndarray, tuple[int, ...], int]:
-    images = np.expand_dims(images, -1).astype("float32") / 255.0
-    if model_name.lower() in SINGLE_CHANNEL_MODEL_NAMES:
-        return images, tuple(images.shape[1:]), batch_size
+def _default_model_runtime(model_name: str, batch_size: int) -> ModelRuntimeConfig:
+    if model_name.lower() in {"custom cnn", "bcnet"}:
+        return ModelRuntimeConfig(input_channels=1, batch_size=batch_size)
+    return ModelRuntimeConfig(input_channels=3, batch_size=4)
 
-    images = np.repeat(images, 3, axis=-1)
-    return images, tuple(images.shape[1:]), 4
+
+def _prepare_model_inputs(
+    images: np.ndarray,
+    model_name: str,
+    batch_size: int,
+    model_runtime: ModelRuntimeConfig | None = None,
+) -> tuple[np.ndarray, tuple[int, ...], int]:
+    runtime = model_runtime or _default_model_runtime(model_name, batch_size)
+    images = np.expand_dims(images, -1).astype("float32") / 255.0
+    effective_batch_size = runtime.batch_size or batch_size
+    if runtime.input_channels == 1:
+        return images, tuple(images.shape[1:]), effective_batch_size
+
+    if runtime.input_channels == 3:
+        images = np.repeat(images, 3, axis=-1)
+        return images, tuple(images.shape[1:]), effective_batch_size
+
+    raise ValueError(
+        f"Unsupported input_channels={runtime.input_channels} configured for model '{model_name}'."
+    )
 
 
 def _one_hot_encode(labels: np.ndarray, num_classes: int) -> np.ndarray:
@@ -142,16 +160,30 @@ def run_model_with_preprocessing(
     num_classes: int,
     batch_size: int,
     epochs: int,
+    loss: str,
+    learning_rate: float,
+    model_runtime: ModelRuntimeConfig | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     x_train, y_train = preprocess_images(train_df, task.apply)
     x_test, y_test = preprocess_images(test_df, task.apply)
 
-    train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(x_train, model_name, batch_size)
-    test_inputs, _, _ = _prepare_model_inputs(x_test, model_name, batch_size)
+    train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(
+        x_train,
+        model_name,
+        batch_size,
+        model_runtime,
+    )
+    test_inputs, _, _ = _prepare_model_inputs(x_test, model_name, batch_size, model_runtime)
     y_train_encoded = _one_hot_encode(y_train, num_classes)
     y_test_encoded = _one_hot_encode(y_test, num_classes)
 
-    model = model_fn(input_shape=input_shape, num_classes=num_classes, loss="categorical_crossentropy")
+    model = model_fn(
+        input_shape=input_shape,
+        num_classes=num_classes,
+        loss=loss,
+        learning_rate=learning_rate,
+        runtime=model_runtime,
+    )
     try:
         history = model.fit(
             train_inputs,
@@ -230,6 +262,7 @@ def _run_fixed_split(
     model_fn: ModelBuilder,
     config: TrainingConfig,
 ) -> TrainingRunResult:
+    model_runtime = (config.model_runtime or {}).get(model_name)
     best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
         train_df,
         test_df,
@@ -239,6 +272,9 @@ def _run_fixed_split(
         num_classes=config.num_classes,
         batch_size=config.batch_size,
         epochs=config.epochs,
+        loss=config.loss,
+        learning_rate=config.learning_rate,
+        model_runtime=model_runtime,
     )
     return TrainingRunResult(
         preproc_id=task.preproc_id,
@@ -270,6 +306,7 @@ def _run_cross_validation(
     y = merged_df["label"]
 
     best_result: TrainingRunResult | None = None
+    model_runtime = (config.model_runtime or {}).get(model_name)
     for fold_index, (train_idx, test_idx) in enumerate(splitter.split(x, y), start=1):
         train_set = merged_df.iloc[train_idx].reset_index(drop=True)
         test_set = merged_df.iloc[test_idx].reset_index(drop=True)
@@ -282,6 +319,9 @@ def _run_cross_validation(
             num_classes=config.num_classes,
             batch_size=config.batch_size,
             epochs=config.epochs,
+            loss=config.loss,
+            learning_rate=config.learning_rate,
+            model_runtime=model_runtime,
         )
 
         current = TrainingRunResult(
@@ -323,6 +363,7 @@ def run_training_pipeline(
         iter_preprocessing_tasks(
             config.preprocessing_ids,
             include_combinations=config.include_combinations,
+            param_grids=config.preprocessing_grids,
         )
     )
 
@@ -330,6 +371,8 @@ def run_training_pipeline(
     for task in tasks:
         print(f"\n=== Preprocessing: {task.preproc_id} ({task.param_display}) ===")
         for model_name in model_names:
+            if model_name not in available_builders:
+                raise ValueError(f"Unknown model name requested: {model_name}")
             model_fn = available_builders[model_name]
             print(f"--> Current Model: {model_name} <--")
             if config.run_skip and check_if_model_exists(
