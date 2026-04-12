@@ -16,17 +16,7 @@ The main goal of the project is to evaluate whether simple, reproducible preproc
 
 ## Dataset actually used
 
-The code in this repository is built around **INbreast Release 1.0**, not CBIS-DDSM.
-
-This is visible in [`notebooks/data.ipynb`](notebooks/data.ipynb), which expects the dataset in the following local layout:
-
-```text
-data/
-  INbreast Release 1.0/
-    INbreast.csv
-    AllDICOMs/
-      *.dcm
-```
+The code in this repository is built around **INbreast Release 1.0**
 
 Important details inferred from the notebooks:
 
@@ -36,38 +26,6 @@ Important details inferred from the notebooks:
 - `run-models.ipynb` maps those labels to 8 numeric classes before training.
 
 The dataset is not versioned in Git. You must obtain it separately and place it in the exact directory structure above before running the full pipeline.
-
-## Repository structure
-
-```text
-.
-├── article/
-│   ├── main.pdf
-│   └── main.tex
-├── data/
-│   ├── final_comprehensive_results.csv
-│   └── INbreast Release 1.0/        # expected local dataset, gitignored
-├── notebooks/
-│   ├── data.ipynb
-│   ├── post-trainning-analysis.ipynb
-│   ├── run-models.ipynb
-│   └── run-models-papermill-output.ipynb
-├── scripts/
-│   └── run_models_loop.sh
-├── utils/
-│   ├── models.py
-│   └── preprocessing.py
-├── requirements.txt
-└── README.md
-```
-
-Generated files and directories used by the workflow are intentionally ignored from Git:
-
-- `data/augmented_images/`
-- `data/train_split.csv`
-- `data/test_split.csv`
-- `data/results/`
-- `notebooks/log.txt`
 
 ## Prerequisites
 
@@ -181,32 +139,6 @@ The workflow writes artifacts to the following locations:
 - `data/final_comprehensive_results.csv`: aggregated summary produced by `post-trainning-analysis.ipynb`
 
 The repository currently tracks `data/final_comprehensive_results.csv`, but it does **not** track the intermediate `data/results/` directory used to build it.
-
-## Reproducibility notes
-
-The current codebase includes some reproducibility-friendly choices:
-
-- `train_test_split(..., random_state=42, stratify=...)` in `data.ipynb`
-- `resample(..., random_state=42)` in the balancing step
-- `StratifiedKFold(..., shuffle=True, random_state=42)` in `run-models.ipynb`
-
-However, reproduction is still only partial because:
-
-- dependency versions are not pinned,
-- TensorFlow/model initialization is not globally seeded,
-- the repository does not include the generated `data/results/` directory,
-- the committed `data/final_comprehensive_results.csv` is a snapshot of previous runs rather than a fully regenerated artifact in this checkout.
-
-One more important nuance: the committed `final_comprehensive_results.csv` contains **3340 rows**, which correspond to **9 single-step preprocessing families x 10 models**. Meanwhile, the current preprocessing registry in [`utils/preprocessing.py`](utils/preprocessing.py) also defines ordered two-step preprocessing combinations. That means rerunning the current training notebook as-is may explore a larger search space than the tracked final CSV.
-
-## Limitations and important observations
-
-- This repository is a research workflow, not a packaged library or production application.
-- The notebooks are the source of truth for execution. There is no single CLI pipeline wrapping all stages.
-- `data.ipynb` requires both the DICOM files and the `INbreast.csv` metadata file. If the CSV is missing, preprocessing cannot run.
-- `run-models.ipynb` saves only the best fold history/predictions when cross-validation is enabled.
-- The helper script `scripts/run_models_loop.sh` is useful for long runs, but you should still review its retry behavior before relying on it for fully unattended execution.
-- The tracked summary CSV can be inspected immediately, but the full raw training artifacts needed by `post-trainning-analysis.ipynb` are not included in Git.
 
 ## Research-use note
 
