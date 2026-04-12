@@ -1,0 +1,151 @@
+{
+  "paths": {
+    "raw_data_dir": "data/INbreast Release 1.0",
+    "artifacts_dir": "artifacts",
+    "train_split": null,
+    "test_split": null,
+    "history_dir": null,
+    "predictions_dir": null,
+    "report_output": null
+  },
+  "preprocess": {
+    "image_size": [224, 224],
+    "augmentations_per_image": 3,
+    "samples_per_class": 35,
+    "test_size": 0.25,
+    "preprocessing_grid": {
+      "none": {},
+      "denoise": {
+        "kernel_size": [[3, 3], [5, 5], [9, 9], [11, 11], [15, 15]],
+        "sigma": [0, 1, 3, 5, 7]
+      },
+      "binarize": {
+        "threshold": [70, 100, 127, 200, 220, 255],
+        "max_value": [70, 100, 127, 200, 220, 255],
+        "method": ["fixed", "adaptive_mean", "adaptive_gaussian"]
+      },
+      "lowpass": {
+        "kernel_size": [[3, 3], [5, 5], [9, 9], [11, 11], [15, 15]],
+        "method": ["mean", "gaussian", "median"],
+        "iterations": [1, 2, 3, 5, 7]
+      },
+      "erode": {
+        "kernel_size": [[3, 3], [5, 5], [9, 9], [11, 11], [15, 15]],
+        "iterations": [1, 2, 3, 5, 7]
+      },
+      "dilate": {
+        "kernel_size": [[3, 3], [5, 5], [9, 9], [11, 11], [15, 15]],
+        "iterations": [1, 2, 3, 5, 7]
+      },
+      "open": {
+        "kernel_size": [[3, 3], [5, 5], [9, 9], [11, 11], [15, 15]],
+        "iterations": [1, 2, 3, 5, 7]
+      },
+      "close": {
+        "kernel_size": [[3, 3], [5, 5], [9, 9], [11, 11], [15, 15]],
+        "iterations": [1, 2, 3, 5, 7]
+      },
+      "clahe": {
+        "tile_grid_size": [[3, 3], [5, 5], [9, 9], [11, 11], [15, 15]],
+        "iterations": [1, 2, 3, 5, 7]
+      }
+    }
+  },
+  "train": {
+    "model_names": [
+      "custom cnn",
+      "resnet",
+      "densenet",
+      "efficientnet",
+      "mobilenetv3",
+      "inception",
+      "nasnet",
+      "bcnet",
+      "chexnet",
+      "vgg19"
+    ],
+    "preprocessing_ids": null,
+    "include_combinations": true,
+    "folds": 4,
+    "batch_size": 8,
+    "epochs": 15,
+    "learning_rate": 0.0001,
+    "loss": "categorical_crossentropy",
+    "run_skip": true
+  },
+  "models": {
+    "custom cnn": {
+      "input_channels": 1,
+      "batch_size": 8,
+      "dense_units": 128,
+      "dropout_rate": null,
+      "dropout_rates": [0.25, 0.3, 0.4, 0.5]
+    },
+    "resnet": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 256,
+      "dropout_rate": 0.5,
+      "dropout_rates": []
+    },
+    "densenet": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 128,
+      "dropout_rate": 0.5,
+      "dropout_rates": []
+    },
+    "efficientnet": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 128,
+      "dropout_rate": 0.5,
+      "dropout_rates": []
+    },
+    "mobilenetv3": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 128,
+      "dropout_rate": 0.3,
+      "dropout_rates": []
+    },
+    "inception": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 256,
+      "dropout_rate": 0.5,
+      "dropout_rates": []
+    },
+    "nasnet": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 128,
+      "dropout_rate": 0.4,
+      "dropout_rates": []
+    },
+    "bcnet": {
+      "input_channels": 1,
+      "batch_size": 8,
+      "dense_units": 256,
+      "dropout_rate": null,
+      "dropout_rates": [0.3, 0.4, 0.5, 0.5]
+    },
+    "chexnet": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 0,
+      "dropout_rate": 0.5,
+      "dropout_rates": []
+    },
+    "vgg19": {
+      "input_channels": 3,
+      "batch_size": 4,
+      "dense_units": 128,
+      "dropout_rate": 0.5,
+      "dropout_rates": []
+    }
+  },
+  "evaluate": {
+    "top_k": 3
+  }
+}

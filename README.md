@@ -77,6 +77,27 @@ python -m pip install -e .
 
 The editable install is recommended so notebook imports like `from pipeline...` work cleanly.
 
+## Experiment Configuration
+
+The main experiment settings now live in [`configs/experiment.default.json`](configs/experiment.default.json). This file centralizes:
+
+- dataset preparation settings such as `image_size`, `augmentations_per_image`, `samples_per_class`, and `test_size`
+- training settings such as `model_names`, `batch_size`, `epochs`, `learning_rate`, `loss`, and preprocessing selection
+- per-model runtime settings such as input channels, effective batch size, dense head size, and dropout
+- evaluation settings such as `top_k`
+- input/output paths such as the dataset root, artifacts root, and optional report/run overrides
+
+The CLIs load this file by default. You can either edit it directly or point to another JSON file with `--config`.
+
+Example:
+
+```bash
+python train.py --config configs/experiment.default.json
+python train.py --config configs/experiment.default.json --epochs 3 --models "custom cnn"
+```
+
+CLI flags take precedence over the JSON file, so a specific run can be overridden without changing the tracked default configuration.
+
 ## Reproducible Pipeline
 
 ### 1. Prepare the dataset
@@ -87,6 +108,7 @@ python preprocess.py
 
 Default behavior:
 
+- loads preprocessing and path defaults from `configs/experiment.default.json`
 - reads `data/INbreast Release 1.0/INbreast.csv`
 - filters to valid BI-RADS labels before generating splits
 - converts DICOMs to normalized `224x224` PNG files
@@ -105,6 +127,7 @@ python train.py
 
 Default behavior:
 
+- loads experiment settings from `configs/experiment.default.json`
 - reads the processed split CSVs from `artifacts/processed/splits/`
 - maps BI-RADS labels to 8 numeric classes
 - runs the configured preprocessing and model registry
@@ -118,6 +141,7 @@ Useful options:
 ```bash
 python train.py --models "custom cnn" --preprocessing none --no-combined-preprocessing
 python train.py --folds 0
+python train.py --learning-rate 0.0005 --loss categorical_crossentropy
 ```
 
 For long unattended runs, use:
@@ -134,6 +158,7 @@ python evaluate.py
 
 Default behavior:
 
+- loads evaluation defaults from `configs/experiment.default.json`
 - reads run outputs from `artifacts/runs/`
 - computes top-k metrics and derived rankings
 - writes the final report to:
@@ -143,9 +168,9 @@ Default behavior:
 
 The notebooks are still useful, but their role is now lighter:
 
-- [`notebooks/data.ipynb`](notebooks/data.ipynb): dataset exploration and augmentation preview
-- [`notebooks/run-models.ipynb`](notebooks/run-models.ipynb): thin training demo using `pipeline.train`
-- [`notebooks/post-trainning-analysis.ipynb`](notebooks/post-trainning-analysis.ipynb): report generation and result inspection
+- [`notebooks/data.ipynb`](notebooks/data.ipynb): dataset exploration and augmentation preview using the shared config loader
+- [`notebooks/run-models.ipynb`](notebooks/run-models.ipynb): thin training demo using `pipeline.train` and the shared experiment config
+- [`notebooks/post-trainning-analysis.ipynb`](notebooks/post-trainning-analysis.ipynb): report generation and result inspection from the same config source
 
 ## Legacy Compatibility
 

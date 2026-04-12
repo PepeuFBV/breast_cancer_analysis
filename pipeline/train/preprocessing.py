@@ -188,8 +188,24 @@ def iter_param_grid(param_space: dict[str, list[Any]]) -> Iterator[dict[str, Any
         yield dict(zip(keys, values))
 
 
-def _build_single_task(preproc_id: str, params: dict[str, Any]) -> PreprocessingTask:
-    definition = SINGLE_PREPROCESSING_METHODS[preproc_id]
+def _build_definitions(
+    param_grids: dict[str, dict[str, list[Any]]] | None = None,
+) -> dict[str, PreprocessingDefinition]:
+    definitions: dict[str, PreprocessingDefinition] = {}
+    for preproc_id, definition in SINGLE_PREPROCESSING_METHODS.items():
+        definitions[preproc_id] = PreprocessingDefinition(
+            func=definition.func,
+            params=definition.params if param_grids is None else param_grids.get(preproc_id, {}),
+        )
+    return definitions
+
+
+def _build_single_task(
+    preproc_id: str,
+    params: dict[str, Any],
+    definitions: dict[str, PreprocessingDefinition],
+) -> PreprocessingTask:
+    definition = definitions[preproc_id]
 
     def apply(image: np.ndarray, *, func=definition.func, bound_params=params) -> np.ndarray:
         return func(image, **bound_params)
@@ -205,9 +221,15 @@ def _build_single_task(preproc_id: str, params: dict[str, Any]) -> Preprocessing
     )
 
 
-def _build_combined_task(first_id: str, second_id: str, first_params: dict[str, Any], second_params: dict[str, Any]) -> PreprocessingTask:
-    first_def = SINGLE_PREPROCESSING_METHODS[first_id]
-    second_def = SINGLE_PREPROCESSING_METHODS[second_id]
+def _build_combined_task(
+    first_id: str,
+    second_id: str,
+    first_params: dict[str, Any],
+    second_params: dict[str, Any],
+    definitions: dict[str, PreprocessingDefinition],
+) -> PreprocessingTask:
+    first_def = definitions[first_id]
+    second_def = definitions[second_id]
     params = {
         f"{first_id}_params": first_params,
         f"{second_id}_params": second_params,
@@ -238,40 +260,45 @@ def iter_preprocessing_tasks(
     selected_ids: list[str] | None = None,
     *,
     include_combinations: bool = True,
+    param_grids: dict[str, dict[str, list[Any]]] | None = None,
 ) -> Iterator[PreprocessingTask]:
+    definitions = _build_definitions(param_grids)
     selected = set(selected_ids) if selected_ids else None
 
-    for preproc_id, definition in SINGLE_PREPROCESSING_METHODS.items():
+    for preproc_id, definition in definitions.items():
         for params in iter_param_grid(definition.params):
             if selected and preproc_id not in selected:
                 continue
-            yield _build_single_task(preproc_id, params)
+            yield _build_single_task(preproc_id, params, definitions)
 
     if not include_combinations:
         return
 
-    combinable_ids = [name for name in SINGLE_PREPROCESSING_METHODS if name != "none"]
+    combinable_ids = [name for name in definitions if name != "none"]
     for first_id, second_id in permutations(combinable_ids, 2):
         combined_id = f"{first_id}__{second_id}"
         if selected and combined_id not in selected:
             continue
-        for first_params in iter_param_grid(SINGLE_PREPROCESSING_METHODS[first_id].params):
-            for second_params in iter_param_grid(SINGLE_PREPROCESSING_METHODS[second_id].params):
-                yield _build_combined_task(first_id, second_id, first_params, second_params)
+        for first_params in iter_param_grid(definitions[first_id].params):
+            for second_params in iter_param_grid(definitions[second_id].params):
+                yield _build_combined_task(first_id, second_id, first_params, second_params, definitions)
 
 
-def build_legacy_preprocessing_methods() -> dict[str, dict[str, Any]]:
+def build_legacy_preprocessing_methods(
+    param_grids: dict[str, dict[str, list[Any]]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    definitions = _build_definitions(param_grids)
     legacy: dict[str, dict[str, Any]] = {}
-    for preproc_id, definition in SINGLE_PREPROCESSING_METHODS.items():
+    for preproc_id, definition in definitions.items():
         legacy[preproc_id] = {
             "func": definition.func,
             "params": definition.params,
         }
 
-    combinable_ids = [name for name in SINGLE_PREPROCESSING_METHODS if name != "none"]
+    combinable_ids = [name for name in definitions if name != "none"]
     for first_id, second_id in permutations(combinable_ids, 2):
-        first_def = SINGLE_PREPROCESSING_METHODS[first_id]
-        second_def = SINGLE_PREPROCESSING_METHODS[second_id]
+        first_def = definitions[first_id]
+        second_def = definitions[second_id]
 
         def combined_func(
             image: np.ndarray,
