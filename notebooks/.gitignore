@@ -1,5 +1,1 @@
-# ignore Papermill generated notebook
-run-models-papermill-output.ipynb
-
-# log files for looping script
-log.txt
+.ipynb_checkpoints/

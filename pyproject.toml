@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breast-cancer-analysis-pipeline"
+version = "0.1.0"
+description = "Reusable training and evaluation pipeline for the breast cancer analysis project."
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["pipeline*"]
