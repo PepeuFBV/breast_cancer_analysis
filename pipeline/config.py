@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pipeline.data.constants import DEFAULT_RANDOM_STATE
 from pipeline.train.models import MODEL_BUILDERS, ModelRuntimeConfig
 from pipeline.utils.paths import PROJECT_ROOT, ProjectPaths, build_project_paths
 from pipeline.utils.runtime import resolve_bool_flag
@@ -121,6 +122,7 @@ class ExperimentPreprocessConfig:
     augmentations_per_image: int
     samples_per_class: int
     test_size: float
+    random_state: int
     preprocessing_grid: dict[str, dict[str, list[Any]]]
 
 
@@ -130,11 +132,13 @@ class ExperimentTrainConfig:
     preprocessing_ids: list[str] | None
     include_combinations: bool
     folds: int
+    validation_size: float
     batch_size: int
     epochs: int
     learning_rate: float
     loss: str
     run_skip: bool
+    random_state: int
 
 
 @dataclass(frozen=True)
@@ -169,6 +173,7 @@ class ExperimentConfig:
         augmentations_per_image: int | None = None,
         samples_per_class: int | None = None,
         test_size: float | None = None,
+        random_state: int | None = None,
     ) -> DatasetPreparationConfig:
         from pipeline.data.dataset import DatasetPreparationConfig
 
@@ -184,6 +189,7 @@ class ExperimentConfig:
             ),
             samples_per_class=self.preprocess.samples_per_class if samples_per_class is None else samples_per_class,
             test_size=self.preprocess.test_size if test_size is None else test_size,
+            random_state=self.preprocess.random_state if random_state is None else random_state,
         )
 
     def build_training_config(
@@ -195,10 +201,12 @@ class ExperimentConfig:
         history_dir: str | Path | None = None,
         predictions_dir: str | Path | None = None,
         folds: int | None = None,
+        validation_size: float | None = None,
         batch_size: int | None = None,
         epochs: int | None = None,
         learning_rate: float | None = None,
         loss: str | None = None,
+        random_state: int | None = None,
         model_names: list[str] | None = None,
         preprocessing_ids: list[str] | None = None,
         include_combinations: bool | None = None,
@@ -216,6 +224,7 @@ class ExperimentConfig:
                 project_paths.predictions_dir,
             ),
             folds=self.train.folds if folds is None else folds,
+            validation_size=self.train.validation_size if validation_size is None else validation_size,
             batch_size=self.train.batch_size if batch_size is None else batch_size,
             epochs=self.train.epochs if epochs is None else epochs,
             run_skip=resolve_bool_flag(run_skip, default=self.train.run_skip),
@@ -227,6 +236,7 @@ class ExperimentConfig:
             ),
             loss=self.train.loss if loss is None else loss,
             learning_rate=self.train.learning_rate if learning_rate is None else learning_rate,
+            random_state=self.train.random_state if random_state is None else random_state,
             model_runtime=self.models,
             preprocessing_grids=self.preprocess.preprocessing_grid,
         )
@@ -238,6 +248,7 @@ class ExperimentConfig:
         history_dir: str | Path | None = None,
         predictions_dir: str | Path | None = None,
         output_path: str | Path | None = None,
+        details_dir: str | Path | None = None,
         top_k: int | None = None,
     ) -> EvaluationConfig:
         from pipeline.evaluate.reporting import EvaluationConfig
@@ -254,6 +265,7 @@ class ExperimentConfig:
                 self.paths.report_output,
                 project_paths.final_report_path,
             ),
+            details_dir=(None if details_dir is None else _resolve_project_relative_path(details_dir)),
             top_k=self.evaluate.top_k if top_k is None else top_k,
         )
 
@@ -318,6 +330,7 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
             augmentations_per_image=int(raw_config["preprocess"]["augmentations_per_image"]),
             samples_per_class=int(raw_config["preprocess"]["samples_per_class"]),
             test_size=float(raw_config["preprocess"]["test_size"]),
+            random_state=int(raw_config["preprocess"].get("random_state", DEFAULT_RANDOM_STATE)),
             preprocessing_grid=preprocessing_grid,
         ),
         train=ExperimentTrainConfig(
@@ -325,11 +338,13 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
             preprocessing_ids=raw_config["train"].get("preprocessing_ids"),
             include_combinations=bool(raw_config["train"]["include_combinations"]),
             folds=int(raw_config["train"]["folds"]),
+            validation_size=float(raw_config["train"].get("validation_size", 0.2)),
             batch_size=int(raw_config["train"]["batch_size"]),
             epochs=int(raw_config["train"]["epochs"]),
             learning_rate=float(raw_config["train"]["learning_rate"]),
             loss=str(raw_config["train"]["loss"]),
             run_skip=bool(raw_config["train"]["run_skip"]),
+            random_state=int(raw_config["train"].get("random_state", DEFAULT_RANDOM_STATE)),
         ),
         models=model_config,
         evaluate=ExperimentEvaluateConfig(
