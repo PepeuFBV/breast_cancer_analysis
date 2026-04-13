@@ -22,6 +22,10 @@ class ProjectPathsTest(unittest.TestCase):
             paths.final_report_path,
             PROJECT_ROOT / "artifacts" / "reports" / "final_comprehensive_results.csv",
         )
+        self.assertEqual(
+            paths.experiment_state_dir,
+            PROJECT_ROOT / "artifacts" / "experiments" / "state",
+        )
 
     def test_custom_roots_are_respected(self) -> None:
         paths = build_project_paths("/tmp/raw-data", "/tmp/custom-artifacts")
@@ -29,6 +33,9 @@ class ProjectPathsTest(unittest.TestCase):
         self.assertEqual(paths.raw_data_dir, Path("/tmp/raw-data"))
         self.assertEqual(paths.artifacts_dir, Path("/tmp/custom-artifacts"))
         self.assertEqual(paths.history_dir, Path("/tmp/custom-artifacts/runs/history"))
+        self.assertEqual(
+            paths.experiment_logs_dir, Path("/tmp/custom-artifacts/experiments/logs")
+        )
 
 
 if __name__ == "__main__":

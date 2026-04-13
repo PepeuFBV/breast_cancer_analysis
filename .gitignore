@@ -4,3 +4,6 @@ venv/
 
 # python cache
 __pycache__/
+
+# runtime pipeline dir
+*.egg-info/

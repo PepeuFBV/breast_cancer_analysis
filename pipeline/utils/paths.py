@@ -22,6 +22,12 @@ class ProjectPaths:
     reports_dir: Path
     final_report_path: Path
     loop_log_path: Path
+    experiments_dir: Path
+    experiment_state_dir: Path
+    experiment_logs_dir: Path
+    experiment_summary_dir: Path
+    experiment_control_dir: Path
+    experiment_task_dir: Path
 
     def ensure_artifact_dirs(self) -> "ProjectPaths":
         for directory in (
@@ -34,6 +40,12 @@ class ProjectPaths:
             self.predictions_dir,
             self.reports_dir,
             self.loop_log_path.parent,
+            self.experiments_dir,
+            self.experiment_state_dir,
+            self.experiment_logs_dir,
+            self.experiment_summary_dir,
+            self.experiment_control_dir,
+            self.experiment_task_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         return self
@@ -57,6 +69,7 @@ def build_project_paths(
     processed_splits_dir = processed_dir / "splits"
     runs_dir = artifacts_root / "runs"
     reports_dir = artifacts_root / "reports"
+    experiments_dir = artifacts_root / "experiments"
 
     return ProjectPaths(
         project_root=PROJECT_ROOT,
@@ -73,4 +86,10 @@ def build_project_paths(
         reports_dir=reports_dir,
         final_report_path=reports_dir / "final_comprehensive_results.csv",
         loop_log_path=runs_dir / "logs" / "train-loop.log",
+        experiments_dir=experiments_dir,
+        experiment_state_dir=experiments_dir / "state",
+        experiment_logs_dir=experiments_dir / "logs",
+        experiment_summary_dir=experiments_dir / "summary",
+        experiment_control_dir=experiments_dir / "control",
+        experiment_task_dir=experiments_dir / "tasks",
     )

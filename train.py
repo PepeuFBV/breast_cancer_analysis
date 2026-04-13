@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import argparse
 
+from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run reusable training experiments "
-            "for the breast cancer analysis project."
-        )
-    )
+ensure_tensorflow_wsl_gpu_env()
+
+
+def add_training_runtime_arguments(
+    parser: argparse.ArgumentParser,
+) -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default=None,
@@ -99,6 +99,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Always rerun experiments even when artifacts already exist.",
     )
+    return parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run reusable training experiments "
+            "for the breast cancer analysis project."
+        )
+    )
+    return add_training_runtime_arguments(parser)
     return parser
 
 

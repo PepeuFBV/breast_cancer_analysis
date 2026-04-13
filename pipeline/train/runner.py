@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -17,8 +16,6 @@ from pipeline.train.models import MODEL_BUILDERS, ModelBuilder, ModelRuntimeConf
 from pipeline.train.preprocessing import PreprocessingTask, iter_preprocessing_tasks
 from pipeline.utils.reproducibility import enforce_reproducibility
 from pipeline.utils.runtime import format_duration
-
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 
 @dataclass(frozen=True)
@@ -41,6 +38,40 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     model_runtime: dict[str, ModelRuntimeConfig] | None = None
     preprocessing_grids: dict[str, dict[str, list[Any]]] | None = None
+
+
+@dataclass(frozen=True)
+class TrainingTask:
+    model_name: str
+    preprocessing_task: PreprocessingTask
+
+    @property
+    def preproc_id(self) -> str:
+        return self.preprocessing_task.preproc_id
+
+    @property
+    def params(self) -> dict[str, Any]:
+        return self.preprocessing_task.params
+
+    @property
+    def param_display(self) -> str:
+        return self.preprocessing_task.param_display
+
+    @property
+    def param_id(self) -> str:
+        return self.preprocessing_task.param_id
+
+    @property
+    def param_json(self) -> str:
+        return self.preprocessing_task.param_json
+
+    @property
+    def is_combined(self) -> bool:
+        return self.preprocessing_task.is_combined
+
+    @property
+    def label(self) -> str:
+        return f"{self.preproc_id} [{self.model_name} - {self.param_display}]"
 
 
 @dataclass(frozen=True)
@@ -275,6 +306,18 @@ def _artifact_paths(
     return history_path, predictions_path
 
 
+def artifact_paths_for_task(
+    config: TrainingConfig, task: TrainingTask
+) -> tuple[Path, Path]:
+    return _artifact_paths(
+        config.history_dir,
+        config.predictions_dir,
+        task.preproc_id,
+        task.model_name,
+        task.param_id,
+    )
+
+
 def check_if_model_exists(
     history_dir: Path,
     predictions_dir: Path,
@@ -288,6 +331,16 @@ def check_if_model_exists(
     return history_path.exists() and predictions_path.exists()
 
 
+def task_has_existing_artifacts(config: TrainingConfig, task: TrainingTask) -> bool:
+    return check_if_model_exists(
+        config.history_dir,
+        config.predictions_dir,
+        task.preproc_id,
+        task.model_name,
+        task.param_id,
+    )
+
+
 def _metrics_at_best_epoch(result: TrainingRunResult) -> dict[str, Any]:
     best_epoch_index = result.best_epoch - 1
     return {
@@ -297,20 +350,10 @@ def _metrics_at_best_epoch(result: TrainingRunResult) -> dict[str, Any]:
     }
 
 
-def _save_run_result(
+def build_history_row(
     result: TrainingRunResult, config: TrainingConfig
-) -> tuple[Path, Path]:
-    history_path, predictions_path = _artifact_paths(
-        config.history_dir,
-        config.predictions_dir,
-        result.preproc_id,
-        result.model_name,
-        result.param_id,
-    )
-    history_path.parent.mkdir(parents=True, exist_ok=True)
-    predictions_path.parent.mkdir(parents=True, exist_ok=True)
-
-    history_row = {
+) -> dict[str, Any]:
+    return {
         "fold": result.fold,
         "best_val_acc": result.best_val_acc,
         "best_epoch": result.best_epoch,
@@ -327,7 +370,22 @@ def _save_run_result(
         **_metrics_at_best_epoch(result),
         **result.summary_metrics,
     }
-    pd.DataFrame([history_row]).to_csv(history_path, index=False)
+
+
+def save_run_result(
+    result: TrainingRunResult, config: TrainingConfig
+) -> tuple[Path, Path]:
+    history_path, predictions_path = _artifact_paths(
+        config.history_dir,
+        config.predictions_dir,
+        result.preproc_id,
+        result.model_name,
+        result.param_id,
+    )
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    predictions_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame([build_history_row(result, config)]).to_csv(history_path, index=False)
 
     predictions_df = result.predictions_df.copy()
     predictions_df["preproc_id"] = result.preproc_id
@@ -497,6 +555,83 @@ def _run_cross_validation(
     )
 
 
+def build_training_tasks(
+    config: TrainingConfig,
+    *,
+    model_builders: dict[str, ModelBuilder] | None = None,
+    preprocessing_tasks: Iterable[PreprocessingTask] | None = None,
+) -> list[TrainingTask]:
+    available_builders = model_builders or MODEL_BUILDERS
+    model_names = config.model_names or list(available_builders.keys())
+    resolved_preprocessing_tasks = (
+        list(preprocessing_tasks)
+        if preprocessing_tasks is not None
+        else list(
+            iter_preprocessing_tasks(
+                config.preprocessing_ids,
+                include_combinations=config.include_combinations,
+                param_grids=config.preprocessing_grids,
+            )
+        )
+    )
+
+    queue: list[TrainingTask] = []
+    for preprocessing_task in resolved_preprocessing_tasks:
+        for model_name in model_names:
+            if model_name not in available_builders:
+                raise ValueError(f"Unknown model name requested: {model_name}")
+            queue.append(
+                TrainingTask(
+                    model_name=model_name,
+                    preprocessing_task=preprocessing_task,
+                )
+            )
+    return queue
+
+
+def run_training_task(
+    task: TrainingTask,
+    config: TrainingConfig,
+    *,
+    train_df: pd.DataFrame | None = None,
+    test_df: pd.DataFrame | None = None,
+    model_builders: dict[str, ModelBuilder] | None = None,
+) -> TrainingRunResult:
+    available_builders = model_builders or MODEL_BUILDERS
+    if task.model_name not in available_builders:
+        raise ValueError(f"Unknown model name requested: {task.model_name}")
+
+    resolved_train_df = (
+        load_split_dataframe(config.train_split_path)
+        if train_df is None
+        else train_df.copy()
+    )
+    resolved_test_df = (
+        load_split_dataframe(config.test_split_path)
+        if test_df is None
+        else test_df.copy()
+    )
+    model_fn = available_builders[task.model_name]
+
+    if config.folds == 0:
+        return _run_fixed_split(
+            resolved_train_df,
+            resolved_test_df,
+            task.preprocessing_task,
+            task.model_name,
+            model_fn,
+            config,
+        )
+    return _run_cross_validation(
+        resolved_train_df,
+        resolved_test_df,
+        task.preprocessing_task,
+        task.model_name,
+        model_fn,
+        config,
+    )
+
+
 def run_training_pipeline(
     config: TrainingConfig,
     *,
@@ -507,76 +642,55 @@ def run_training_pipeline(
     config.predictions_dir.mkdir(parents=True, exist_ok=True)
     enforce_reproducibility(config.random_state)
 
+    available_builders = model_builders or MODEL_BUILDERS
     train_df = load_split_dataframe(config.train_split_path)
     test_df = load_split_dataframe(config.test_split_path)
-
-    available_builders = model_builders or MODEL_BUILDERS
-    model_names = config.model_names or list(available_builders.keys())
-    tasks = preprocessing_tasks or list(
-        iter_preprocessing_tasks(
-            config.preprocessing_ids,
-            include_combinations=config.include_combinations,
-            param_grids=config.preprocessing_grids,
-        )
+    execution_queue = build_training_tasks(
+        config,
+        model_builders=available_builders,
+        preprocessing_tasks=preprocessing_tasks,
     )
 
     summaries: list[TrainingRunResult] = []
-    for task in tasks:
-        print(f"\n=== Preprocessing: {task.preproc_id} ({task.param_display}) ===")
-        for model_name in model_names:
-            if model_name not in available_builders:
-                raise ValueError(f"Unknown model name requested: {model_name}")
-            model_fn = available_builders[model_name]
-            print(f"--> Current Model: {model_name} <--")
-            if config.run_skip and check_if_model_exists(
-                config.history_dir,
-                config.predictions_dir,
-                task.preproc_id,
-                model_name,
-                task.param_id,
-            ):
-                print(
-                    f"Skipping {task.preproc_id} [{model_name} - {task.param_display}] "
-                    "because artifacts already exist."
-                )
-                continue
+    current_preproc_id: str | None = None
+    for task in execution_queue:
+        if task.preproc_id != current_preproc_id:
+            current_preproc_id = task.preproc_id
+            print(f"\n=== Preprocessing: {task.preproc_id} ({task.param_display}) ===")
 
-            model_started_at = time.time()
-            try:
-                if config.folds == 0:
-                    result = _run_fixed_split(
-                        train_df, test_df, task, model_name, model_fn, config
-                    )
-                else:
-                    result = _run_cross_validation(
-                        train_df, test_df, task, model_name, model_fn, config
-                    )
-            except Exception as error:
-                if _is_resource_exhausted_error(error):
-                    print(
-                        "GPU memory error detected for "
-                        f"{task.preproc_id} [{model_name} - {task.param_display}]. "
-                        "Exiting for external restart..."
-                    )
-                    os._exit(1)
-                print(
-                    f"Error running {task.preproc_id} "
-                    f"[{model_name} - {task.param_display}]: {error}"
-                )
-                continue
+        print(f"--> Current Model: {task.model_name} <--")
+        if config.run_skip and task_has_existing_artifacts(config, task):
+            print(f"Skipping {task.label} because artifacts already exist.")
+            continue
 
-            history_path, predictions_path = _save_run_result(result, config)
-            summaries.append(result)
-            elapsed = time.time() - model_started_at
-            fold_label = f" fold {result.fold}" if result.fold else ""
-            run_label = f"{task.preproc_id} " f"[{model_name} - {task.param_display}]"
-            print(
-                f"Saved best run for {run_label}"
-                f"{fold_label} with val_accuracy="
-                f"{result.best_val_acc:.4f} at epoch {result.best_epoch}."
+        model_started_at = time.time()
+        try:
+            result = run_training_task(
+                task,
+                config,
+                train_df=train_df,
+                test_df=test_df,
+                model_builders=available_builders,
             )
-            print(f"History: {history_path}")
-            print(f"Predictions: {predictions_path}")
-            print(f"Time taken: {format_duration(elapsed)}\n")
+        except Exception as error:
+            prefix = (
+                "GPU memory error detected for"
+                if _is_resource_exhausted_error(error)
+                else "Error running"
+            )
+            print(f"{prefix} {task.label}: {error}")
+            continue
+
+        history_path, predictions_path = save_run_result(result, config)
+        summaries.append(result)
+        elapsed = time.time() - model_started_at
+        fold_label = f" fold {result.fold}" if result.fold else ""
+        print(
+            f"Saved best run for {task.label}{fold_label} with val_accuracy="
+            f"{result.best_val_acc:.4f} at epoch {result.best_epoch}."
+        )
+        print(f"History: {history_path}")
+        print(f"Predictions: {predictions_path}")
+        print(f"Time taken: {format_duration(elapsed)}\n")
 
     return summaries

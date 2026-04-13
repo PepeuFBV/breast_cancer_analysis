@@ -10,6 +10,8 @@ The project used to be notebook-first. The main workflow is now organized around
 
 - `preprocess.py` builds processed images and train/test splits
 - `train.py` runs the experiment grid and stores model artifacts
+- `run_experiments.py` executes the same grid through a resumable iterative runner
+- `experiment_dashboard.py` provides a local Run/Stop dashboard on top of the same runner
 - `evaluate.py` aggregates run outputs into a final report
 
 The notebooks in [`notebooks/`](notebooks) now consume those modules instead of owning the full pipeline logic.
@@ -19,10 +21,12 @@ The notebooks in [`notebooks/`](notebooks) now consume those modules instead of 
 ```text
 pipeline/
   data/
+  experiments/
   train/
   evaluate/
   utils/
 artifacts/
+  experiments/
   processed/
   runs/
   reports/
@@ -31,6 +35,8 @@ data/
 notebooks/
 preprocess.py
 train.py
+run_experiments.py
+experiment_dashboard.py
 evaluate.py
 ```
 
@@ -173,11 +179,57 @@ python train.py --folds 0
 python train.py --learning-rate 0.0005 --loss categorical_crossentropy
 ```
 
-For long unattended runs, use:
+### 2b. Run experiments iteratively with safe stop/resume
+
+The iterative runner builds an explicit queue of experiment combinations, persists status after every relevant transition, saves artifacts incrementally after each completed experiment, and resumes without repeating completed work by default.
+
+Command-line usage:
 
 ```bash
-bash scripts/run_models_loop.sh
+python run_experiments.py run
+python run_experiments.py launch
+python run_experiments.py status
+python run_experiments.py stop
 ```
+
+Behavior:
+
+- `run` executes in the foreground
+- `launch` starts the same resumable runner in the background
+- `stop` requests a graceful stop; the current experiment finishes before the queue pauses
+- `status` shows totals, failures, the current task, and where state/results are stored
+- completed experiments are skipped automatically on the next run
+- failed experiments stay paused unless you pass `--rerun-failed`
+- completed experiments are only rerun if you pass `--rerun-completed`
+
+Useful options:
+
+```bash
+python run_experiments.py run --rerun-failed
+python run_experiments.py run --models "custom cnn" --preprocessing none --no-combined-preprocessing
+python run_experiments.py reset
+python run_experiments.py reset --purge-results
+```
+
+The legacy [`scripts/run_models_loop.sh`](scripts/run_models_loop.sh) file remains only as a compatibility wrapper and now delegates to `run_experiments.py` instead of restarting the process in a fragile loop.
+
+### 2c. Local dashboard with Run and Stop buttons
+
+Start the local dashboard with:
+
+```bash
+streamlit run experiment_dashboard.py
+```
+
+The dashboard shows:
+
+- total queued combinations
+- completed, failed, pending and stopped counts
+- the current experiment, when one is running
+- the state file, consolidated summary file, history directory, predictions directory and runner log
+- Run, Stop, Refresh and Reset controls
+
+The dashboard launches the same `run_experiments.py` runner in the background, so CLI and UI stay consistent over the same persisted state.
 
 ### 3. Aggregate the report
 
@@ -214,8 +266,20 @@ Generated artifacts now live under `artifacts/`:
 - `artifacts/processed/splits/`
 - `artifacts/runs/history/`
 - `artifacts/runs/predictions/`
+- `artifacts/experiments/state/`
+- `artifacts/experiments/logs/`
+- `artifacts/experiments/summary/`
+- `artifacts/experiments/tasks/`
 - `artifacts/reports/evaluation_details/`
 - `artifacts/reports/final_comprehensive_results.csv`
+
+The iterative runner additionally persists:
+
+- queue and task state in `artifacts/experiments/state/runner_state.json`
+- graceful stop control in `artifacts/experiments/control/stop_requested.flag`
+- a consolidated per-task summary in `artifacts/experiments/summary/experiment_runs.csv`
+- per-task metadata snapshots in `artifacts/experiments/tasks/`
+- runner logs in `artifacts/experiments/logs/iterative-runner.log`
 
 The tracked file [`data/final_comprehensive_results.csv`](data/final_comprehensive_results.csv) is kept only as a historical artifact from the previous workflow.
 
