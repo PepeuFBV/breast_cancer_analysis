@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 VALID_LABELS = ("1", "2", "3", "4a", "4b", "4c", "5", "6")
 LABEL_MAPPING = {label: index for index, label in enumerate(VALID_LABELS)}
 DEFAULT_IMAGE_SIZE = (224, 224)

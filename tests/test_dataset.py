@@ -61,15 +61,21 @@ class DatasetHelpersTest(unittest.TestCase):
             }
         )
 
-        balanced = balance_df_trim_above(dataframe, samples_per_class=4, random_state=42)
+        balanced = balance_df_trim_above(
+            dataframe, samples_per_class=4, random_state=42
+        )
         split_result = split_dataset(balanced, test_size=0.5, random_state=42)
         train_groups = set(split_result.train_df["split_group_id"])
         test_groups = set(split_result.test_df["split_group_id"])
 
         self.assertEqual(len(balanced), 8)
         self.assertEqual(balanced["label"].value_counts().to_dict(), {"1": 4, "2": 4})
-        self.assertEqual(sorted(split_result.train_df["label"].unique().tolist()), ["1", "2"])
-        self.assertEqual(sorted(split_result.test_df["label"].unique().tolist()), ["1", "2"])
+        self.assertEqual(
+            sorted(split_result.train_df["label"].unique().tolist()), ["1", "2"]
+        )
+        self.assertEqual(
+            sorted(split_result.test_df["label"].unique().tolist()), ["1", "2"]
+        )
         self.assertTrue(train_groups.isdisjoint(test_groups))
         self.assertEqual(split_result.strategy, "stratified_group")
 

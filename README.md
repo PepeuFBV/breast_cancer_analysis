@@ -77,6 +77,20 @@ python -m pip install -e .
 
 The editable install is recommended so notebook imports like `from pipeline...` work cleanly.
 
+## Code Quality Checks
+
+With the environment activated, install the development tools and run the checks with:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m ruff check .
+python3 -m black .
+python3 -m black --check .
+python3 -m pytest
+```
+
+The linting and test suite are intentionally lightweight: they cover fast smoke tests, config validation, and stable helper behavior without requiring the real dataset, long training runs, or GPU access.
+
 ## Experiment Configuration
 
 The main experiment settings now live in [`configs/experiment.default.json`](configs/experiment.default.json). This file centralizes:

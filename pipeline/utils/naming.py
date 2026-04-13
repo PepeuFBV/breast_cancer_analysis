@@ -18,7 +18,9 @@ def _normalize_for_json(value: Any) -> Any:
 
 def _display_value(value: Any) -> str:
     if isinstance(value, dict):
-        inner = ", ".join(f"{key}:{_display_value(val)}" for key, val in sorted(value.items()))
+        inner = ", ".join(
+            f"{key}:{_display_value(val)}" for key, val in sorted(value.items())
+        )
         return "{" + inner + "}"
     if isinstance(value, tuple):
         return "(" + ",".join(_display_value(item) for item in value) + ")"
@@ -28,13 +30,17 @@ def _display_value(value: Any) -> str:
 
 
 def param_dict_to_json(params: dict[str, Any]) -> str:
-    return json.dumps(_normalize_for_json(params), sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        _normalize_for_json(params), sort_keys=True, separators=(",", ":")
+    )
 
 
 def param_dict_to_display(params: dict[str, Any]) -> str:
     if not params:
         return "default"
-    return ", ".join(f"{key}={_display_value(value)}" for key, value in sorted(params.items()))
+    return ", ".join(
+        f"{key}={_display_value(value)}" for key, value in sorted(params.items())
+    )
 
 
 def param_dict_to_file_id(params: dict[str, Any]) -> str:

@@ -4,17 +4,36 @@ import argparse
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate evaluation reports from reusable training artifacts.")
+    parser = argparse.ArgumentParser(
+        description="Generate evaluation reports from reusable training artifacts."
+    )
     parser.add_argument(
         "--config",
         default=None,
-        help="Path to an experiment JSON config. Defaults to configs/experiment.default.json.",
+        help=(
+            "Path to an experiment JSON config. "
+            "Defaults to configs/experiment.default.json."
+        ),
     )
-    parser.add_argument("--artifacts-dir", default=None, help="Artifacts root directory. Defaults to artifacts/.")
-    parser.add_argument("--history-dir", default=None, help="Override history directory.")
-    parser.add_argument("--predictions-dir", default=None, help="Override predictions directory.")
-    parser.add_argument("--output-path", default=None, help="Override final report CSV output path.")
-    parser.add_argument("--details-dir", default=None, help="Override directory for per-run evaluation artifacts.")
+    parser.add_argument(
+        "--artifacts-dir",
+        default=None,
+        help="Artifacts root directory. Defaults to artifacts/.",
+    )
+    parser.add_argument(
+        "--history-dir", default=None, help="Override history directory."
+    )
+    parser.add_argument(
+        "--predictions-dir", default=None, help="Override predictions directory."
+    )
+    parser.add_argument(
+        "--output-path", default=None, help="Override final report CSV output path."
+    )
+    parser.add_argument(
+        "--details-dir",
+        default=None,
+        help="Override directory for per-run evaluation artifacts.",
+    )
     parser.add_argument("--top-k", type=int, default=None)
     return parser
 
@@ -23,7 +42,9 @@ def build_evaluation_config_from_args(args: argparse.Namespace):
     from pipeline.config import load_experiment_config
 
     experiment_config = load_experiment_config(args.config)
-    project_paths = experiment_config.resolve_project_paths(artifacts_dir=args.artifacts_dir).ensure_artifact_dirs()
+    project_paths = experiment_config.resolve_project_paths(
+        artifacts_dir=args.artifacts_dir
+    ).ensure_artifact_dirs()
     return experiment_config.build_evaluation_config(
         project_paths,
         history_dir=args.history_dir,

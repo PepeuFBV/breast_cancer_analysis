@@ -13,8 +13,16 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"DatasetPreparationArtifacts", "DatasetPreparationConfig", "prepare_dataset"}:
-        from pipeline.data.dataset import DatasetPreparationArtifacts, DatasetPreparationConfig, prepare_dataset
+    if name in {
+        "DatasetPreparationArtifacts",
+        "DatasetPreparationConfig",
+        "prepare_dataset",
+    }:
+        from pipeline.data.dataset import (
+            DatasetPreparationArtifacts,
+            DatasetPreparationConfig,
+            prepare_dataset,
+        )
 
         exports = {
             "DatasetPreparationArtifacts": DatasetPreparationArtifacts,

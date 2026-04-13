@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -44,8 +43,14 @@ def build_project_paths(
     raw_data_dir: str | Path | None = None,
     artifacts_dir: str | Path | None = None,
 ) -> ProjectPaths:
-    raw_data_root = Path(raw_data_dir) if raw_data_dir else PROJECT_ROOT / "data" / "INbreast Release 1.0"
-    artifacts_root = Path(artifacts_dir) if artifacts_dir else PROJECT_ROOT / "artifacts"
+    raw_data_root = (
+        Path(raw_data_dir)
+        if raw_data_dir
+        else PROJECT_ROOT / "data" / "INbreast Release 1.0"
+    )
+    artifacts_root = (
+        Path(artifacts_dir) if artifacts_dir else PROJECT_ROOT / "artifacts"
+    )
 
     processed_dir = artifacts_root / "processed"
     processed_images_dir = processed_dir / "images"

@@ -25,7 +25,8 @@ def _resolve_dropout_rates(
         return defaults
     if len(runtime.dropout_rates) != len(defaults):
         raise ValueError(
-            f"Expected {len(defaults)} dropout values, got {len(runtime.dropout_rates)}."
+            f"Expected {len(defaults)} dropout values, "
+            f"got {len(runtime.dropout_rates)}."
         )
     return runtime.dropout_rates
 
@@ -36,7 +37,9 @@ def _resolve_dense_units(runtime: ModelRuntimeConfig | None, *, default: int) ->
     return runtime.dense_units
 
 
-def _resolve_dropout_rate(runtime: ModelRuntimeConfig | None, *, default: float) -> float:
+def _resolve_dropout_rate(
+    runtime: ModelRuntimeConfig | None, *, default: float
+) -> float:
     if runtime is None or runtime.dropout_rate is None:
         return default
     return runtime.dropout_rate
@@ -136,7 +139,9 @@ def _build_application_model(
     resolved_dense_units = _resolve_dense_units(runtime, default=dense_units)
     resolved_dropout_rate = _resolve_dropout_rate(runtime, default=dropout_rate)
 
-    base_model = application_cls(weights="imagenet", include_top=False, input_tensor=Input(shape=input_shape))
+    base_model = application_cls(
+        weights="imagenet", include_top=False, input_tensor=Input(shape=input_shape)
+    )
     base_model.trainable = False
 
     x = base_model.output
