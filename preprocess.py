@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--augmentations-per-image", type=int, default=None)
     parser.add_argument("--samples-per-class", type=int, default=None)
     parser.add_argument("--test-size", type=float, default=None)
+    parser.add_argument("--random-state", type=int, default=None)
     parser.add_argument("--resize-width", type=int, default=None)
     parser.add_argument("--resize-height", type=int, default=None)
     return parser
@@ -67,25 +68,33 @@ def build_dataset_config_from_args(args: argparse.Namespace):
         augmentations_per_image=args.augmentations_per_image,
         samples_per_class=args.samples_per_class,
         test_size=args.test_size,
+        random_state=args.random_state,
     )
 
 
 def main() -> int:
     from pipeline.data.dataset import prepare_dataset
+    from pipeline.utils.reproducibility import enforce_reproducibility
 
     args = build_parser().parse_args()
     config = build_dataset_config_from_args(args)
     validate_raw_dataset_layout(config.raw_data_dir)
+    enforce_reproducibility(config.random_state)
     artifacts = prepare_dataset(config)
     print(f"Prepared dataset from: {config.raw_data_dir}")
     print(f"Images directory: {artifacts.images_output_dir}")
     print(f"Train split: {artifacts.train_split_path}")
     print(f"Test split: {artifacts.test_split_path}")
+    print(f"Split manifest: {artifacts.split_manifest_path}")
     print(f"Filtered metadata rows: {artifacts.filtered_metadata_rows}")
     print(f"Generated images: {artifacts.total_generated_images}")
-    print(f"Balanced images: {artifacts.balanced_images}")
+    print(f"Balanced train images: {artifacts.balanced_train_images}")
+    print(f"Train original samples: {artifacts.train_original_samples}")
+    print(f"Test original samples: {artifacts.test_original_samples}")
     print(f"Train samples: {artifacts.train_samples}")
     print(f"Test samples: {artifacts.test_samples}")
+    print(f"Split strategy: {artifacts.split_strategy}")
+    print(f"Split group columns: {', '.join(artifacts.split_group_columns)}")
     return 0
 
 

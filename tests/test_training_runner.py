@@ -29,6 +29,7 @@ class _FakeModel:
     def fit(self, *args, **kwargs):
         self.captures["fit_batch_size"] = kwargs.get("batch_size")
         self.captures["fit_validation_shape"] = tuple(kwargs["validation_data"][0].shape[1:])
+        self.captures["fit_validation_count"] = int(kwargs["validation_data"][0].shape[0])
         return _FakeHistory(self.value)
 
     def predict(self, model_inputs, batch_size=8, verbose=0):
@@ -52,7 +53,7 @@ class TrainingRunnerTest(unittest.TestCase):
                 image_path = image_dir / f"image_{index}.png"
                 cv2.imwrite(str(image_path), np.full((8, 8), index, dtype="uint8"))
                 image_paths.append(str(image_path))
-                labels.append("1" if index < 4 else "2")
+                labels.append("1" if index in {0, 1, 4, 5} else "2")
 
             train_df = pd.DataFrame({"image_path": image_paths[:4], "label": labels[:4]})
             test_df = pd.DataFrame({"image_path": image_paths[4:], "label": labels[4:]})
@@ -103,6 +104,11 @@ class TrainingRunnerTest(unittest.TestCase):
             history_df = pd.read_csv(history_path)
             self.assertEqual(int(history_df.iloc[0]["fold"]), 2)
             self.assertAlmostEqual(float(history_df.iloc[0]["best_val_acc"]), 0.94)
+            self.assertEqual(history_df.iloc[0]["selection_strategy"], "cross_validation")
+            self.assertIn("cv_mean_val_acc", history_df.columns)
+
+            predictions_df = pd.read_csv(predictions_path)
+            self.assertEqual(len(predictions_df), len(test_df))
 
     def test_training_uses_configured_runtime_and_optimizer_params(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -112,14 +118,14 @@ class TrainingRunnerTest(unittest.TestCase):
 
             image_paths = []
             labels = []
-            for index in range(4):
+            for index in range(8):
                 image_path = image_dir / f"image_{index}.png"
                 cv2.imwrite(str(image_path), np.full((8, 8), index, dtype="uint8"))
                 image_paths.append(str(image_path))
-                labels.append("1" if index < 2 else "2")
+                labels.append("1" if index < 4 else "2")
 
-            train_df = pd.DataFrame({"image_path": image_paths[:2], "label": labels[:2]})
-            test_df = pd.DataFrame({"image_path": image_paths[2:], "label": labels[2:]})
+            train_df = pd.DataFrame({"image_path": image_paths[:6], "label": labels[:6]})
+            test_df = pd.DataFrame({"image_path": image_paths[6:], "label": labels[6:]})
             train_path = root / "train.csv"
             test_path = root / "test.csv"
             train_df.to_csv(train_path, index=False)
@@ -149,6 +155,7 @@ class TrainingRunnerTest(unittest.TestCase):
                 history_dir=root / "history",
                 predictions_dir=root / "predictions",
                 folds=0,
+                validation_size=0.5,
                 epochs=2,
                 batch_size=8,
                 learning_rate=5e-4,
@@ -178,6 +185,14 @@ class TrainingRunnerTest(unittest.TestCase):
             self.assertEqual(captures["fit_batch_size"], 3)
             self.assertEqual(captures["predict_batch_size"], 3)
             self.assertEqual(captures["fit_validation_shape"], (8, 8, 3))
+            self.assertEqual(captures["fit_validation_count"], 3)
+
+            history_path = root / "history" / "none" / "resnet" / "history_default.csv"
+            predictions_path = root / "predictions" / "none" / "resnet" / "default.csv"
+            history_df = pd.read_csv(history_path)
+            predictions_df = pd.read_csv(predictions_path)
+            self.assertEqual(history_df.iloc[0]["selection_strategy"], "holdout_validation")
+            self.assertEqual(len(predictions_df), len(test_df))
 
 
 if __name__ == "__main__":

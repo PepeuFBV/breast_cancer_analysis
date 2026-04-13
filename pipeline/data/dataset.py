@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import albumentations as A
 import cv2
 import pandas as pd
 import pydicom
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold, train_test_split
 from sklearn.utils import resample
 
 from pipeline.data.constants import (
@@ -49,17 +50,34 @@ class DatasetPreparationConfig:
     def test_split_path(self) -> Path:
         return self.splits_output_dir / "test_split.csv"
 
+    @property
+    def split_manifest_path(self) -> Path:
+        return self.splits_output_dir / "split_summary.json"
+
 
 @dataclass(frozen=True)
 class DatasetPreparationArtifacts:
     train_split_path: Path
     test_split_path: Path
     images_output_dir: Path
+    split_manifest_path: Path
     filtered_metadata_rows: int
     total_generated_images: int
-    balanced_images: int
+    balanced_train_images: int
+    train_original_samples: int
+    test_original_samples: int
     train_samples: int
     test_samples: int
+    split_strategy: str
+    split_group_columns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DatasetSplitResult:
+    train_df: pd.DataFrame
+    test_df: pd.DataFrame
+    strategy: str
+    group_columns: tuple[str, ...]
 
 
 def normalize_file_number(value: object) -> str:
@@ -78,6 +96,64 @@ def load_metadata(metadata_path: Path) -> pd.DataFrame:
     dataframe["Bi-Rads"] = dataframe["Bi-Rads"].astype(str).str.strip().str.lower()
     dataframe = dataframe[dataframe["Bi-Rads"].isin(VALID_LABELS)].reset_index(drop=True)
     return dataframe
+
+
+def _normalize_column_name(column_name: str) -> str:
+    return "".join(character for character in column_name.lower() if character.isalnum())
+
+
+def _resolve_metadata_column(metadata: pd.DataFrame, *aliases: str) -> str | None:
+    normalized_lookup = {_normalize_column_name(column): column for column in metadata.columns}
+    for alias in aliases:
+        resolved = normalized_lookup.get(_normalize_column_name(alias))
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _normalize_group_value(value: object) -> str:
+    if pd.isna(value):
+        return "missing"
+    normalized = str(value).strip()
+    return normalized if normalized else "missing"
+
+
+def annotate_split_groups(metadata: pd.DataFrame) -> tuple[pd.DataFrame, str, tuple[str, ...]]:
+    annotated = metadata.copy()
+    annotated["source_id"] = annotated["File Name"].map(normalize_file_number)
+
+    patient_column = _resolve_metadata_column(
+        annotated,
+        "Patient ID",
+        "Patient_ID",
+        "Patient Number",
+        "Patient",
+    )
+    exam_columns = tuple(
+        column
+        for column in (
+            _resolve_metadata_column(annotated, "Accession Number", "Exam ID", "Exam_ID", "Study ID"),
+            _resolve_metadata_column(annotated, "Acquisition Date", "Study Date", "Exam Date"),
+            _resolve_metadata_column(annotated, "Laterality", "Side"),
+            _resolve_metadata_column(annotated, "View", "View Position"),
+        )
+        if column is not None
+    )
+
+    if patient_column is not None:
+        annotated["patient_id"] = annotated[patient_column].map(_normalize_group_value)
+        annotated["split_group_id"] = annotated["patient_id"]
+        return annotated, "patient", (patient_column,)
+
+    if exam_columns:
+        annotated["split_group_id"] = annotated.apply(
+            lambda row: "|".join(_normalize_group_value(row[column]) for column in exam_columns),
+            axis=1,
+        )
+        return annotated, "exam", exam_columns
+
+    annotated["split_group_id"] = annotated["source_id"]
+    return annotated, "image", ("File Name",)
 
 
 def build_dicom_mapping(dicom_dir: Path) -> dict[str, str]:
@@ -115,17 +191,21 @@ def normalize_and_resize_dicom(dicom_path: Path, resize_dim: tuple[int, int]) ->
     return resized, dataset
 
 
-def export_augmented_dataset(
+def export_image_dataset(
     metadata: pd.DataFrame,
     dicom_mapping: dict[str, str],
     config: DatasetPreparationConfig,
+    *,
+    split_name: str,
+    include_augmentations: bool,
 ) -> pd.DataFrame:
-    config.images_output_dir.mkdir(parents=True, exist_ok=True)
-    augment = create_augmentation_pipeline()
+    split_output_dir = config.images_output_dir / split_name
+    split_output_dir.mkdir(parents=True, exist_ok=True)
+    augment = create_augmentation_pipeline() if include_augmentations else None
 
-    generated_rows: list[dict[str, str]] = []
+    generated_rows: list[dict[str, object]] = []
     for _, row in metadata.iterrows():
-        file_number = row["File Name"]
+        file_number = row["source_id"]
         label = row["Bi-Rads"]
         dicom_name = dicom_mapping.get(file_number)
         if not dicom_name:
@@ -135,18 +215,40 @@ def export_augmented_dataset(
         image, _ = normalize_and_resize_dicom(dicom_path, config.resize_dim)
         image_uint8 = (image * 255).astype("uint8")
 
-        original_path = config.images_output_dir / f"{file_number}_orig.png"
+        original_path = split_output_dir / f"{file_number}_orig.png"
         cv2.imwrite(str(original_path), image_uint8)
-        generated_rows.append({"image_path": str(original_path), "label": label})
+
+        base_row: dict[str, object] = {
+            "image_path": str(original_path),
+            "label": label,
+            "source_id": file_number,
+            "split_group_id": row["split_group_id"],
+            "split": split_name,
+            "is_augmented": False,
+            "augmentation_index": -1,
+        }
+        if "patient_id" in row.index:
+            base_row["patient_id"] = row["patient_id"]
+        generated_rows.append(base_row)
+
+        if not include_augmentations or augment is None:
+            continue
 
         for index in range(config.augmentations_per_image):
             augmented = augment(image=image)["image"]
             if getattr(augmented, "ndim", 2) == 3 and augmented.shape[2] == 1:
                 augmented = augmented.squeeze(-1)
             augmented_uint8 = (augmented * 255).astype("uint8")
-            augmented_path = config.images_output_dir / f"{file_number}_aug{index}.png"
+            augmented_path = split_output_dir / f"{file_number}_aug{index}.png"
             cv2.imwrite(str(augmented_path), augmented_uint8)
-            generated_rows.append({"image_path": str(augmented_path), "label": label})
+            generated_rows.append(
+                {
+                    **base_row,
+                    "image_path": str(augmented_path),
+                    "is_augmented": True,
+                    "augmentation_index": index,
+                }
+            )
 
     return pd.DataFrame(generated_rows)
 
@@ -171,14 +273,146 @@ def balance_df_trim_above(dataframe: pd.DataFrame, samples_per_class: int, rando
     return pd.concat(balanced_frames, ignore_index=True)
 
 
-def split_dataset(dataframe: pd.DataFrame, *, test_size: float, random_state: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _estimate_split_count(test_size: float, total_groups: int) -> int:
+    estimated = int(round(1.0 / test_size)) if test_size > 0 else 2
+    return max(2, min(total_groups, estimated))
+
+
+def _split_with_groups(
+    dataframe: pd.DataFrame,
+    *,
+    label_column: str,
+    group_column: str,
+    test_size: float,
+    random_state: int,
+) -> DatasetSplitResult | None:
+    groups = dataframe[group_column].astype(str)
+    if groups.nunique() < 2:
+        return None
+
+    labels = dataframe[label_column]
+    expected_test_samples = len(dataframe) * test_size
+    n_splits = _estimate_split_count(test_size, groups.nunique())
+
+    try:
+        splitter = StratifiedGroupKFold(
+            n_splits=n_splits,
+            shuffle=True,
+            random_state=random_state,
+        )
+        selected_split: tuple[list[int], list[int]] | None = None
+        selected_delta: float | None = None
+        for train_idx, test_idx in splitter.split(dataframe, labels, groups):
+            current_delta = abs(len(test_idx) - expected_test_samples)
+            if selected_delta is None or current_delta < selected_delta:
+                selected_split = (train_idx.tolist(), test_idx.tolist())
+                selected_delta = current_delta
+
+        if selected_split is not None:
+            train_idx, test_idx = selected_split
+            return DatasetSplitResult(
+                train_df=dataframe.iloc[train_idx].reset_index(drop=True),
+                test_df=dataframe.iloc[test_idx].reset_index(drop=True),
+                strategy="stratified_group",
+                group_columns=(group_column,),
+            )
+    except ValueError:
+        pass
+
+    try:
+        splitter = GroupShuffleSplit(
+            n_splits=1,
+            test_size=test_size,
+            random_state=random_state,
+        )
+        train_idx, test_idx = next(splitter.split(dataframe, labels, groups))
+        return DatasetSplitResult(
+            train_df=dataframe.iloc[train_idx].reset_index(drop=True),
+            test_df=dataframe.iloc[test_idx].reset_index(drop=True),
+            strategy="group_shuffle",
+            group_columns=(group_column,),
+        )
+    except ValueError:
+        return None
+
+
+def split_dataset(
+    dataframe: pd.DataFrame,
+    *,
+    test_size: float,
+    random_state: int,
+    label_column: str = "label",
+    group_column: str | None = None,
+) -> DatasetSplitResult:
+    resolved_group_column = group_column if group_column in dataframe.columns else None
+    if resolved_group_column is None and "split_group_id" in dataframe.columns:
+        resolved_group_column = "split_group_id"
+
+    if resolved_group_column is not None:
+        grouped_split = _split_with_groups(
+            dataframe,
+            label_column=label_column,
+            group_column=resolved_group_column,
+            test_size=test_size,
+            random_state=random_state,
+        )
+        if grouped_split is not None:
+            return grouped_split
+
     train_df, test_df = train_test_split(
-        dataframe[["image_path", "label"]],
+        dataframe,
         test_size=test_size,
         random_state=random_state,
-        stratify=dataframe["label"],
+        stratify=dataframe[label_column],
     )
-    return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
+    return DatasetSplitResult(
+        train_df=train_df.reset_index(drop=True),
+        test_df=test_df.reset_index(drop=True),
+        strategy="image_stratified",
+        group_columns=(tuple() if resolved_group_column is None else (resolved_group_column,)),
+    )
+
+
+def _class_distribution(dataframe: pd.DataFrame, label_column: str) -> dict[str, int]:
+    return {
+        str(label): int(count)
+        for label, count in dataframe[label_column].value_counts().sort_index().items()
+    }
+
+
+def _build_split_manifest(
+    *,
+    config: DatasetPreparationConfig,
+    train_metadata: pd.DataFrame,
+    test_metadata: pd.DataFrame,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    split_strategy: str,
+    split_group_columns: tuple[str, ...],
+) -> dict[str, object]:
+    train_source_ids = set(train_metadata["source_id"].astype(str))
+    test_source_ids = set(test_metadata["source_id"].astype(str))
+    train_group_ids = set(train_metadata["split_group_id"].astype(str))
+    test_group_ids = set(test_metadata["split_group_id"].astype(str))
+    return {
+        "random_state": config.random_state,
+        "test_size": config.test_size,
+        "split_strategy": split_strategy,
+        "split_group_columns": list(split_group_columns),
+        "augmentations_per_image": config.augmentations_per_image,
+        "samples_per_class": config.samples_per_class,
+        "filtered_metadata_rows": int(len(train_metadata) + len(test_metadata)),
+        "train_original_samples": int(len(train_metadata)),
+        "test_original_samples": int(len(test_metadata)),
+        "train_images_after_balancing": int(len(train_df)),
+        "test_images": int(len(test_df)),
+        "train_label_distribution_original": _class_distribution(train_metadata, "Bi-Rads"),
+        "test_label_distribution_original": _class_distribution(test_metadata, "Bi-Rads"),
+        "train_label_distribution_images": _class_distribution(train_df, "label"),
+        "test_label_distribution_images": _class_distribution(test_df, "label"),
+        "shared_source_ids": int(len(train_source_ids & test_source_ids)),
+        "shared_split_group_ids": int(len(train_group_ids & test_group_ids)),
+    }
 
 
 def prepare_dataset(config: DatasetPreparationConfig) -> DatasetPreparationArtifacts:
@@ -186,29 +420,63 @@ def prepare_dataset(config: DatasetPreparationConfig) -> DatasetPreparationArtif
     config.splits_output_dir.mkdir(parents=True, exist_ok=True)
 
     metadata = load_metadata(config.metadata_path)
+    metadata, split_group_level, split_group_columns = annotate_split_groups(metadata)
     dicom_mapping = build_dicom_mapping(config.dicom_dir)
-    augmented_df = export_augmented_dataset(metadata, dicom_mapping, config)
-    balanced_df = balance_df_trim_above(
-        augmented_df,
+    metadata_split = split_dataset(
+        metadata,
+        test_size=config.test_size,
+        random_state=config.random_state,
+        label_column="Bi-Rads",
+        group_column="split_group_id",
+    )
+
+    train_generated_df = export_image_dataset(
+        metadata_split.train_df,
+        dicom_mapping,
+        config,
+        split_name="train",
+        include_augmentations=True,
+    )
+    test_generated_df = export_image_dataset(
+        metadata_split.test_df,
+        dicom_mapping,
+        config,
+        split_name="test",
+        include_augmentations=False,
+    )
+    balanced_train_df = balance_df_trim_above(
+        train_generated_df,
         samples_per_class=config.samples_per_class,
         random_state=config.random_state,
     )
-    train_df, test_df = split_dataset(
-        balanced_df,
-        test_size=config.test_size,
-        random_state=config.random_state,
-    )
 
-    train_df.to_csv(config.train_split_path, index=False)
-    test_df.to_csv(config.test_split_path, index=False)
+    balanced_train_df.to_csv(config.train_split_path, index=False)
+    test_generated_df.to_csv(config.test_split_path, index=False)
+
+    split_strategy = f"grouped_{split_group_level}" if split_group_level != "image" else metadata_split.strategy
+    split_manifest = _build_split_manifest(
+        config=config,
+        train_metadata=metadata_split.train_df,
+        test_metadata=metadata_split.test_df,
+        train_df=balanced_train_df,
+        test_df=test_generated_df,
+        split_strategy=split_strategy,
+        split_group_columns=split_group_columns,
+    )
+    config.split_manifest_path.write_text(json.dumps(split_manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     return DatasetPreparationArtifacts(
         train_split_path=config.train_split_path,
         test_split_path=config.test_split_path,
         images_output_dir=config.images_output_dir,
+        split_manifest_path=config.split_manifest_path,
         filtered_metadata_rows=len(metadata),
-        total_generated_images=len(augmented_df),
-        balanced_images=len(balanced_df),
-        train_samples=len(train_df),
-        test_samples=len(test_df),
+        total_generated_images=len(train_generated_df) + len(test_generated_df),
+        balanced_train_images=len(balanced_train_df),
+        train_original_samples=len(metadata_split.train_df),
+        test_original_samples=len(metadata_split.test_df),
+        train_samples=len(balanced_train_df),
+        test_samples=len(test_generated_df),
+        split_strategy=split_strategy,
+        split_group_columns=split_group_columns,
     )

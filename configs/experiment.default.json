@@ -13,6 +13,7 @@
     "augmentations_per_image": 3,
     "samples_per_class": 35,
     "test_size": 0.25,
+    "random_state": 42,
     "preprocessing_grid": {
       "none": {},
       "denoise": {
@@ -67,11 +68,13 @@
     "preprocessing_ids": null,
     "include_combinations": true,
     "folds": 4,
+    "validation_size": 0.2,
     "batch_size": 8,
     "epochs": 15,
     "learning_rate": 0.0001,
     "loss": "categorical_crossentropy",
-    "run_skip": true
+    "run_skip": true,
+    "random_state": 42
   },
   "models": {
     "custom cnn": {

@@ -17,7 +17,10 @@ class ExperimentConfigTest(unittest.TestCase):
 
         self.assertEqual(config.source_path, DEFAULT_EXPERIMENT_CONFIG_PATH)
         self.assertEqual(config.preprocess.image_size, (224, 224))
+        self.assertEqual(config.preprocess.random_state, 42)
         self.assertEqual(config.train.learning_rate, 1e-4)
+        self.assertEqual(config.train.validation_size, 0.2)
+        self.assertEqual(config.train.random_state, 42)
         self.assertIn("custom cnn", config.models)
         self.assertEqual(config.models["custom cnn"].input_channels, 1)
 
@@ -54,6 +57,10 @@ class ExperimentConfigTest(unittest.TestCase):
                 "3",
                 "--batch-size",
                 "2",
+                "--validation-size",
+                "0.3",
+                "--random-state",
+                "99",
                 "--no-combined-preprocessing",
             ]
         )
@@ -62,25 +69,38 @@ class ExperimentConfigTest(unittest.TestCase):
 
         self.assertEqual(config.epochs, 3)
         self.assertEqual(config.batch_size, 2)
+        self.assertEqual(config.validation_size, 0.3)
+        self.assertEqual(config.random_state, 99)
         self.assertFalse(config.include_combinations)
         self.assertEqual(config.learning_rate, 1e-4)
 
     def test_preprocess_cli_uses_config_defaults(self) -> None:
         parser = build_preprocess_parser()
-        args = parser.parse_args(["--config", "configs/experiment.default.json"])
+        args = parser.parse_args(["--config", "configs/experiment.default.json", "--random-state", "123"])
 
         config = build_dataset_config_from_args(args)
 
         self.assertEqual(config.resize_dim, (224, 224))
         self.assertEqual(config.augmentations_per_image, 3)
+        self.assertEqual(config.random_state, 123)
 
     def test_evaluate_cli_overrides_top_k(self) -> None:
         parser = build_evaluate_parser()
-        args = parser.parse_args(["--config", "configs/experiment.default.json", "--top-k", "5"])
+        args = parser.parse_args(
+            [
+                "--config",
+                "configs/experiment.default.json",
+                "--top-k",
+                "5",
+                "--details-dir",
+                "artifacts/reports/custom-details",
+            ]
+        )
 
         config = build_evaluation_config_from_args(args)
 
         self.assertEqual(config.top_k, 5)
+        self.assertTrue(str(config.details_dir).endswith("artifacts/reports/custom-details"))
 
 
 if __name__ == "__main__":
