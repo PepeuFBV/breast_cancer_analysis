@@ -28,8 +28,12 @@ class _FakeModel:
 
     def fit(self, *args, **kwargs):
         self.captures["fit_batch_size"] = kwargs.get("batch_size")
-        self.captures["fit_validation_shape"] = tuple(kwargs["validation_data"][0].shape[1:])
-        self.captures["fit_validation_count"] = int(kwargs["validation_data"][0].shape[0])
+        self.captures["fit_validation_shape"] = tuple(
+            kwargs["validation_data"][0].shape[1:]
+        )
+        self.captures["fit_validation_count"] = int(
+            kwargs["validation_data"][0].shape[0]
+        )
         return _FakeHistory(self.value)
 
     def predict(self, model_inputs, batch_size=8, verbose=0):
@@ -55,7 +59,9 @@ class TrainingRunnerTest(unittest.TestCase):
                 image_paths.append(str(image_path))
                 labels.append("1" if index in {0, 1, 4, 5} else "2")
 
-            train_df = pd.DataFrame({"image_path": image_paths[:4], "label": labels[:4]})
+            train_df = pd.DataFrame(
+                {"image_path": image_paths[:4], "label": labels[:4]}
+            )
             test_df = pd.DataFrame({"image_path": image_paths[4:], "label": labels[4:]})
             train_path = root / "train.csv"
             test_path = root / "test.csv"
@@ -64,7 +70,13 @@ class TrainingRunnerTest(unittest.TestCase):
 
             values = iter([0.71, 0.94])
 
-            def fake_builder(input_shape, num_classes, loss="categorical_crossentropy", learning_rate=1e-4, runtime=None):
+            def fake_builder(
+                input_shape,
+                num_classes,
+                loss="categorical_crossentropy",
+                learning_rate=1e-4,
+                runtime=None,
+            ):
                 return _FakeModel(next(values))
 
             task = PreprocessingTask(
@@ -96,15 +108,21 @@ class TrainingRunnerTest(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].fold, 2)
-            history_path = root / "history" / "none" / "custom cnn" / "history_default.csv"
-            predictions_path = root / "predictions" / "none" / "custom cnn" / "default.csv"
+            history_path = (
+                root / "history" / "none" / "custom cnn" / "history_default.csv"
+            )
+            predictions_path = (
+                root / "predictions" / "none" / "custom cnn" / "default.csv"
+            )
             self.assertTrue(history_path.exists())
             self.assertTrue(predictions_path.exists())
 
             history_df = pd.read_csv(history_path)
             self.assertEqual(int(history_df.iloc[0]["fold"]), 2)
             self.assertAlmostEqual(float(history_df.iloc[0]["best_val_acc"]), 0.94)
-            self.assertEqual(history_df.iloc[0]["selection_strategy"], "cross_validation")
+            self.assertEqual(
+                history_df.iloc[0]["selection_strategy"], "cross_validation"
+            )
             self.assertIn("cv_mean_val_acc", history_df.columns)
 
             predictions_df = pd.read_csv(predictions_path)
@@ -124,7 +142,9 @@ class TrainingRunnerTest(unittest.TestCase):
                 image_paths.append(str(image_path))
                 labels.append("1" if index < 4 else "2")
 
-            train_df = pd.DataFrame({"image_path": image_paths[:6], "label": labels[:6]})
+            train_df = pd.DataFrame(
+                {"image_path": image_paths[:6], "label": labels[:6]}
+            )
             test_df = pd.DataFrame({"image_path": image_paths[6:], "label": labels[6:]})
             train_path = root / "train.csv"
             test_path = root / "test.csv"
@@ -133,7 +153,13 @@ class TrainingRunnerTest(unittest.TestCase):
 
             captures: dict[str, object] = {}
 
-            def fake_builder(input_shape, num_classes, loss="categorical_crossentropy", learning_rate=1e-4, runtime=None):
+            def fake_builder(
+                input_shape,
+                num_classes,
+                loss="categorical_crossentropy",
+                learning_rate=1e-4,
+                runtime=None,
+            ):
                 captures["input_shape"] = input_shape
                 captures["loss"] = loss
                 captures["learning_rate"] = learning_rate
@@ -191,7 +217,9 @@ class TrainingRunnerTest(unittest.TestCase):
             predictions_path = root / "predictions" / "none" / "resnet" / "default.csv"
             history_df = pd.read_csv(history_path)
             predictions_df = pd.read_csv(predictions_path)
-            self.assertEqual(history_df.iloc[0]["selection_strategy"], "holdout_validation")
+            self.assertEqual(
+                history_df.iloc[0]["selection_strategy"], "holdout_validation"
+            )
             self.assertEqual(len(predictions_df), len(test_df))
 
 

@@ -11,9 +11,17 @@ class ProjectPathsTest(unittest.TestCase):
         paths = build_project_paths()
 
         self.assertEqual(paths.project_root, PROJECT_ROOT)
-        self.assertEqual(paths.raw_data_dir, PROJECT_ROOT / "data" / "INbreast Release 1.0")
-        self.assertEqual(paths.train_split_path, PROJECT_ROOT / "artifacts" / "processed" / "splits" / "train_split.csv")
-        self.assertEqual(paths.final_report_path, PROJECT_ROOT / "artifacts" / "reports" / "final_comprehensive_results.csv")
+        self.assertEqual(
+            paths.raw_data_dir, PROJECT_ROOT / "data" / "INbreast Release 1.0"
+        )
+        self.assertEqual(
+            paths.train_split_path,
+            PROJECT_ROOT / "artifacts" / "processed" / "splits" / "train_split.csv",
+        )
+        self.assertEqual(
+            paths.final_report_path,
+            PROJECT_ROOT / "artifacts" / "reports" / "final_comprehensive_results.csv",
+        )
 
     def test_custom_roots_are_respected(self) -> None:
         paths = build_project_paths("/tmp/raw-data", "/tmp/custom-artifacts")

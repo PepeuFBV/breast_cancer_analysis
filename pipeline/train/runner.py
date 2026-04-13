@@ -18,7 +18,6 @@ from pipeline.train.preprocessing import PreprocessingTask, iter_preprocessing_t
 from pipeline.utils.reproducibility import enforce_reproducibility
 from pipeline.utils.runtime import format_duration
 
-
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 
@@ -69,12 +68,16 @@ def load_split_dataframe(path: Path) -> pd.DataFrame:
     mapped_labels = raw_labels.map(LABEL_MAPPING)
     if mapped_labels.isna().any():
         invalid_rows = raw_labels[mapped_labels.isna()]
-        raise ValueError(f"Invalid labels found in split {path}: {sorted(invalid_rows.unique())}")
+        raise ValueError(
+            f"Invalid labels found in split {path}: {sorted(invalid_rows.unique())}"
+        )
     dataframe["label"] = mapped_labels.astype(int)
     return dataframe
 
 
-def preprocess_images(dataframe: pd.DataFrame, preproc_fn) -> tuple[np.ndarray, np.ndarray]:
+def preprocess_images(
+    dataframe: pd.DataFrame, preproc_fn
+) -> tuple[np.ndarray, np.ndarray]:
     images: list[np.ndarray] = []
     labels: list[int] = []
     for _, row in dataframe.iterrows():
@@ -110,7 +113,8 @@ def _prepare_model_inputs(
         return images, tuple(images.shape[1:]), effective_batch_size
 
     raise ValueError(
-        f"Unsupported input_channels={runtime.input_channels} configured for model '{model_name}'."
+        "Unsupported input_channels="
+        f"{runtime.input_channels} configured for model '{model_name}'."
     )
 
 
@@ -245,10 +249,15 @@ def run_model_with_preprocessing(
         history_dict = history.history
         val_accuracies = history_dict.get("val_accuracy")
         if not val_accuracies:
-            raise ValueError("Model history does not contain val_accuracy, required for model selection.")
+            raise ValueError(
+                "Model history does not contain val_accuracy, "
+                "required for model selection."
+            )
         best_epoch = int(np.argmax(val_accuracies)) + 1
         best_val_acc = float(np.max(val_accuracies))
-        predictions_df = _predict_dataframe(model, evaluation_inputs, evaluation_df, effective_batch_size)
+        predictions_df = _predict_dataframe(
+            model, evaluation_inputs, evaluation_df, effective_batch_size
+        )
         return best_val_acc, best_epoch, history_dict, predictions_df
     finally:
         _clear_keras_session()
@@ -273,7 +282,9 @@ def check_if_model_exists(
     model_name: str,
     param_id: str,
 ) -> bool:
-    history_path, predictions_path = _artifact_paths(history_dir, predictions_dir, preproc_id, model_name, param_id)
+    history_path, predictions_path = _artifact_paths(
+        history_dir, predictions_dir, preproc_id, model_name, param_id
+    )
     return history_path.exists() and predictions_path.exists()
 
 
@@ -286,7 +297,9 @@ def _metrics_at_best_epoch(result: TrainingRunResult) -> dict[str, Any]:
     }
 
 
-def _save_run_result(result: TrainingRunResult, config: TrainingConfig) -> tuple[Path, Path]:
+def _save_run_result(
+    result: TrainingRunResult, config: TrainingConfig
+) -> tuple[Path, Path]:
     history_path, predictions_path = _artifact_paths(
         config.history_dir,
         config.predictions_dir,
@@ -325,9 +338,13 @@ def _save_run_result(result: TrainingRunResult, config: TrainingConfig) -> tuple
     return history_path, predictions_path
 
 
-def _build_validation_split(train_df: pd.DataFrame, config: TrainingConfig) -> DatasetSplitResult:
+def _build_validation_split(
+    train_df: pd.DataFrame, config: TrainingConfig
+) -> DatasetSplitResult:
     if not 0 < config.validation_size < 1:
-        raise ValueError(f"validation_size must be between 0 and 1, got {config.validation_size}.")
+        raise ValueError(
+            f"validation_size must be between 0 and 1, got {config.validation_size}."
+        )
     return split_dataset(
         train_df,
         test_size=config.validation_size,
@@ -347,20 +364,22 @@ def _run_fixed_split(
 ) -> TrainingRunResult:
     validation_split = _build_validation_split(train_df, config)
     model_runtime = (config.model_runtime or {}).get(model_name)
-    best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
-        validation_split.train_df,
-        validation_split.test_df,
-        test_df,
-        task,
-        model_name,
-        model_fn,
-        num_classes=config.num_classes,
-        batch_size=config.batch_size,
-        epochs=config.epochs,
-        loss=config.loss,
-        learning_rate=config.learning_rate,
-        random_state=config.random_state,
-        model_runtime=model_runtime,
+    best_val_acc, best_epoch, history_dict, predictions_df = (
+        run_model_with_preprocessing(
+            validation_split.train_df,
+            validation_split.test_df,
+            test_df,
+            task,
+            model_name,
+            model_fn,
+            num_classes=config.num_classes,
+            batch_size=config.batch_size,
+            epochs=config.epochs,
+            loss=config.loss,
+            learning_rate=config.learning_rate,
+            random_state=config.random_state,
+            model_runtime=model_runtime,
+        )
     )
     return TrainingRunResult(
         preproc_id=task.preproc_id,
@@ -385,7 +404,9 @@ def _build_cv_indices(
     train_df: pd.DataFrame,
     config: TrainingConfig,
 ) -> tuple[Iterable[tuple[np.ndarray, np.ndarray]], str]:
-    groups = train_df["split_group_id"] if "split_group_id" in train_df.columns else None
+    groups = (
+        train_df["split_group_id"] if "split_group_id" in train_df.columns else None
+    )
     labels = train_df["label"]
 
     if groups is not None and groups.nunique() >= config.folds:
@@ -422,20 +443,22 @@ def _run_cross_validation(
         fit_df = train_df.iloc[fit_idx].reset_index(drop=True)
         validation_df = train_df.iloc[validation_idx].reset_index(drop=True)
         fold_seed = config.random_state + fold_index
-        best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
-            fit_df,
-            validation_df,
-            test_df,
-            task,
-            model_name,
-            model_fn,
-            num_classes=config.num_classes,
-            batch_size=config.batch_size,
-            epochs=config.epochs,
-            loss=config.loss,
-            learning_rate=config.learning_rate,
-            random_state=fold_seed,
-            model_runtime=model_runtime,
+        best_val_acc, best_epoch, history_dict, predictions_df = (
+            run_model_with_preprocessing(
+                fit_df,
+                validation_df,
+                test_df,
+                task,
+                model_name,
+                model_fn,
+                num_classes=config.num_classes,
+                batch_size=config.batch_size,
+                epochs=config.epochs,
+                loss=config.loss,
+                learning_rate=config.learning_rate,
+                random_state=fold_seed,
+                model_runtime=model_runtime,
+            )
         )
 
         fold_scores.append(best_val_acc)
@@ -521,9 +544,13 @@ def run_training_pipeline(
             model_started_at = time.time()
             try:
                 if config.folds == 0:
-                    result = _run_fixed_split(train_df, test_df, task, model_name, model_fn, config)
+                    result = _run_fixed_split(
+                        train_df, test_df, task, model_name, model_fn, config
+                    )
                 else:
-                    result = _run_cross_validation(train_df, test_df, task, model_name, model_fn, config)
+                    result = _run_cross_validation(
+                        train_df, test_df, task, model_name, model_fn, config
+                    )
             except Exception as error:
                 if _is_resource_exhausted_error(error):
                     print(
@@ -532,16 +559,21 @@ def run_training_pipeline(
                         "Exiting for external restart..."
                     )
                     os._exit(1)
-                print(f"Error running {task.preproc_id} [{model_name} - {task.param_display}]: {error}")
+                print(
+                    f"Error running {task.preproc_id} "
+                    f"[{model_name} - {task.param_display}]: {error}"
+                )
                 continue
 
             history_path, predictions_path = _save_run_result(result, config)
             summaries.append(result)
             elapsed = time.time() - model_started_at
             fold_label = f" fold {result.fold}" if result.fold else ""
+            run_label = f"{task.preproc_id} " f"[{model_name} - {task.param_display}]"
             print(
-                f"Saved best run for {task.preproc_id} [{model_name} - {task.param_display}]"
-                f"{fold_label} with val_accuracy={result.best_val_acc:.4f} at epoch {result.best_epoch}."
+                f"Saved best run for {run_label}"
+                f"{fold_label} with val_accuracy="
+                f"{result.best_val_acc:.4f} at epoch {result.best_epoch}."
             )
             print(f"History: {history_path}")
             print(f"Predictions: {predictions_path}")

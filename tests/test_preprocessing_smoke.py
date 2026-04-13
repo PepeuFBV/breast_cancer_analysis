@@ -27,7 +27,10 @@ def _sample_image() -> np.ndarray:
     [
         (denoise_image, {"kernel_size": (3, 3), "sigma": 0}),
         (binarize_image, {"threshold": 127, "max_value": 255, "method": "fixed"}),
-        (lowpass_filter_image, {"kernel_size": (3, 3), "iterations": 1, "method": "mean"}),
+        (
+            lowpass_filter_image,
+            {"kernel_size": (3, 3), "iterations": 1, "method": "mean"},
+        ),
         (erode_image, {"kernel_size": (3, 3), "iterations": 1}),
         (dilate_image, {"kernel_size": (3, 3), "iterations": 1}),
         (open_image, {"kernel_size": (3, 3), "iterations": 1}),

@@ -54,12 +54,16 @@ def _normalize_image_size(values: list[int] | tuple[int, int]) -> tuple[int, int
     return int(width), int(height)
 
 
-def _validate_model_names(model_names: list[str] | None, configured_models: dict[str, ModelRuntimeConfig]) -> None:
+def _validate_model_names(
+    model_names: list[str] | None, configured_models: dict[str, ModelRuntimeConfig]
+) -> None:
     available_models = set(MODEL_BUILDERS)
     requested_models = set(model_names or [])
     unknown_requested = sorted(requested_models - available_models)
     if unknown_requested:
-        raise ValueError(f"Unknown model names in train.model_names: {unknown_requested}")
+        raise ValueError(
+            f"Unknown model names in train.model_names: {unknown_requested}"
+        )
 
     unknown_configured = sorted(set(configured_models) - available_models)
     if unknown_configured:
@@ -85,15 +89,22 @@ def _validate_preprocessing_config(
     available = set(AVAILABLE_PREPROCESSING_IDS)
     unknown_grid = sorted(set(preprocessing_grid) - available)
     if unknown_grid:
-        raise ValueError(f"Unknown preprocessing ids in preprocess.preprocessing_grid: {unknown_grid}")
+        raise ValueError(
+            "Unknown preprocessing ids in preprocess.preprocessing_grid: "
+            f"{unknown_grid}"
+        )
 
     for preproc_id, param_space in preprocessing_grid.items():
         if not isinstance(param_space, dict):
-            raise ValueError(f"Parameter grid for preprocessing '{preproc_id}' must be a JSON object.")
+            raise ValueError(
+                f"Parameter grid for preprocessing '{preproc_id}' "
+                "must be a JSON object."
+            )
         for param_name, values in param_space.items():
             if not isinstance(values, list):
                 raise ValueError(
-                    f"Parameter '{param_name}' for preprocessing '{preproc_id}' must be a JSON array."
+                    f"Parameter '{param_name}' for preprocessing "
+                    f"'{preproc_id}' must be a JSON array."
                 )
 
     invalid_requested = sorted(
@@ -102,7 +113,9 @@ def _validate_preprocessing_config(
         if not _is_valid_preprocessing_selection(preproc_id)
     )
     if invalid_requested:
-        raise ValueError(f"Unknown preprocessing ids in train.preprocessing_ids: {invalid_requested}")
+        raise ValueError(
+            f"Unknown preprocessing ids in train.preprocessing_ids: {invalid_requested}"
+        )
 
 
 @dataclass(frozen=True)
@@ -161,8 +174,12 @@ class ExperimentConfig:
         raw_data_dir: str | Path | None = None,
         artifacts_dir: str | Path | None = None,
     ) -> ProjectPaths:
-        resolved_raw_data_dir = raw_data_dir if raw_data_dir is not None else self.paths.raw_data_dir
-        resolved_artifacts_dir = artifacts_dir if artifacts_dir is not None else self.paths.artifacts_dir
+        resolved_raw_data_dir = (
+            raw_data_dir if raw_data_dir is not None else self.paths.raw_data_dir
+        )
+        resolved_artifacts_dir = (
+            artifacts_dir if artifacts_dir is not None else self.paths.artifacts_dir
+        )
         return build_project_paths(resolved_raw_data_dir, resolved_artifacts_dir)
 
     def build_dataset_preparation_config(
@@ -187,9 +204,15 @@ class ExperimentConfig:
                 if augmentations_per_image is None
                 else augmentations_per_image
             ),
-            samples_per_class=self.preprocess.samples_per_class if samples_per_class is None else samples_per_class,
+            samples_per_class=(
+                self.preprocess.samples_per_class
+                if samples_per_class is None
+                else samples_per_class
+            ),
             test_size=self.preprocess.test_size if test_size is None else test_size,
-            random_state=self.preprocess.random_state if random_state is None else random_state,
+            random_state=(
+                self.preprocess.random_state if random_state is None else random_state
+            ),
         )
 
     def build_training_config(
@@ -215,28 +238,46 @@ class ExperimentConfig:
         from pipeline.train.runner import TrainingConfig
 
         return TrainingConfig(
-            train_split_path=_resolve_configured_path(train_split, self.paths.train_split, project_paths.train_split_path),
-            test_split_path=_resolve_configured_path(test_split, self.paths.test_split, project_paths.test_split_path),
-            history_dir=_resolve_configured_path(history_dir, self.paths.history_dir, project_paths.history_dir),
+            train_split_path=_resolve_configured_path(
+                train_split, self.paths.train_split, project_paths.train_split_path
+            ),
+            test_split_path=_resolve_configured_path(
+                test_split, self.paths.test_split, project_paths.test_split_path
+            ),
+            history_dir=_resolve_configured_path(
+                history_dir, self.paths.history_dir, project_paths.history_dir
+            ),
             predictions_dir=_resolve_configured_path(
                 predictions_dir,
                 self.paths.predictions_dir,
                 project_paths.predictions_dir,
             ),
             folds=self.train.folds if folds is None else folds,
-            validation_size=self.train.validation_size if validation_size is None else validation_size,
+            validation_size=(
+                self.train.validation_size
+                if validation_size is None
+                else validation_size
+            ),
             batch_size=self.train.batch_size if batch_size is None else batch_size,
             epochs=self.train.epochs if epochs is None else epochs,
             run_skip=resolve_bool_flag(run_skip, default=self.train.run_skip),
             model_names=self.train.model_names if model_names is None else model_names,
-            preprocessing_ids=self.train.preprocessing_ids if preprocessing_ids is None else preprocessing_ids,
+            preprocessing_ids=(
+                self.train.preprocessing_ids
+                if preprocessing_ids is None
+                else preprocessing_ids
+            ),
             include_combinations=resolve_bool_flag(
                 include_combinations,
                 default=self.train.include_combinations,
             ),
             loss=self.train.loss if loss is None else loss,
-            learning_rate=self.train.learning_rate if learning_rate is None else learning_rate,
-            random_state=self.train.random_state if random_state is None else random_state,
+            learning_rate=(
+                self.train.learning_rate if learning_rate is None else learning_rate
+            ),
+            random_state=(
+                self.train.random_state if random_state is None else random_state
+            ),
             model_runtime=self.models,
             preprocessing_grids=self.preprocess.preprocessing_grid,
         )
@@ -254,7 +295,9 @@ class ExperimentConfig:
         from pipeline.evaluate.reporting import EvaluationConfig
 
         return EvaluationConfig(
-            history_dir=_resolve_configured_path(history_dir, self.paths.history_dir, project_paths.history_dir),
+            history_dir=_resolve_configured_path(
+                history_dir, self.paths.history_dir, project_paths.history_dir
+            ),
             predictions_dir=_resolve_configured_path(
                 predictions_dir,
                 self.paths.predictions_dir,
@@ -265,7 +308,11 @@ class ExperimentConfig:
                 self.paths.report_output,
                 project_paths.final_report_path,
             ),
-            details_dir=(None if details_dir is None else _resolve_project_relative_path(details_dir)),
+            details_dir=(
+                None
+                if details_dir is None
+                else _resolve_project_relative_path(details_dir)
+            ),
             top_k=self.evaluate.top_k if top_k is None else top_k,
         )
 
@@ -277,7 +324,11 @@ def _resolve_configured_path(
 ) -> Path:
     if explicit_value is not None:
         explicit_path = Path(explicit_value)
-        return explicit_path if explicit_path.is_absolute() else PROJECT_ROOT / explicit_path
+        return (
+            explicit_path
+            if explicit_path.is_absolute()
+            else PROJECT_ROOT / explicit_path
+        )
     if config_value is not None:
         return config_value
     return default_value
@@ -286,9 +337,17 @@ def _resolve_configured_path(
 def _model_runtime_from_dict(config: dict[str, Any]) -> ModelRuntimeConfig:
     return ModelRuntimeConfig(
         input_channels=int(config.get("input_channels", 3)),
-        batch_size=(None if config.get("batch_size") is None else int(config["batch_size"])),
-        dense_units=(None if config.get("dense_units") is None else int(config["dense_units"])),
-        dropout_rate=(None if config.get("dropout_rate") is None else float(config["dropout_rate"])),
+        batch_size=(
+            None if config.get("batch_size") is None else int(config["batch_size"])
+        ),
+        dense_units=(
+            None if config.get("dense_units") is None else int(config["dense_units"])
+        ),
+        dropout_rate=(
+            None
+            if config.get("dropout_rate") is None
+            else float(config["dropout_rate"])
+        ),
         dropout_rates=tuple(float(value) for value in config.get("dropout_rates", [])),
     )
 
@@ -317,20 +376,40 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     return ExperimentConfig(
         source_path=config_path,
         paths=ExperimentPathsConfig(
-            raw_data_dir=_resolve_project_relative_path(raw_config["paths"]["raw_data_dir"]) or PROJECT_ROOT,
-            artifacts_dir=_resolve_project_relative_path(raw_config["paths"]["artifacts_dir"]) or PROJECT_ROOT,
-            train_split=_resolve_project_relative_path(raw_config["paths"].get("train_split")),
-            test_split=_resolve_project_relative_path(raw_config["paths"].get("test_split")),
-            history_dir=_resolve_project_relative_path(raw_config["paths"].get("history_dir")),
-            predictions_dir=_resolve_project_relative_path(raw_config["paths"].get("predictions_dir")),
-            report_output=_resolve_project_relative_path(raw_config["paths"].get("report_output")),
+            raw_data_dir=_resolve_project_relative_path(
+                raw_config["paths"]["raw_data_dir"]
+            )
+            or PROJECT_ROOT,
+            artifacts_dir=_resolve_project_relative_path(
+                raw_config["paths"]["artifacts_dir"]
+            )
+            or PROJECT_ROOT,
+            train_split=_resolve_project_relative_path(
+                raw_config["paths"].get("train_split")
+            ),
+            test_split=_resolve_project_relative_path(
+                raw_config["paths"].get("test_split")
+            ),
+            history_dir=_resolve_project_relative_path(
+                raw_config["paths"].get("history_dir")
+            ),
+            predictions_dir=_resolve_project_relative_path(
+                raw_config["paths"].get("predictions_dir")
+            ),
+            report_output=_resolve_project_relative_path(
+                raw_config["paths"].get("report_output")
+            ),
         ),
         preprocess=ExperimentPreprocessConfig(
             image_size=_normalize_image_size(raw_config["preprocess"]["image_size"]),
-            augmentations_per_image=int(raw_config["preprocess"]["augmentations_per_image"]),
+            augmentations_per_image=int(
+                raw_config["preprocess"]["augmentations_per_image"]
+            ),
             samples_per_class=int(raw_config["preprocess"]["samples_per_class"]),
             test_size=float(raw_config["preprocess"]["test_size"]),
-            random_state=int(raw_config["preprocess"].get("random_state", DEFAULT_RANDOM_STATE)),
+            random_state=int(
+                raw_config["preprocess"].get("random_state", DEFAULT_RANDOM_STATE)
+            ),
             preprocessing_grid=preprocessing_grid,
         ),
         train=ExperimentTrainConfig(
@@ -344,7 +423,9 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
             learning_rate=float(raw_config["train"]["learning_rate"]),
             loss=str(raw_config["train"]["loss"]),
             run_skip=bool(raw_config["train"]["run_skip"]),
-            random_state=int(raw_config["train"].get("random_state", DEFAULT_RANDOM_STATE)),
+            random_state=int(
+                raw_config["train"].get("random_state", DEFAULT_RANDOM_STATE)
+            ),
         ),
         models=model_config,
         evaluate=ExperimentEvaluateConfig(

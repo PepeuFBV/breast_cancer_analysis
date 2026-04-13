@@ -4,27 +4,75 @@ import argparse
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run reusable training experiments for the breast cancer analysis project.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run reusable training experiments "
+            "for the breast cancer analysis project."
+        )
+    )
     parser.add_argument(
         "--config",
         default=None,
-        help="Path to an experiment JSON config. Defaults to configs/experiment.default.json.",
+        help=(
+            "Path to an experiment JSON config. "
+            "Defaults to configs/experiment.default.json."
+        ),
     )
-    parser.add_argument("--raw-data-dir", default=None, help="Optional raw data directory. Only used to resolve default project paths.")
-    parser.add_argument("--artifacts-dir", default=None, help="Artifacts root directory. Defaults to artifacts/.")
-    parser.add_argument("--train-split", default=None, help="Override train split CSV path.")
-    parser.add_argument("--test-split", default=None, help="Override test split CSV path.")
-    parser.add_argument("--history-dir", default=None, help="Override training history output directory.")
-    parser.add_argument("--predictions-dir", default=None, help="Override prediction output directory.")
-    parser.add_argument("--folds", type=int, default=None, help="Use 0 for fixed train/test evaluation.")
-    parser.add_argument("--validation-size", type=float, default=None, help="Validation fraction drawn from the train split.")
-    parser.add_argument("--random-state", type=int, default=None, help="Seed used for split reproducibility and model initialization.")
+    parser.add_argument(
+        "--raw-data-dir",
+        default=None,
+        help="Optional raw data directory. Only used to resolve default project paths.",
+    )
+    parser.add_argument(
+        "--artifacts-dir",
+        default=None,
+        help="Artifacts root directory. Defaults to artifacts/.",
+    )
+    parser.add_argument(
+        "--train-split", default=None, help="Override train split CSV path."
+    )
+    parser.add_argument(
+        "--test-split", default=None, help="Override test split CSV path."
+    )
+    parser.add_argument(
+        "--history-dir",
+        default=None,
+        help="Override training history output directory.",
+    )
+    parser.add_argument(
+        "--predictions-dir", default=None, help="Override prediction output directory."
+    )
+    parser.add_argument(
+        "--folds", type=int, default=None, help="Use 0 for fixed train/test evaluation."
+    )
+    parser.add_argument(
+        "--validation-size",
+        type=float,
+        default=None,
+        help="Validation fraction drawn from the train split.",
+    )
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=None,
+        help="Seed used for split reproducibility and model initialization.",
+    )
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--loss", default=None)
-    parser.add_argument("--models", nargs="*", default=None, help="Optional subset of model names to run.")
-    parser.add_argument("--preprocessing", nargs="*", default=None, help="Optional subset of preprocessing ids to run.")
+    parser.add_argument(
+        "--models",
+        nargs="*",
+        default=None,
+        help="Optional subset of model names to run.",
+    )
+    parser.add_argument(
+        "--preprocessing",
+        nargs="*",
+        default=None,
+        help="Optional subset of preprocessing ids to run.",
+    )
     parser.add_argument(
         "--combined-preprocessing",
         dest="include_combinations",
