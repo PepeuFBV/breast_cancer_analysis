@@ -12,10 +12,13 @@ from pipeline.experiments import (
     IterativeRunOptions,
     launch_background_runner,
 )
+from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
 from train import add_training_runtime_arguments
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+ensure_tensorflow_wsl_gpu_env()
 
 
 def _add_resolution_arguments(parser: argparse.ArgumentParser) -> None:
