@@ -13,7 +13,9 @@ class GpuEnvHelperTest(unittest.TestCase):
         with patch.dict("os.environ", {"VIRTUAL_ENV": "/tmp/custom-venv"}, clear=False):
             self.assertEqual(_venv_root(), Path("/tmp/custom-venv"))
 
-    def test_venv_root_uses_python_launcher_path_without_resolving_symlink(self) -> None:
+    def test_venv_root_uses_python_launcher_path_without_resolving_symlink(
+        self,
+    ) -> None:
         with patch.dict("os.environ", {}, clear=True):
             with patch("sys.executable", "/tmp/project/.venv/bin/python"):
                 self.assertEqual(_venv_root(), Path("/tmp/project/.venv"))

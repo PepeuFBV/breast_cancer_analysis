@@ -15,7 +15,6 @@ from pipeline.experiments import (
 from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
 from train import add_training_runtime_arguments
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 ensure_tensorflow_wsl_gpu_env()
@@ -59,9 +58,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Control iterative, resumable execution of training experiments."
-        )
+        description=("Control iterative, resumable execution of training experiments.")
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -208,9 +205,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "stop":
         stop_path = store.request_stop()
-        print(
-            "Stop requested. The runner will finish the current experiment and stop."
-        )
+        print("Stop requested. The runner will finish the current experiment and stop.")
         print(f"Stop flag: {stop_path}")
         return 0
 

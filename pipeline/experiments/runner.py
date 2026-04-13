@@ -234,8 +234,8 @@ class ExperimentStateStore:
         state.setdefault("schema_version", STATE_SCHEMA_VERSION)
         state.setdefault("created_at", _timestamp_now())
         state["updated_at"] = state.get("updated_at", state["created_at"])
-        state["config_path"] = str(config_path) if config_path else state.get(
-            "config_path"
+        state["config_path"] = (
+            str(config_path) if config_path else state.get("config_path")
         )
         state["artifacts_dir"] = str(self.project_paths.artifacts_dir)
         state["history_dir"] = str(self.project_paths.history_dir)
@@ -626,9 +626,7 @@ class IterativeExperimentRunner:
         logger.setLevel(logging.INFO)
         logger.propagate = False
         handler = logging.FileHandler(self.store.log_path, encoding="utf-8")
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
         return logger
 

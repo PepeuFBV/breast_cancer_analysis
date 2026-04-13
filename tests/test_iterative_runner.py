@@ -146,7 +146,9 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertTrue(store.state_path.exists())
             self.assertTrue(store.summary_path.exists())
 
-    def test_stop_request_waits_for_current_task_and_resumes_pending_tasks(self) -> None:
+    def test_stop_request_waits_for_current_task_and_resumes_pending_tasks(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             config, project_paths = _build_training_config(root)

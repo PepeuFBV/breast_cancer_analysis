@@ -4,7 +4,6 @@ import argparse
 
 from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
 
-
 ensure_tensorflow_wsl_gpu_env()
 
 

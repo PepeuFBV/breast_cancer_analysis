@@ -607,7 +607,9 @@ def run_training_task(
         else train_df.copy()
     )
     resolved_test_df = (
-        load_split_dataframe(config.test_split_path) if test_df is None else test_df.copy()
+        load_split_dataframe(config.test_split_path)
+        if test_df is None
+        else test_df.copy()
     )
     model_fn = available_builders[task.model_name]
 
@@ -658,9 +660,7 @@ def run_training_pipeline(
 
         print(f"--> Current Model: {task.model_name} <--")
         if config.run_skip and task_has_existing_artifacts(config, task):
-            print(
-                f"Skipping {task.label} because artifacts already exist."
-            )
+            print(f"Skipping {task.label} because artifacts already exist.")
             continue
 
         model_started_at = time.time()
@@ -673,9 +673,11 @@ def run_training_pipeline(
                 model_builders=available_builders,
             )
         except Exception as error:
-            prefix = "GPU memory error detected for" if _is_resource_exhausted_error(
-                error
-            ) else "Error running"
+            prefix = (
+                "GPU memory error detected for"
+                if _is_resource_exhausted_error(error)
+                else "Error running"
+            )
             print(f"{prefix} {task.label}: {error}")
             continue
 
