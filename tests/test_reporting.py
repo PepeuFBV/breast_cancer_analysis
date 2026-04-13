@@ -65,7 +65,12 @@ class ReportingTest(unittest.TestCase):
             self.assertTrue(output_path.exists())
             self.assertEqual(len(final_results), 1)
             self.assertIn("top_k_accuracy", final_results.columns)
+            self.assertIn("f1_macro", final_results.columns)
+            self.assertIn("roc_auc_ovr_macro", final_results.columns)
             self.assertEqual(final_results.iloc[0]["threshold"], 70)
+            self.assertTrue(Path(final_results.iloc[0]["classification_report_path"]).exists())
+            self.assertTrue(Path(final_results.iloc[0]["confusion_matrix_path"]).exists())
+            self.assertTrue(Path(final_results.iloc[0]["metrics_summary_path"]).exists())
 
 
 if __name__ == "__main__":

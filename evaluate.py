@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--history-dir", default=None, help="Override history directory.")
     parser.add_argument("--predictions-dir", default=None, help="Override predictions directory.")
     parser.add_argument("--output-path", default=None, help="Override final report CSV output path.")
+    parser.add_argument("--details-dir", default=None, help="Override directory for per-run evaluation artifacts.")
     parser.add_argument("--top-k", type=int, default=None)
     return parser
 
@@ -28,6 +29,7 @@ def build_evaluation_config_from_args(args: argparse.Namespace):
         history_dir=args.history_dir,
         predictions_dir=args.predictions_dir,
         output_path=args.output_path,
+        details_dir=args.details_dir,
         top_k=args.top_k,
     )
 
@@ -39,6 +41,7 @@ def main() -> int:
     config = build_evaluation_config_from_args(args)
     final_results, output_path = generate_final_report(config)
     print(f"Saved final report to: {output_path}")
+    print(f"Detailed evaluation artifacts: {config.resolved_details_dir}")
     print(f"Records: {len(final_results)}")
     print(f"Preprocessing methods: {final_results['preproc_id'].nunique()}")
     print(f"Models: {final_results['model_name'].nunique()}")

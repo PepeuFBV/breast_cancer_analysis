@@ -35,7 +35,7 @@ evaluate.py
 ```
 
 - converts INbreast DICOM images to normalized PNG files,
-- applies data augmentation and a balanced sampling strategy,
+- applies leakage-aware splitting, training-only augmentation, and a balanced sampling strategy,
 - trains multiple model architectures on different preprocessing variants,
 - stores per-run histories and predictions, and
 - aggregates results into a final CSV for comparison.
@@ -81,8 +81,8 @@ The editable install is recommended so notebook imports like `from pipeline...` 
 
 The main experiment settings now live in [`configs/experiment.default.json`](configs/experiment.default.json). This file centralizes:
 
-- dataset preparation settings such as `image_size`, `augmentations_per_image`, `samples_per_class`, and `test_size`
-- training settings such as `model_names`, `batch_size`, `epochs`, `learning_rate`, `loss`, and preprocessing selection
+- dataset preparation settings such as `image_size`, `augmentations_per_image`, `samples_per_class`, `test_size`, and `random_state`
+- training settings such as `model_names`, `batch_size`, `epochs`, `learning_rate`, `loss`, `validation_size`, `random_state`, and preprocessing selection
 - per-model runtime settings such as input channels, effective batch size, dense head size, and dropout
 - evaluation settings such as `top_k`
 - input/output paths such as the dataset root, artifacts root, and optional report/run overrides
@@ -98,6 +98,14 @@ python train.py --config configs/experiment.default.json --epochs 3 --models "cu
 
 CLI flags take precedence over the JSON file, so a specific run can be overridden without changing the tracked default configuration.
 
+## Methodological Safeguards
+
+- dataset splitting now happens before augmentation, so synthetic variants of the same source image never leak into the test set
+- the splitter prefers patient-level grouping when patient metadata is available, falls back to exam-level grouping when possible, and only uses image-level stratification as a last resort
+- training-only augmentations are written under `artifacts/processed/images/train/`, while untouched holdout images are written under `artifacts/processed/images/test/`
+- model selection uses a validation subset or train-only cross-validation; the holdout test split is reserved for final evaluation artifacts
+- global seeds are fixed for preprocessing and training to reduce run-to-run variance and make results easier to reproduce
+
 ## Reproducible Pipeline
 
 ### 1. Prepare the dataset
@@ -111,13 +119,17 @@ Default behavior:
 - loads preprocessing and path defaults from `configs/experiment.default.json`
 - reads `data/INbreast Release 1.0/INbreast.csv`
 - filters to valid BI-RADS labels before generating splits
+- infers a grouping strategy from metadata, preferring patient-level split keys when available
+- fixes the preprocessing seed with `random_state=42`
+- creates the train/test split before augmentation to avoid leakage
 - converts DICOMs to normalized `224x224` PNG files
-- writes processed images to `artifacts/processed/images/`
-- creates `3` augmented images per source image
-- trims each class to `35` samples
+- writes processed images to `artifacts/processed/images/train/` and `artifacts/processed/images/test/`
+- creates `3` augmented images per source image only for the training split
+- trims only the training split to `35` images per class
 - writes splits to:
   - `artifacts/processed/splits/train_split.csv`
   - `artifacts/processed/splits/test_split.csv`
+  - `artifacts/processed/splits/split_summary.json`
 
 ### 2. Train the models
 
@@ -131,7 +143,10 @@ Default behavior:
 - reads the processed split CSVs from `artifacts/processed/splits/`
 - maps BI-RADS labels to 8 numeric classes
 - runs the configured preprocessing and model registry
+- fixes the model seed with `random_state=42`
+- uses `validation_size=0.2` when `folds=0`
 - uses `folds=4`, `epochs=15`, `batch_size=8`, and `run_skip=True`
+- keeps the test split untouched for final predictions; validation happens only inside the training split
 - stores artifacts in:
   - `artifacts/runs/history/<preproc_id>/<model_name>/`
   - `artifacts/runs/predictions/<preproc_id>/<model_name>/`
@@ -160,7 +175,8 @@ Default behavior:
 
 - loads evaluation defaults from `configs/experiment.default.json`
 - reads run outputs from `artifacts/runs/`
-- computes top-k metrics and derived rankings
+- computes holdout metrics such as accuracy, balanced accuracy, precision, recall, F1-score, ROC-AUC, top-k accuracy, and derived rankings
+- saves per-run artifacts including classification reports and confusion matrices under `artifacts/reports/evaluation_details/`
 - writes the final report to:
   - `artifacts/reports/final_comprehensive_results.csv`
 
@@ -184,6 +200,7 @@ Generated artifacts now live under `artifacts/`:
 - `artifacts/processed/splits/`
 - `artifacts/runs/history/`
 - `artifacts/runs/predictions/`
+- `artifacts/reports/evaluation_details/`
 - `artifacts/reports/final_comprehensive_results.csv`
 
 The tracked file [`data/final_comprehensive_results.csv`](data/final_comprehensive_results.csv) is kept only as a historical artifact from the previous workflow.
