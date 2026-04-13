@@ -1,4 +1,4 @@
-"""Compatibility wrapper around the reusable training model registry."""
+"""Compatibility exports for the canonical training model builders."""
 
 from pipeline.train.models import (
     MODEL_BUILDERS,
