@@ -480,10 +480,12 @@ class ExperimentStateStore:
 
         state = self.load_state()
         now = _timestamp_now()
+        task_found = False
         for task in state["tasks"]:
             if task["id"] != task_id:
                 continue
 
+            task_found = True
             task["status"] = status
             task["updated_at"] = now
             task["error_summary"] = error_summary
@@ -502,6 +504,9 @@ class ExperimentStateStore:
                 state["current_task_id"] = None
             break
 
+        if not task_found:
+            raise KeyError(f"Task id not found in runner state: {task_id}")
+
         self._persist_state(state)
         return state
 
@@ -509,14 +514,18 @@ class ExperimentStateStore:
         self, task_id: str, *, history_path: Path, predictions_path: Path
     ) -> dict[str, Any]:
         state = self.load_state()
+        task_found = False
         for task in state["tasks"]:
             if task["id"] == task_id:
+                task_found = True
                 task["artifacts"] = {
                     "history_path": str(history_path),
                     "predictions_path": str(predictions_path),
                 }
                 task["updated_at"] = _timestamp_now()
                 break
+        if not task_found:
+            raise KeyError(f"Task id not found in runner state: {task_id}")
         self._persist_state(state)
         return state
 
@@ -525,6 +534,12 @@ class ExperimentStateStore:
         pid_record = self.read_pid_record()
         active_pid = None if pid_record is None else pid_record.get("pid")
         active_run = _is_process_alive(active_pid)
+        if not active_run and any(
+            task.get("status") == "running" for task in state["tasks"]
+        ):
+            self._reconcile_running_tasks(state)
+            self._persist_state(state)
+
         counts = {status: 0 for status in TASK_STATUSES}
         for task in state["tasks"]:
             status = task.get("status", "pending")
@@ -625,6 +640,7 @@ class IterativeExperimentRunner:
 
         logger.setLevel(logging.INFO)
         logger.propagate = False
+        self.store.log_path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(self.store.log_path, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
@@ -767,6 +783,30 @@ class IterativeExperimentRunner:
                         traceback.format_exc(),
                     )
                     print(f"Failed {training_task.label}: {error_summary}")
+                except BaseException as error:
+                    duration_seconds = (
+                        datetime.now(timezone.utc) - started_at
+                    ).total_seconds()
+                    error_summary = f"{error.__class__.__name__}: {error}"
+                    status = (
+                        "stopped"
+                        if isinstance(error, (KeyboardInterrupt, SystemExit))
+                        else "failed"
+                    )
+                    self.store.update_task_status(
+                        task_id,
+                        status=status,
+                        error_summary=error_summary[:500],
+                        duration_seconds=duration_seconds,
+                    )
+                    self.logger.error(
+                        "Interrupted %s in %.2fs: %s\n%s",
+                        training_task.label,
+                        duration_seconds,
+                        error_summary,
+                        traceback.format_exc(),
+                    )
+                    raise
 
                 if self.store.stop_requested():
                     self.logger.info(
