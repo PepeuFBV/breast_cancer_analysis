@@ -38,7 +38,11 @@ python -m black --check .
 python -m pytest
 ```
 
-## Expected Dataset Layout
+Get the full dataset here:
+
+![Download button for the INbreast dataset](imgs/breast-cancer-kaggle.png)
+
+## Expected Dataset layout
 
 ```text
 data/INbreast Release 1.0/
