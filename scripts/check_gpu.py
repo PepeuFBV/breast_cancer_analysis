@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+
 
 @dataclass(frozen=True)
 class TensorFlowGpuCheck:
@@ -52,6 +54,9 @@ def check_tensorflow_gpu(
 
     if cpu_only:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+    if tensorflow_module is None:
+        ensure_tensorflow_wsl_gpu_env()
 
     try:
         tf = tensorflow_module or importlib.import_module("tensorflow")

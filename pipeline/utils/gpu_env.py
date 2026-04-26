@@ -67,8 +67,6 @@ def ensure_tensorflow_wsl_gpu_env() -> None:
     venv_root = _venv_root()
     site_packages_dir = _python_site_packages_dir(venv_root)
     nvidia_lib_dirs = _nvidia_lib_dirs(site_packages_dir)
-    if not nvidia_lib_dirs:
-        return
 
     updated_env = dict(os.environ)
     changed = False
