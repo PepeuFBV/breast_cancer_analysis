@@ -15,6 +15,14 @@ include = ["pipeline*"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
+addopts = "-m 'not slow and not integration'"
+markers = [
+    "unit: fast deterministic tests that do not require external data or hardware",
+    "smoke: lightweight end-to-end checks with synthetic or mocked data",
+    "integration: checks that require local datasets, services, or external tools",
+    "gpu: GPU-related checks; mocked GPU tests may still run by default",
+    "slow: long-running tests excluded from default pytest",
+]
 
 [tool.ruff]
 target-version = "py310"

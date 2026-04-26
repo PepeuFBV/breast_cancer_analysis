@@ -10,7 +10,11 @@ import pandas as pd
 
 from pipeline.train.models import ModelRuntimeConfig
 from pipeline.train.preprocessing import PreprocessingTask
-from pipeline.train.runner import TrainingConfig, run_training_pipeline
+from pipeline.train.runner import (
+    TrainingConfig,
+    build_training_tasks,
+    run_training_pipeline,
+)
 
 
 class _FakeHistory:
@@ -45,6 +49,53 @@ class _FakeModel:
 
 
 class TrainingRunnerTest(unittest.TestCase):
+    def test_build_training_tasks_expands_preprocessing_model_grid(self) -> None:
+        task_a = PreprocessingTask(
+            preproc_id="none",
+            params={},
+            param_display="default",
+            param_id="default",
+            param_json="{}",
+            is_combined=False,
+            apply=lambda image: image,
+        )
+        task_b = PreprocessingTask(
+            preproc_id="denoise",
+            params={"sigma": 1},
+            param_display="sigma=1",
+            param_id="sigma-1",
+            param_json='{"sigma":1}',
+            is_combined=False,
+            apply=lambda image: image,
+        )
+        config = TrainingConfig(
+            train_split_path=Path("train.csv"),
+            test_split_path=Path("test.csv"),
+            history_dir=Path("history"),
+            predictions_dir=Path("predictions"),
+            model_names=["custom cnn", "resnet"],
+            include_combinations=False,
+        )
+
+        tasks = build_training_tasks(
+            config,
+            model_builders={
+                "custom cnn": lambda *args, **kwargs: _FakeModel(0.8),
+                "resnet": lambda *args, **kwargs: _FakeModel(0.8),
+            },
+            preprocessing_tasks=[task_a, task_b],
+        )
+
+        self.assertEqual(
+            [(task.preproc_id, task.model_name) for task in tasks],
+            [
+                ("none", "custom cnn"),
+                ("none", "resnet"),
+                ("denoise", "custom cnn"),
+                ("denoise", "resnet"),
+            ],
+        )
+
     def test_cross_validation_persists_best_fold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
