@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import gc
 import hashlib
 import json
 import logging
@@ -30,7 +29,7 @@ from pipeline.train.runner import (
     run_training_task,
     save_run_result,
 )
-from pipeline.utils.gpu_env import clear_gpu_memory
+from pipeline.utils.memory import clear_ml_memory
 from pipeline.utils.paths import ProjectPaths
 
 STATE_SCHEMA_VERSION = 1
@@ -768,9 +767,7 @@ class IterativeExperimentRunner:
                 self.store.update_task_status(task_id, status="running")
                 started_at = datetime.now(timezone.utc)
                 
-                # Aggressive GPU memory cleanup before starting new experiment
-                clear_gpu_memory()
-                gc.collect()
+                clear_ml_memory()
                 time.sleep(2)  # Longer delay for memory release
 
                 try:
@@ -808,9 +805,9 @@ class IterativeExperimentRunner:
                         f"Completed {training_task.label} "
                         f"(history: {history_path}, predictions: {predictions_path})"
                     )
-                    # Cleanup after successful completion
-                    del result, history_summary
-                    gc.collect()
+                    result = None
+                    history_summary = None
+                    clear_ml_memory()
                 except Exception as error:
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at
@@ -830,6 +827,7 @@ class IterativeExperimentRunner:
                         traceback.format_exc(),
                     )
                     print(f"Failed {training_task.label}: {error_summary}")
+                    clear_ml_memory()
                 except BaseException as error:
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at
@@ -853,6 +851,7 @@ class IterativeExperimentRunner:
                         error_summary,
                         traceback.format_exc(),
                     )
+                    clear_ml_memory()
                     raise
 
                 if self.store.stop_requested():

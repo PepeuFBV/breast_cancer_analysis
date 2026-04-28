@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -15,7 +14,8 @@ from pipeline.data.constants import DEFAULT_RANDOM_STATE, LABEL_MAPPING
 from pipeline.data.dataset import DatasetSplitResult, split_dataset
 from pipeline.train.models import MODEL_BUILDERS, ModelBuilder, ModelRuntimeConfig
 from pipeline.train.preprocessing import PreprocessingTask, iter_preprocessing_tasks
-from pipeline.utils.gpu_env import clear_gpu_memory, configure_gpu_memory_growth
+from pipeline.utils.gpu_env import configure_gpu_memory_growth
+from pipeline.utils.memory import clear_ml_memory
 from pipeline.utils.reproducibility import enforce_reproducibility
 from pipeline.utils.runtime import format_duration
 
@@ -157,11 +157,13 @@ def _one_hot_encode(labels: np.ndarray, num_classes: int) -> np.ndarray:
 
 def _is_resource_exhausted_error(error: Exception) -> bool:
     error_name = error.__class__.__name__
-    return error_name in ("ResourceExhaustedError", "InternalError") or "OOM" in str(error)
+    return error_name in ("ResourceExhaustedError", "InternalError") or "OOM" in str(
+        error
+    )
 
 
 def _clear_keras_session() -> None:
-    clear_gpu_memory()
+    clear_ml_memory()
 
 
 def _build_fit_callbacks() -> list[object]:
@@ -212,6 +214,8 @@ def _predict_dataframe(
         prediction_df[column] = evaluation_df[column].values
     for index in range(probabilities.shape[1]):
         prediction_df[f"prob_class_{index}"] = probabilities[:, index]
+    probabilities = None
+    predictions = None
     return prediction_df
 
 
@@ -242,10 +246,7 @@ def run_model_with_preprocessing(
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         if attempt > 0:
-            # Aggressive cleanup between retries
-            clear_gpu_memory()
-            gc.collect()
-            # Longer wait for memory to be fully released
+            clear_ml_memory()
             time.sleep(3 + attempt)  # Increasing delay: 4s, 5s, 6s
         
         try:
@@ -296,47 +297,50 @@ def _run_model_with_preprocessing_impl(
     model_runtime: ModelRuntimeConfig | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     enforce_reproducibility(random_state)
-    
-    # Clear memory before starting
-    clear_gpu_memory()
-    gc.collect()
 
-    x_train, y_train = preprocess_images(train_df, task.apply)
-    x_validation, y_validation = preprocess_images(validation_df, task.apply)
-    x_evaluation, _ = preprocess_images(evaluation_df, task.apply)
+    clear_ml_memory()
 
-    train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(
-        x_train,
-        model_name,
-        batch_size,
-        model_runtime,
-    )
-    validation_inputs, _, _ = _prepare_model_inputs(
-        x_validation,
-        model_name,
-        batch_size,
-        model_runtime,
-    )
-    evaluation_inputs, _, _ = _prepare_model_inputs(
-        x_evaluation,
-        model_name,
-        batch_size,
-        model_runtime,
-    )
-    
-    # Delete raw image arrays immediately after conversion
-    del x_train, x_validation, x_evaluation
-    gc.collect()
-
-    y_train_encoded = _one_hot_encode(y_train, num_classes)
-    y_validation_encoded = _one_hot_encode(y_validation, num_classes)
-    
-    # Delete label arrays after encoding
-    del y_train, y_validation
-    gc.collect()
-
+    x_train: np.ndarray | None = None
+    y_train: np.ndarray | None = None
+    x_validation: np.ndarray | None = None
+    y_validation: np.ndarray | None = None
+    x_evaluation: np.ndarray | None = None
+    train_inputs: np.ndarray | None = None
+    validation_inputs: np.ndarray | None = None
+    evaluation_inputs: np.ndarray | None = None
+    y_train_encoded: np.ndarray | None = None
+    y_validation_encoded: np.ndarray | None = None
+    history: Any | None = None
+    history_dict: dict[str, list[float]] | None = None
+    predictions_df: pd.DataFrame | None = None
+    callbacks: list[object] | None = None
+    input_shape: tuple[int, ...] | None = None
+    effective_batch_size = batch_size
     model = None
     try:
+        x_train, y_train = preprocess_images(train_df, task.apply)
+        x_validation, y_validation = preprocess_images(validation_df, task.apply)
+
+        train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(
+            x_train,
+            model_name,
+            batch_size,
+            model_runtime,
+        )
+        validation_inputs, _, _ = _prepare_model_inputs(
+            x_validation,
+            model_name,
+            batch_size,
+            model_runtime,
+        )
+        x_train = None
+        x_validation = None
+
+        y_train_encoded = _one_hot_encode(y_train, num_classes)
+        y_validation_encoded = _one_hot_encode(y_validation, num_classes)
+        y_train = None
+        y_validation = None
+
         model = model_fn(
             input_shape=input_shape,
             num_classes=num_classes,
@@ -344,7 +348,8 @@ def _run_model_with_preprocessing_impl(
             learning_rate=learning_rate,
             runtime=model_runtime,
         )
-        
+
+        callbacks = _build_fit_callbacks()
         history = model.fit(
             train_inputs,
             y_train_encoded,
@@ -352,14 +357,18 @@ def _run_model_with_preprocessing_impl(
             epochs=epochs,
             batch_size=effective_batch_size,
             verbose=0,
-            callbacks=_build_fit_callbacks(),
+            callbacks=callbacks,
         )
-        
-        # Delete training data immediately after fit
-        del train_inputs, y_train_encoded, validation_inputs, y_validation_encoded
-        gc.collect()
-        
-        history_dict = history.history
+
+        train_inputs = None
+        validation_inputs = None
+        y_train_encoded = None
+        y_validation_encoded = None
+        callbacks = None
+        clear_ml_memory(clear_session=False)
+
+        history_dict = dict(history.history)
+        history = None
         val_accuracies = history_dict.get("val_accuracy")
         if not val_accuracies:
             raise ValueError(
@@ -368,23 +377,38 @@ def _run_model_with_preprocessing_impl(
             )
         best_epoch = int(np.argmax(val_accuracies)) + 1
         best_val_acc = float(np.max(val_accuracies))
-        
+
+        x_evaluation, _ = preprocess_images(evaluation_df, task.apply)
+        evaluation_inputs, _, _ = _prepare_model_inputs(
+            x_evaluation,
+            model_name,
+            batch_size,
+            model_runtime,
+        )
+        x_evaluation = None
         predictions_df = _predict_dataframe(
             model, evaluation_inputs, evaluation_df, effective_batch_size
         )
-        
-        # Delete evaluation inputs after prediction
-        del evaluation_inputs
-        gc.collect()
-        
+
+        evaluation_inputs = None
+        clear_ml_memory(clear_session=False)
+
         return best_val_acc, best_epoch, history_dict, predictions_df
     finally:
-        # Aggressive cleanup
-        if model is not None:
-            del model
-        gc.collect()
+        x_train = None
+        y_train = None
+        x_validation = None
+        y_validation = None
+        x_evaluation = None
+        train_inputs = None
+        validation_inputs = None
+        evaluation_inputs = None
+        y_train_encoded = None
+        y_validation_encoded = None
+        history = None
+        callbacks = None
+        model = None
         _clear_keras_session()
-        gc.collect()
 
 
 def _artifact_paths(
@@ -480,7 +504,7 @@ def save_run_result(
 
     pd.DataFrame([build_history_row(result, config)]).to_csv(history_path, index=False)
 
-    predictions_df = result.predictions_df.copy()
+    predictions_df = result.predictions_df
     predictions_df["preproc_id"] = result.preproc_id
     predictions_df["model_name"] = result.model_name
     predictions_df["param_id"] = result.param_id
@@ -591,57 +615,67 @@ def _run_cross_validation(
     fold_epochs: list[int] = []
     model_runtime = (config.model_runtime or {}).get(model_name)
     for fold_index, (fit_idx, validation_idx) in enumerate(split_iterator, start=1):
-        # Aggressive cleanup before each fold
-        if fold_index > 1:
-            clear_gpu_memory()
-            gc.collect()
-            time.sleep(1)
-        
-        fit_df = train_df.iloc[fit_idx].reset_index(drop=True)
-        validation_df = train_df.iloc[validation_idx].reset_index(drop=True)
-        fold_seed = config.random_state + fold_index
-        best_val_acc, best_epoch, history_dict, predictions_df = (
-            run_model_with_preprocessing(
-                fit_df,
-                validation_df,
-                test_df,
-                task,
-                model_name,
-                model_fn,
-                num_classes=config.num_classes,
-                batch_size=config.batch_size,
-                epochs=config.epochs,
-                loss=config.loss,
-                learning_rate=config.learning_rate,
-                random_state=fold_seed,
-                model_runtime=model_runtime,
-            )
-        )
+        clear_ml_memory()
+        time.sleep(1)
 
-        fold_scores.append(best_val_acc)
-        fold_epochs.append(best_epoch)
-        current = TrainingRunResult(
-            preproc_id=task.preproc_id,
-            model_name=model_name,
-            param_id=task.param_id,
-            param_combo=task.param_display,
-            param_json=task.param_json,
-            best_val_acc=best_val_acc,
-            best_epoch=best_epoch,
-            fold=fold_index,
-            history_dict=history_dict,
-            predictions_df=predictions_df,
-            selection_strategy="cross_validation",
-            train_samples=len(fit_df),
-            validation_samples=len(validation_df),
-            test_samples=len(test_df),
-        )
-        if best_result is None or current.best_val_acc > best_result.best_val_acc:
-            best_result = current
-        
-        # Cleanup after each fold
-        del fit_df, validation_df, history_dict, predictions_df
-        gc.collect()
+        fit_df: pd.DataFrame | None = None
+        validation_df: pd.DataFrame | None = None
+        current: TrainingRunResult | None = None
+        history_dict: dict[str, list[float]] | None = None
+        predictions_df: pd.DataFrame | None = None
+        try:
+            fit_df = train_df.iloc[fit_idx].reset_index(drop=True)
+            validation_df = train_df.iloc[validation_idx].reset_index(drop=True)
+            fold_seed = config.random_state + fold_index
+            best_val_acc, best_epoch, history_dict, predictions_df = (
+                run_model_with_preprocessing(
+                    fit_df,
+                    validation_df,
+                    test_df,
+                    task,
+                    model_name,
+                    model_fn,
+                    num_classes=config.num_classes,
+                    batch_size=config.batch_size,
+                    epochs=config.epochs,
+                    loss=config.loss,
+                    learning_rate=config.learning_rate,
+                    random_state=fold_seed,
+                    model_runtime=model_runtime,
+                )
+            )
+
+            fold_scores.append(best_val_acc)
+            fold_epochs.append(best_epoch)
+            current = TrainingRunResult(
+                preproc_id=task.preproc_id,
+                model_name=model_name,
+                param_id=task.param_id,
+                param_combo=task.param_display,
+                param_json=task.param_json,
+                best_val_acc=best_val_acc,
+                best_epoch=best_epoch,
+                fold=fold_index,
+                history_dict=history_dict,
+                predictions_df=predictions_df,
+                selection_strategy="cross_validation",
+                train_samples=len(fit_df),
+                validation_samples=len(validation_df),
+                test_samples=len(test_df),
+            )
+            if best_result is None or current.best_val_acc > best_result.best_val_acc:
+                best_result = current
+            else:
+                current = None
+                history_dict = None
+                predictions_df = None
+        finally:
+            fit_df = None
+            validation_df = None
+            if current is None:
+                history_dict = None
+                predictions_df = None
+            clear_ml_memory()
 
     if best_result is None:
         raise RuntimeError("Cross-validation did not produce any runs.")
@@ -707,12 +741,12 @@ def run_training_task(
     resolved_train_df = (
         load_split_dataframe(config.train_split_path)
         if train_df is None
-        else train_df.copy()
+        else train_df
     )
     resolved_test_df = (
         load_split_dataframe(config.test_split_path)
         if test_df is None
-        else test_df.copy()
+        else test_df
     )
     model_fn = available_builders[task.model_name]
 
@@ -768,6 +802,7 @@ def run_training_pipeline(
 
         model_started_at = time.time()
         try:
+            clear_ml_memory()
             result = run_training_task(
                 task,
                 config,
@@ -782,6 +817,7 @@ def run_training_pipeline(
                 else "Error running"
             )
             print(f"{prefix} {task.label}: {error}")
+            clear_ml_memory()
             continue
 
         history_path, predictions_path = save_run_result(result, config)
@@ -795,5 +831,6 @@ def run_training_pipeline(
         print(f"History: {history_path}")
         print(f"Predictions: {predictions_path}")
         print(f"Time taken: {format_duration(elapsed)}\n")
+        clear_ml_memory()
 
     return summaries
