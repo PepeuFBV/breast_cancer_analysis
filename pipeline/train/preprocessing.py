@@ -203,6 +203,13 @@ def iter_param_grid(param_space: dict[str, list[Any]]) -> Iterator[dict[str, Any
         yield dict(zip(keys, values))
 
 
+def _param_grid_size(param_space: dict[str, list[Any]]) -> int:
+    size = 1
+    for values in param_space.values():
+        size *= len(values)
+    return size
+
+
 def _build_definitions(
     param_grids: dict[str, dict[str, list[Any]]] | None = None,
 ) -> dict[str, PreprocessingDefinition]:
@@ -305,6 +312,38 @@ def iter_preprocessing_tasks(
                 yield _build_combined_task(
                     first_id, second_id, first_params, second_params, definitions
                 )
+
+
+def count_preprocessing_tasks(
+    selected_ids: list[str] | None = None,
+    *,
+    include_combinations: bool = True,
+    param_grids: dict[str, dict[str, list[Any]]] | None = None,
+) -> int:
+    definitions = _build_definitions(param_grids)
+    selected = set(selected_ids) if selected_ids else None
+    grid_sizes = {
+        preproc_id: _param_grid_size(definition.params)
+        for preproc_id, definition in definitions.items()
+    }
+
+    total = 0
+    for preproc_id, grid_size in grid_sizes.items():
+        if selected and preproc_id not in selected:
+            continue
+        total += grid_size
+
+    if not include_combinations:
+        return total
+
+    combinable_ids = [name for name in definitions if name != "none"]
+    for first_id, second_id in permutations(combinable_ids, 2):
+        combined_id = f"{first_id}__{second_id}"
+        if selected and combined_id not in selected:
+            continue
+        total += grid_sizes[first_id] * grid_sizes[second_id]
+
+    return total
 
 
 def build_legacy_preprocessing_methods(

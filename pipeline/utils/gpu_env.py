@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import gc
 import os
 import sys
 from pathlib import Path
 
 _GPU_ENV_BOOTSTRAPPED = "BREAST_CANCER_ANALYSIS_GPU_ENV_BOOTSTRAPPED"
+_GPU_MEMORY_CONFIGURED = False
 
 
 def _is_wsl_linux() -> bool:
@@ -36,7 +38,15 @@ def _nvidia_lib_dirs(site_packages_dir: Path) -> list[Path]:
     nvidia_root = site_packages_dir / "nvidia"
     if not nvidia_root.exists():
         return []
-    return sorted(path for path in nvidia_root.glob("*/lib") if path.is_dir())
+    library_dirs: set[Path] = set()
+    for package_dir in nvidia_root.iterdir():
+        if not package_dir.is_dir():
+            continue
+        for directory_name in ("lib", "lib64"):
+            candidate = package_dir / directory_name
+            if candidate.is_dir():
+                library_dirs.add(candidate)
+    return sorted(library_dirs)
 
 
 def _prepend_env_paths(
@@ -54,6 +64,70 @@ def _prepend_env_paths(
         return False
     environment[variable_name] = ":".join([*additions, *existing])
     return True
+
+
+def configure_gpu_memory_growth() -> bool:
+    """Configure TensorFlow to use GPU memory growth instead of pre-allocating.
+    
+    Returns True if configuration was successful, False otherwise.
+    """
+    global _GPU_MEMORY_CONFIGURED
+    
+    if _GPU_MEMORY_CONFIGURED:
+        return True
+    
+    try:
+        import tensorflow as tf
+        
+        gpus = tf.config.list_physical_devices("GPU")
+        if gpus:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            _GPU_MEMORY_CONFIGURED = True
+            return True
+    except Exception:
+        pass
+    
+    return False
+
+
+def clear_gpu_memory() -> None:
+    """Aggressively clear GPU memory and Python garbage."""
+    # Clear Keras/TensorFlow session
+    try:
+        from keras import backend as K
+        K.clear_session()
+    except Exception:
+        pass
+    
+    try:
+        import tensorflow as tf
+        tf.keras.backend.clear_session()
+        # Reset default graph
+        try:
+            tf.compat.v1.reset_default_graph()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    
+    # Force garbage collection multiple times
+    import gc
+    for _ in range(3):
+        gc.collect()
+    
+    # Try to clear CUDA cache if available
+    try:
+        import tensorflow as tf
+        if hasattr(tf.config.experimental, 'reset_memory_stats'):
+            gpus = tf.config.list_physical_devices('GPU')
+            for gpu in gpus:
+                try:
+                    tf.config.experimental.reset_memory_stats(gpu)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def ensure_tensorflow_wsl_gpu_env() -> None:

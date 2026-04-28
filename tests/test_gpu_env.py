@@ -30,6 +30,7 @@ class GpuEnvHelperTest(unittest.TestCase):
             site_packages = Path(tmp_dir) / "site-packages"
             (site_packages / "nvidia" / "cublas" / "lib").mkdir(parents=True)
             (site_packages / "nvidia" / "cudnn" / "lib").mkdir(parents=True)
+            (site_packages / "nvidia" / "cusolver" / "lib64").mkdir(parents=True)
             (site_packages / "nvidia" / "cuda_runtime").mkdir(parents=True)
 
             discovered = _nvidia_lib_dirs(site_packages)
@@ -39,6 +40,7 @@ class GpuEnvHelperTest(unittest.TestCase):
                 [
                     site_packages / "nvidia" / "cublas" / "lib",
                     site_packages / "nvidia" / "cudnn" / "lib",
+                    site_packages / "nvidia" / "cusolver" / "lib64",
                 ],
             )
 

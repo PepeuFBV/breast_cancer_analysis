@@ -48,15 +48,40 @@ data/INbreast Release 1.0/
 
 ## TensorFlow Imports but GPU Is Not Visible
 
-Run:
+Repair the environment first:
 
 ```bash
-python scripts/check_gpu.py
-python scripts/check_gpu.py --require-gpu
+python3 scripts/bootstrap_env.py --gpu auto
+```
+
+If the run must use GPU:
+
+```bash
+python3 scripts/bootstrap_env.py --gpu required
+```
+
+Then re-run:
+
+```bash
+./.venv/bin/python scripts/check_gpu.py
+./.venv/bin/python scripts/check_gpu.py --require-gpu
 ```
 
 Optional mode exits successfully on CPU and prints a warning. Required mode
 fails if no GPU is visible.
+
+For WSL2-specific GPU setup, see [`wsl_gpu_setup.md`](wsl_gpu_setup.md).
+
+## TensorFlow Is Missing or Fails to Import
+
+Run:
+
+```bash
+python3 scripts/bootstrap_env.py --gpu auto
+```
+
+That command recreates or repairs `.venv`, installs the project requirements,
+and re-runs the setup checks.
 
 ## Runner Stops or Some Tasks Fail
 

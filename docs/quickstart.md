@@ -3,13 +3,47 @@
 This is the shortest path from a local INbreast copy to a validated run. The
 full experiment grid can take hours, so run the checks and smoke command first.
 
+## Unattended Setup (Recommended)
+
+For a fully automated setup that handles everything:
+
+```bash
+python3 scripts/unattended_setup.py --gpu auto
+```
+
+This will:
+1. Bootstrap the Python environment
+2. Validate the dataset
+3. Run smoke tests
+4. Preprocess the data
+
+After this completes successfully, skip to step 7 to run experiments.
+
+For CPU-only mode:
+
+```bash
+python3 scripts/unattended_setup.py --gpu off
+```
+
+Verify readiness:
+
+```bash
+python3 scripts/check_readiness.py
+```
+
+## Manual Setup
+
+If you prefer step-by-step control, follow the sections below.
+
 ## 1. Prerequisites
 
 - Python 3.10, 3.11, or 3.12
 - `python3`, `python3-venv`, `python3-pip`
 - Build tools such as `build-essential` and `python3-dev`
 - The INbreast dataset available locally
-- Optional NVIDIA GPU support; see [`gpu.md`](gpu.md)
+- Optional NVIDIA GPU support; see [`gpu.md`](gpu.md) and [`wsl_gpu_setup.md`](wsl_gpu_setup.md)
+
+Note: GPU is optional. The pipeline runs on CPU if GPU is not available.
 
 Expected dataset layout:
 
@@ -31,29 +65,33 @@ sudo apt install python3 python3-venv python3-pip build-essential python3-dev
 Create and install:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
+python3 scripts/bootstrap_env.py --gpu auto
 ```
 
 For development checks:
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python3 scripts/bootstrap_env.py --gpu auto --dev
 ```
+
+Use `--gpu required` instead of `--gpu auto` when the run must fail unless
+TensorFlow can use the GPU. Use `--gpu off` to force CPU-only mode.
+
+Note: If GPU setup fails with `--gpu auto`, the bootstrap will succeed and the
+pipeline will run on CPU. For WSL GPU troubleshooting, see
+[`wsl_gpu_setup.md`](wsl_gpu_setup.md).
 
 ## 3. Validate Setup
 
 ```bash
-python scripts/check_environment.py --require-venv
-python scripts/validate_dataset.py
-python scripts/check_gpu.py
-python scripts/smoke_run.py
+./.venv/bin/python scripts/check_environment.py --require-venv
+./.venv/bin/python scripts/validate_dataset.py
+./.venv/bin/python scripts/check_gpu.py
+./.venv/bin/python scripts/smoke_run.py
 ```
 
-Use `python scripts/check_gpu.py --require-gpu` only when the run must use GPU.
+Use `./.venv/bin/python scripts/check_gpu.py --require-gpu` only when the run
+must use GPU.
 
 ## 4. Review the Experiment Grid
 
@@ -62,10 +100,17 @@ The default grid lives in
 controls paths, preprocessing combinations, model names, folds, epochs, batch
 size, and evaluation settings.
 
+The shipped config disables pairwise preprocessing combinations by default.
+Enable them only when you intentionally want a much larger queue:
+
+```bash
+./.venv/bin/python run_experiments.py run --combined-preprocessing
+```
+
 ## 5. Preprocess the Dataset
 
 ```bash
-python preprocess.py
+./.venv/bin/python preprocess.py
 ```
 
 Main outputs:
@@ -81,7 +126,7 @@ Main outputs:
 After preprocessing, run a single real training task before the full grid:
 
 ```bash
-python run_experiments.py run \
+./.venv/bin/python run_experiments.py run \
   --models "custom cnn" \
   --preprocessing none \
   --no-combined-preprocessing \
@@ -93,15 +138,22 @@ python run_experiments.py run \
 ## 7. Run the Full Experiment Queue
 
 Only start this when the checks above pass and you are ready for a long run.
+For unattended execution, prefer the background launcher:
 
 ```bash
-python run_experiments.py run
+./.venv/bin/python run_experiments.py launch
+```
+
+Foreground mode is still available:
+
+```bash
+./.venv/bin/python run_experiments.py run
 ```
 
 Local dashboard:
 
 ```bash
-streamlit run experiment_dashboard.py
+./.venv/bin/streamlit run experiment_dashboard.py
 ```
 
 The dashboard and CLI share the same persisted runner state.
@@ -111,13 +163,13 @@ The dashboard and CLI share the same persisted runner state.
 Check progress:
 
 ```bash
-python run_experiments.py status
+./.venv/bin/python run_experiments.py status
 ```
 
 Request a safe stop:
 
 ```bash
-python run_experiments.py stop
+./.venv/bin/python run_experiments.py stop
 ```
 
 Behavior:
@@ -129,32 +181,32 @@ Behavior:
 Resume later:
 
 ```bash
-python run_experiments.py run
+./.venv/bin/python run_experiments.py run
 ```
 
 Useful rerun options:
 
 ```bash
-python run_experiments.py run --rerun-failed
-python run_experiments.py run --rerun-completed
+./.venv/bin/python run_experiments.py run --rerun-failed
+./.venv/bin/python run_experiments.py run --rerun-completed
 ```
 
 Reset only the orchestration state:
 
 ```bash
-python run_experiments.py reset
+./.venv/bin/python run_experiments.py reset
 ```
 
 Reset state and remove saved run outputs:
 
 ```bash
-python run_experiments.py reset --purge-results
+./.venv/bin/python run_experiments.py reset --purge-results
 ```
 
 ## 9. Generate the Final Report
 
 ```bash
-python evaluate.py
+./.venv/bin/python evaluate.py
 ```
 
 Main outputs:

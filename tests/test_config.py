@@ -24,6 +24,7 @@ class ExperimentConfigTest(unittest.TestCase):
         self.assertEqual(config.train.learning_rate, 1e-4)
         self.assertEqual(config.train.validation_size, 0.2)
         self.assertEqual(config.train.random_state, 42)
+        self.assertFalse(config.train.include_combinations)
         self.assertIn("custom cnn", config.models)
         self.assertEqual(config.models["custom cnn"].input_channels, 1)
 

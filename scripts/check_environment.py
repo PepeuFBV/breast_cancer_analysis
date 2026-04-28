@@ -12,6 +12,7 @@ from pathlib import Path
 
 from pipeline.config import load_experiment_config
 from pipeline.data.validation import inspect_dataset_layout
+from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
 
 MIN_PYTHON = (3, 10)
 MAX_PYTHON_EXCLUSIVE = (3, 13)
@@ -109,11 +110,12 @@ def run_environment_check(
         errors.append(
             "Missing required package(s): "
             f"{', '.join(missing)}. Install with "
-            "`python -m pip install -r requirements.txt`."
+            "`python3 scripts/bootstrap_env.py`."
         )
 
     if not skip_tensorflow and "tensorflow" not in missing:
         try:
+            ensure_tensorflow_wsl_gpu_env()
             tf = importlib.import_module("tensorflow")
             details["tensorflow_version"] = getattr(tf, "__version__", "unknown")
             details["tensorflow_physical_gpus"] = [

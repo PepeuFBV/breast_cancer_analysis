@@ -17,6 +17,20 @@ and Python header packages.
 
 ## Python Environment
 
+Recommended unattended bootstrap:
+
+```bash
+python3 scripts/bootstrap_env.py --gpu auto
+```
+
+Use `--gpu required` to fail if TensorFlow cannot be configured for GPU, and
+add `--dev` to install development dependencies in the same pass.
+
+After bootstrapping, either activate the environment or use `./.venv/bin/python`
+directly.
+
+Manual fallback:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -28,7 +42,7 @@ python -m pip install -e .
 For tests and formatting:
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python3 scripts/bootstrap_env.py --gpu auto --dev
 ```
 
 ## Dataset
@@ -52,11 +66,11 @@ python scripts/validate_dataset.py
 Run this before preprocessing or training:
 
 ```bash
-python scripts/check_environment.py --require-venv
+./.venv/bin/python scripts/check_environment.py --require-venv
 ```
 
 If the dataset is not present yet:
 
 ```bash
-python scripts/check_environment.py --require-venv --skip-dataset
+./.venv/bin/python scripts/check_environment.py --require-venv --skip-dataset
 ```

@@ -26,10 +26,10 @@ python -m black --check .
 Project smoke checks:
 
 ```bash
-python scripts/check_environment.py --require-venv
-python scripts/validate_dataset.py
-python scripts/check_gpu.py
-python scripts/smoke_run.py
+./.venv/bin/python scripts/check_environment.py --require-venv
+./.venv/bin/python scripts/validate_dataset.py
+./.venv/bin/python scripts/check_gpu.py
+./.venv/bin/python scripts/smoke_run.py
 ```
 
 `scripts/smoke_run.py` uses synthetic data and a tiny mocked model path. It
@@ -39,7 +39,7 @@ evaluation report generation without the full INbreast experiment grid.
 After `python preprocess.py`, you can run one real training task:
 
 ```bash
-python run_experiments.py run \
+./.venv/bin/python run_experiments.py run \
   --models "custom cnn" \
   --preprocessing none \
   --no-combined-preprocessing \
@@ -49,3 +49,5 @@ python run_experiments.py run \
 ```
 
 Do not use the full default experiment queue as the default validation path.
+Pairwise preprocessing combinations are opt-in because they expand the queue
+dramatically; use `--combined-preprocessing` only when you explicitly want that.
