@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 import pytest
 
-from scripts import check_environment, check_gpu, smoke_run, validate_dataset
+from scripts import (
+    check_environment,
+    check_gpu,
+    smoke_run,
+    validate_dataset,
+    validate_long_runner,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -182,3 +188,7 @@ def test_smoke_run_uses_synthetic_data_and_writes_report(tmp_path) -> None:
     assert snapshot["counts"]["failed"] == 0
     assert records == 2
     assert report_path.exists()
+
+
+def test_validate_long_runner_smoke_config_exists() -> None:
+    assert validate_long_runner.DEFAULT_CONFIG_PATH == "configs/experiment.smoke.json"

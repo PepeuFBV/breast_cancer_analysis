@@ -191,22 +191,28 @@ def main(argv: list[str] | None = None) -> int:
 
     snapshot = result["snapshot"]
     counts = snapshot["counts"]
+    completed = int(counts["completed"])
+    failed = int(counts["failed"])
+    total = int(snapshot["total"])
+    skipped = _skipped_count(snapshot)
     print("Long runner validation completed.")
     print(f"Requested device: {runtime_check.requested_device}")
     print(f"Selected device: {runtime_check.selected_device}")
     print(f"Overall status: {snapshot['overall_status']}")
-    print(f"Total combinations: {snapshot['total']}")
-    print(f"Completed: {counts['completed']}")
-    print(f"Failed: {counts['failed']}")
-    print(f"Skipped: {_skipped_count(snapshot)}")
+    print(f"Total combinations: {total}")
+    print(f"Completed: {completed}")
+    print(f"Failed: {failed}")
+    print(f"Skipped: {skipped}")
     print(f"Peak memory (MB): {result['peak_process_memory_mb']}")
     print(f"Final state path: {result['state_path']}")
     print(f"Summary CSV path: {result['summary_path']}")
-    return (
-        0
-        if counts["failed"] == 0 and counts["completed"] >= args.combinations
-        else 1
-    )
+    is_success = failed == 0 and completed >= args.combinations
+    if not is_success:
+        print(
+            "Validation failed: expected all requested combinations to complete "
+            f"(requested={args.combinations}, completed={completed}, failed={failed})."
+        )
+    return 0 if is_success else 1
 
 
 if __name__ == "__main__":

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-KNOWN_MARKERS = ("unit", "smoke", "integration", "gpu", "slow")
+KNOWN_MARKERS = ("unit", "smoke", "integration", "gpu", "slow", "memory", "stress")
+
+
+def pytest_configure(config) -> None:
+    for marker in KNOWN_MARKERS:
+        config.addinivalue_line("markers", f"{marker}: categorized test marker")
 
 
 def pytest_collection_modifyitems(config, items) -> None:
