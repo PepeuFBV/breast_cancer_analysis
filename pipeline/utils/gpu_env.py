@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import os
 import sys
 from pathlib import Path
@@ -75,6 +74,9 @@ def configure_gpu_memory_growth() -> bool:
     
     if _GPU_MEMORY_CONFIGURED:
         return True
+
+    if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1":
+        return False
     
     try:
         import tensorflow as tf
@@ -134,6 +136,8 @@ def ensure_tensorflow_wsl_gpu_env() -> None:
     """Re-exec the current process with the CUDA loader paths expected by WSL2."""
 
     if not _is_wsl_linux():
+        return
+    if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1":
         return
     if os.environ.get(_GPU_ENV_BOOTSTRAPPED) == "1":
         return

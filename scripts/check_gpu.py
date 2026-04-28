@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import os
 from dataclasses import dataclass
 from typing import Any
 
 from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.runtime_device import check_runtime_device
 
 
 @dataclass(frozen=True)
@@ -24,10 +24,6 @@ class TensorFlowGpuCheck:
     @property
     def ok(self) -> bool:
         return not self.errors
-
-
-def _device_name(device: Any) -> str:
-    return str(getattr(device, "name", device))
 
 
 def check_tensorflow_gpu(
@@ -49,86 +45,47 @@ def check_tensorflow_gpu(
         )
 
     mode = "cpu-only" if cpu_only else "required" if require_gpu else "optional"
-    warnings: list[str] = []
-    errors: list[str] = []
-
-    if cpu_only:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
-    if tensorflow_module is None:
+    device = "cpu" if cpu_only else "gpu" if require_gpu else "auto"
+    resolved_tensorflow = tensorflow_module
+    if resolved_tensorflow is None:
         ensure_tensorflow_wsl_gpu_env()
-
-    try:
-        tf = tensorflow_module or importlib.import_module("tensorflow")
-    except Exception as error:
-        extra_help = ""
-        if (
-            isinstance(error, ModuleNotFoundError)
-            and getattr(error, "name", None) == "tensorflow"
-        ):
-            extra_help = (
-                " Install the project environment with "
-                "`python3 scripts/bootstrap_env.py`."
+        try:
+            resolved_tensorflow = importlib.import_module("tensorflow")
+        except Exception as error:
+            extra_help = ""
+            if (
+                isinstance(error, ModuleNotFoundError)
+                and getattr(error, "name", None) == "tensorflow"
+            ):
+                extra_help = (
+                    " Install the project environment with "
+                    "`python3 scripts/bootstrap_env.py`."
+                )
+            return TensorFlowGpuCheck(
+                mode=mode,
+                tensorflow_available=False,
+                tensorflow_version=None,
+                built_with_cuda=None,
+                physical_gpus=(),
+                logical_gpus=(),
+                warnings=(),
+                errors=(f"TensorFlow import failed: {error}.{extra_help}",),
             )
-        return TensorFlowGpuCheck(
-            mode=mode,
-            tensorflow_available=False,
-            tensorflow_version=None,
-            built_with_cuda=None,
-            physical_gpus=(),
-            logical_gpus=(),
-            warnings=(),
-            errors=(f"TensorFlow import failed: {error}.{extra_help}",),
-        )
-
-    try:
-        physical_gpus = tuple(
-            _device_name(device) for device in tf.config.list_physical_devices("GPU")
-        )
-    except Exception as error:
-        physical_gpus = ()
-        errors.append(f"Could not list physical GPU devices: {error}")
-
-    try:
-        logical_gpus = tuple(
-            _device_name(device) for device in tf.config.list_logical_devices("GPU")
-        )
-    except Exception as error:
-        logical_gpus = ()
-        warnings.append(f"Could not list logical GPU devices: {error}")
-
-    built_with_cuda: bool | None
-    try:
-        built_with_cuda = bool(tf.test.is_built_with_cuda())
-    except Exception as error:
-        built_with_cuda = None
-        warnings.append(f"Could not determine CUDA build support: {error}")
-
-    if require_gpu and not physical_gpus:
-        errors.append(
-            "No TensorFlow GPU devices are visible. Check NVIDIA driver, CUDA/cuDNN "
-            "compatibility, WSL GPU passthrough if applicable, and "
-            "CUDA_VISIBLE_DEVICES."
-        )
-    elif not require_gpu and not cpu_only and not physical_gpus:
-        warnings.append(
-            "No TensorFlow GPU devices are visible; CPU execution is available."
-        )
-    elif cpu_only and physical_gpus:
-        warnings.append(
-            "GPU devices are still visible in CPU-only mode. Set CUDA_VISIBLE_DEVICES "
-            "before importing TensorFlow."
-        )
+    runtime_result = check_runtime_device(
+        device=device,
+        require_gpu=require_gpu,
+        tensorflow_module=resolved_tensorflow,
+    )
 
     return TensorFlowGpuCheck(
         mode=mode,
-        tensorflow_available=True,
-        tensorflow_version=str(getattr(tf, "__version__", "unknown")),
-        built_with_cuda=built_with_cuda,
-        physical_gpus=physical_gpus,
-        logical_gpus=logical_gpus,
-        warnings=tuple(warnings),
-        errors=tuple(errors),
+        tensorflow_available=runtime_result.tensorflow_available,
+        tensorflow_version=runtime_result.tensorflow_version,
+        built_with_cuda=runtime_result.built_with_cuda,
+        physical_gpus=runtime_result.physical_gpus,
+        logical_gpus=runtime_result.logical_gpus,
+        warnings=runtime_result.warnings,
+        errors=runtime_result.errors,
     )
 
 
