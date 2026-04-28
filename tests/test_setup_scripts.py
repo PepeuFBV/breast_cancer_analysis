@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -114,6 +115,58 @@ def test_environment_check_reports_missing_dataset(tmp_path, monkeypatch) -> Non
     assert not result.ok
     assert any("dataset directory is missing" in error for error in result.errors)
     assert (tmp_path / "artifacts").exists()
+
+
+def test_environment_check_bootstraps_wsl_gpu_env_before_tensorflow_import(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        check_environment,
+        "_distribution_versions",
+        lambda distributions: (
+            {name: "test-version" for name in distributions},
+            [],
+        ),
+    )
+
+    bootstrap_calls: list[str] = []
+    monkeypatch.setattr(
+        check_environment,
+        "ensure_tensorflow_wsl_gpu_env",
+        lambda: bootstrap_calls.append("called"),
+    )
+    monkeypatch.setattr(
+        check_environment.importlib,
+        "import_module",
+        lambda name: _fake_tensorflow(),
+    )
+
+    result = check_environment.run_environment_check(
+        raw_data_dir=tmp_path / "missing-data",
+        artifacts_dir=tmp_path / "artifacts",
+        skip_dataset=True,
+    )
+
+    assert result.ok
+    assert bootstrap_calls == ["called"]
+
+
+def test_gpu_check_missing_tensorflow_points_to_bootstrap() -> None:
+    def _raise_missing_tensorflow(_name: str):
+        error = ModuleNotFoundError("No module named 'tensorflow'")
+        error.name = "tensorflow"
+        raise error
+
+    with patch.object(
+        check_gpu.importlib,
+        "import_module",
+        side_effect=_raise_missing_tensorflow,
+    ):
+        result = check_gpu.check_tensorflow_gpu()
+
+    assert not result.ok
+    assert "python3 scripts/bootstrap_env.py" in result.errors[0]
 
 
 @pytest.mark.smoke

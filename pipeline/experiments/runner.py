@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gc
 import hashlib
 import json
 import logging
@@ -10,13 +11,15 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from pipeline.train.models import ModelBuilder
+from pipeline.train.models import MODEL_BUILDERS, ModelBuilder
+from pipeline.train.preprocessing import count_preprocessing_tasks
 from pipeline.train.runner import (
     TrainingConfig,
     TrainingTask,
@@ -27,6 +30,7 @@ from pipeline.train.runner import (
     run_training_task,
     save_run_result,
 )
+from pipeline.utils.gpu_env import clear_gpu_memory
 from pipeline.utils.paths import ProjectPaths
 
 STATE_SCHEMA_VERSION = 1
@@ -36,6 +40,7 @@ RUNNER_LOG_FILENAME = "iterative-runner.log"
 RUNNER_PID_FILENAME = "runner_pid.json"
 STOP_REQUEST_FILENAME = "stop_requested.flag"
 TASK_STATUSES = {"pending", "running", "completed", "failed", "stopped"}
+MAX_QUEUE_TASKS = 50_000
 
 
 @dataclass(frozen=True)
@@ -147,14 +152,20 @@ def _model_runtime_signature(
     return _normalize_json_value(asdict(runtime))
 
 
+def _stable_path_for_experiment_id(path: Path) -> str:
+    """Return an absolute path string without forcing symlink resolution."""
+
+    return str(path.expanduser().absolute())
+
+
 def build_experiment_id(task: TrainingTask, config: TrainingConfig) -> str:
     payload = {
         "model_name": task.model_name,
         "preproc_id": task.preproc_id,
         "param_id": task.param_id,
         "param_json": json.loads(task.param_json),
-        "train_split_path": str(config.train_split_path.resolve()),
-        "test_split_path": str(config.test_split_path.resolve()),
+        "train_split_path": _stable_path_for_experiment_id(config.train_split_path),
+        "test_split_path": _stable_path_for_experiment_id(config.test_split_path),
         "folds": config.folds,
         "validation_size": config.validation_size,
         "batch_size": config.batch_size,
@@ -647,10 +658,38 @@ class IterativeExperimentRunner:
         return logger
 
     def build_queue(self) -> list[tuple[dict[str, Any], TrainingTask]]:
+        available_builders = self.model_builders or MODEL_BUILDERS
+        model_names = self.training_config.model_names or list(
+            available_builders.keys()
+        )
+        resolved_preprocessing_tasks = (
+            list(self.preprocessing_tasks)
+            if self.preprocessing_tasks is not None
+            else None
+        )
+        preprocessing_count = (
+            len(resolved_preprocessing_tasks)
+            if resolved_preprocessing_tasks is not None
+            else count_preprocessing_tasks(
+                self.training_config.preprocessing_ids,
+                include_combinations=self.training_config.include_combinations,
+                param_grids=self.training_config.preprocessing_grids,
+            )
+        )
+        estimated_task_count = preprocessing_count * len(model_names)
+        if estimated_task_count > MAX_QUEUE_TASKS:
+            raise ValueError(
+                "The requested experiment grid expands to "
+                f"{estimated_task_count:,} training tasks, which exceeds the "
+                f"safety limit of {MAX_QUEUE_TASKS:,}. Narrow the run with "
+                "`--models`, `--preprocessing`, `--no-combined-preprocessing`, "
+                "or a smaller preprocessing grid."
+            )
+
         training_tasks = build_training_tasks(
             self.training_config,
             model_builders=self.model_builders,
-            preprocessing_tasks=self.preprocessing_tasks,
+            preprocessing_tasks=resolved_preprocessing_tasks,
         )
         return [
             (build_experiment_record(task, self.training_config), task)
@@ -728,6 +767,11 @@ class IterativeExperimentRunner:
                 print(f"Running {training_task.label}")
                 self.store.update_task_status(task_id, status="running")
                 started_at = datetime.now(timezone.utc)
+                
+                # Aggressive GPU memory cleanup before starting new experiment
+                clear_gpu_memory()
+                gc.collect()
+                time.sleep(2)  # Longer delay for memory release
 
                 try:
                     result = run_training_task(
@@ -764,6 +808,9 @@ class IterativeExperimentRunner:
                         f"Completed {training_task.label} "
                         f"(history: {history_path}, predictions: {predictions_path})"
                     )
+                    # Cleanup after successful completion
+                    del result, history_summary
+                    gc.collect()
                 except Exception as error:
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at

@@ -162,6 +162,9 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
     print(f"History dir: {snapshot['history_dir']}")
     print(f"Predictions dir: {snapshot['predictions_dir']}")
     print(f"Runner log: {snapshot['log_path']}")
+    state_path = Path(str(snapshot["state_path"]))
+    if snapshot["total"] == 0 and not state_path.exists():
+        print("Note: no persisted runner state exists yet.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,6 +200,17 @@ def main(argv: list[str] | None = None) -> int:
         except RuntimeError as error:
             print(str(error))
             return 1
+        except ValueError as error:
+            print(str(error))
+            return 1
+        except KeyboardInterrupt:
+            snapshot = runner.store.summarize()
+            if snapshot["total"] == 0:
+                print("Run interrupted before any experiment state was created.")
+            else:
+                print("Run interrupted.")
+                _print_status_snapshot(snapshot)
+            return 130
         _print_status_snapshot(snapshot)
         return 0
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -14,6 +15,7 @@ from pipeline.data.constants import DEFAULT_RANDOM_STATE, LABEL_MAPPING
 from pipeline.data.dataset import DatasetSplitResult, split_dataset
 from pipeline.train.models import MODEL_BUILDERS, ModelBuilder, ModelRuntimeConfig
 from pipeline.train.preprocessing import PreprocessingTask, iter_preprocessing_tasks
+from pipeline.utils.gpu_env import clear_gpu_memory, configure_gpu_memory_growth
 from pipeline.utils.reproducibility import enforce_reproducibility
 from pipeline.utils.runtime import format_duration
 
@@ -154,15 +156,12 @@ def _one_hot_encode(labels: np.ndarray, num_classes: int) -> np.ndarray:
 
 
 def _is_resource_exhausted_error(error: Exception) -> bool:
-    return error.__class__.__name__ == "ResourceExhaustedError"
+    error_name = error.__class__.__name__
+    return error_name in ("ResourceExhaustedError", "InternalError") or "OOM" in str(error)
 
 
 def _clear_keras_session() -> None:
-    try:
-        from keras import backend as backend
-    except Exception:
-        return
-    backend.clear_session()
+    clear_gpu_memory()
 
 
 def _build_fit_callbacks() -> list[object]:
@@ -231,8 +230,76 @@ def run_model_with_preprocessing(
     learning_rate: float,
     random_state: int,
     model_runtime: ModelRuntimeConfig | None = None,
+    max_retries: int = 3,
+) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
+    """Run model training with automatic retry on OOM errors.
+    
+    Args:
+        max_retries: Number of times to retry on OOM errors with memory cleanup.
+    """
+    configure_gpu_memory_growth()
+    
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            # Aggressive cleanup between retries
+            clear_gpu_memory()
+            gc.collect()
+            # Longer wait for memory to be fully released
+            time.sleep(3 + attempt)  # Increasing delay: 4s, 5s, 6s
+        
+        try:
+            return _run_model_with_preprocessing_impl(
+                train_df,
+                validation_df,
+                evaluation_df,
+                task,
+                model_name,
+                model_fn,
+                num_classes=num_classes,
+                batch_size=batch_size,
+                epochs=epochs,
+                loss=loss,
+                learning_rate=learning_rate,
+                random_state=random_state,
+                model_runtime=model_runtime,
+            )
+        except Exception as error:
+            last_error = error
+            if not _is_resource_exhausted_error(error):
+                raise
+            if attempt < max_retries:
+                # Log retry attempt
+                print(f"  OOM error on attempt {attempt + 1}/{max_retries + 1}, retrying after cleanup...")
+                continue
+            raise
+    
+    if last_error:
+        raise last_error
+    raise RuntimeError("Unexpected: no result and no error")
+
+
+def _run_model_with_preprocessing_impl(
+    train_df: pd.DataFrame,
+    validation_df: pd.DataFrame,
+    evaluation_df: pd.DataFrame,
+    task: PreprocessingTask,
+    model_name: str,
+    model_fn: ModelBuilder,
+    *,
+    num_classes: int,
+    batch_size: int,
+    epochs: int,
+    loss: str,
+    learning_rate: float,
+    random_state: int,
+    model_runtime: ModelRuntimeConfig | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     enforce_reproducibility(random_state)
+    
+    # Clear memory before starting
+    clear_gpu_memory()
+    gc.collect()
 
     x_train, y_train = preprocess_images(train_df, task.apply)
     x_validation, y_validation = preprocess_images(validation_df, task.apply)
@@ -256,18 +323,28 @@ def run_model_with_preprocessing(
         batch_size,
         model_runtime,
     )
+    
+    # Delete raw image arrays immediately after conversion
+    del x_train, x_validation, x_evaluation
+    gc.collect()
 
     y_train_encoded = _one_hot_encode(y_train, num_classes)
     y_validation_encoded = _one_hot_encode(y_validation, num_classes)
+    
+    # Delete label arrays after encoding
+    del y_train, y_validation
+    gc.collect()
 
-    model = model_fn(
-        input_shape=input_shape,
-        num_classes=num_classes,
-        loss=loss,
-        learning_rate=learning_rate,
-        runtime=model_runtime,
-    )
+    model = None
     try:
+        model = model_fn(
+            input_shape=input_shape,
+            num_classes=num_classes,
+            loss=loss,
+            learning_rate=learning_rate,
+            runtime=model_runtime,
+        )
+        
         history = model.fit(
             train_inputs,
             y_train_encoded,
@@ -277,6 +354,11 @@ def run_model_with_preprocessing(
             verbose=0,
             callbacks=_build_fit_callbacks(),
         )
+        
+        # Delete training data immediately after fit
+        del train_inputs, y_train_encoded, validation_inputs, y_validation_encoded
+        gc.collect()
+        
         history_dict = history.history
         val_accuracies = history_dict.get("val_accuracy")
         if not val_accuracies:
@@ -286,12 +368,23 @@ def run_model_with_preprocessing(
             )
         best_epoch = int(np.argmax(val_accuracies)) + 1
         best_val_acc = float(np.max(val_accuracies))
+        
         predictions_df = _predict_dataframe(
             model, evaluation_inputs, evaluation_df, effective_batch_size
         )
+        
+        # Delete evaluation inputs after prediction
+        del evaluation_inputs
+        gc.collect()
+        
         return best_val_acc, best_epoch, history_dict, predictions_df
     finally:
+        # Aggressive cleanup
+        if model is not None:
+            del model
+        gc.collect()
         _clear_keras_session()
+        gc.collect()
 
 
 def _artifact_paths(
@@ -498,6 +591,12 @@ def _run_cross_validation(
     fold_epochs: list[int] = []
     model_runtime = (config.model_runtime or {}).get(model_name)
     for fold_index, (fit_idx, validation_idx) in enumerate(split_iterator, start=1):
+        # Aggressive cleanup before each fold
+        if fold_index > 1:
+            clear_gpu_memory()
+            gc.collect()
+            time.sleep(1)
+        
         fit_df = train_df.iloc[fit_idx].reset_index(drop=True)
         validation_df = train_df.iloc[validation_idx].reset_index(drop=True)
         fold_seed = config.random_state + fold_index
@@ -539,6 +638,10 @@ def _run_cross_validation(
         )
         if best_result is None or current.best_val_acc > best_result.best_val_acc:
             best_result = current
+        
+        # Cleanup after each fold
+        del fit_df, validation_df, history_dict, predictions_df
+        gc.collect()
 
     if best_result is None:
         raise RuntimeError("Cross-validation did not produce any runs.")

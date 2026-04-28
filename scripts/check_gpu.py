@@ -61,6 +61,15 @@ def check_tensorflow_gpu(
     try:
         tf = tensorflow_module or importlib.import_module("tensorflow")
     except Exception as error:
+        extra_help = ""
+        if (
+            isinstance(error, ModuleNotFoundError)
+            and getattr(error, "name", None) == "tensorflow"
+        ):
+            extra_help = (
+                " Install the project environment with "
+                "`python3 scripts/bootstrap_env.py`."
+            )
         return TensorFlowGpuCheck(
             mode=mode,
             tensorflow_available=False,
@@ -69,7 +78,7 @@ def check_tensorflow_gpu(
             physical_gpus=(),
             logical_gpus=(),
             warnings=(),
-            errors=(f"TensorFlow import failed: {error}",),
+            errors=(f"TensorFlow import failed: {error}.{extra_help}",),
         )
 
     try:

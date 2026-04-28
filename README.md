@@ -7,9 +7,11 @@ set of entrypoints for preprocessing, training, orchestration, and evaluation.
 ## Start Here
 
 - Quick start: [`docs/quickstart.md`](docs/quickstart.md)
+- Unattended execution: [`docs/unattended_execution.md`](docs/unattended_execution.md)
 - Setup details: [`docs/setup.md`](docs/setup.md)
 - Testing and smoke checks: [`docs/testing.md`](docs/testing.md)
 - GPU validation: [`docs/gpu.md`](docs/gpu.md)
+- WSL GPU setup: [`docs/wsl_gpu_setup.md`](docs/wsl_gpu_setup.md)
 - Troubleshooting: [`docs/troubleshooting.md`](docs/troubleshooting.md)
 - Main config: [`configs/experiment.default.json`](configs/experiment.default.json)
 - Local dashboard: [`experiment_dashboard.py`](experiment_dashboard.py)
@@ -17,10 +19,28 @@ set of entrypoints for preprocessing, training, orchestration, and evaluation.
 
 ## Main Workflow
 
+### Quick Unattended Setup
+
+For a fully automated setup:
+
+```bash
+python3 scripts/unattended_setup.py --gpu auto
+```
+
+This will bootstrap the environment, validate the dataset, run smoke tests, and preprocess the data.
+
+Verify readiness before launching experiments:
+
+```bash
+python3 scripts/check_readiness.py
+```
+
+### Manual Workflow
+
 1. Put the INbreast dataset under `data/INbreast Release 1.0/`.
-2. Create a virtual environment and install dependencies.
+2. Bootstrap the project environment.
 3. Run `python preprocess.py`.
-4. Run the experiment queue with `python run_experiments.py run` or use the dashboard.
+4. Run the experiment queue with `python run_experiments.py launch` for unattended execution, or `python run_experiments.py run` in the foreground.
 5. Generate the consolidated report with `python evaluate.py`.
 
 ## Minimal Setup
@@ -32,29 +52,30 @@ sudo apt update
 sudo apt install python3 python3-venv python3-pip build-essential python3-dev
 ```
 
-Then create the project environment:
+Then bootstrap the project environment:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
+python3 scripts/bootstrap_env.py --gpu auto
 ```
+
+Use `--gpu required` when the run must use TensorFlow on GPU and should fail fast
+otherwise. Add `--dev` to install test and formatting dependencies too.
+
+After bootstrapping, either activate `.venv` or call `./.venv/bin/python`
+directly.
 
 Supported Python range: 3.10, 3.11, or 3.12.
 
 For development checks:
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python scripts/check_environment.py --require-venv
-python scripts/validate_dataset.py
-python scripts/check_gpu.py
-python scripts/smoke_run.py
-python -m ruff check .
-python -m black --check .
-python -m pytest
+./.venv/bin/python scripts/check_environment.py --require-venv
+./.venv/bin/python scripts/validate_dataset.py
+./.venv/bin/python scripts/check_gpu.py
+./.venv/bin/python scripts/smoke_run.py
+./.venv/bin/python -m ruff check .
+./.venv/bin/python -m black --check .
+./.venv/bin/python -m pytest
 ```
 
 Get the full dataset here:
@@ -78,4 +99,5 @@ data/INbreast Release 1.0/
 
 The quick start guide has the exact commands for running, stopping, resuming,
 and resetting the experiment queue. The default experiment grid can take hours;
-use the smoke checks before launching the full battery.
+pairwise preprocessing combinations are disabled by default to keep queue
+construction practical. Use the smoke checks before launching the full battery.

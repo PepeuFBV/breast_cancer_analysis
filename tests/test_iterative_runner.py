@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from pipeline.config import load_experiment_config
 from pipeline.experiments import (
     ExperimentStateStore,
     IterativeExperimentRunner,
@@ -117,6 +119,26 @@ def _task(name: str, params: dict[str, object] | None = None) -> PreprocessingTa
 
 
 class IterativeRunnerTest(unittest.TestCase):
+    def test_build_experiment_id_does_not_resolve_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={
+                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
+                },
+                preprocessing_tasks=[_task("none")],
+            )
+
+            with patch("pathlib.Path.resolve", side_effect=AssertionError("resolve")):
+                record, _task_entry = runner.build_queue()[0]
+                experiment_id = record["id"]
+
+            self.assertTrue(experiment_id.startswith("exp-"))
+
     def test_runner_resumes_without_rerunning_completed_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -287,6 +309,30 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["running"], 0)
             self.assertEqual(snapshot["counts"]["stopped"], 1)
             self.assertEqual(state["tasks"][0]["status"], "stopped")
+
+    def test_runner_rejects_excessively_large_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            experiment_config = load_experiment_config()
+            expanded_config = replace(
+                config,
+                include_combinations=True,
+                preprocessing_grids=experiment_config.preprocess.preprocessing_grid,
+            )
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=expanded_config,
+                model_builders={
+                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
+                },
+            )
+
+            with self.assertRaises(ValueError) as context:
+                runner.build_queue()
+
+            self.assertIn("safety limit", str(context.exception))
 
     def test_keyboard_interrupt_marks_current_task_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
