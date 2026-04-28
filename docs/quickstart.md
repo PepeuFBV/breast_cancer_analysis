@@ -1,13 +1,15 @@
 # Quick Start
 
-This guide covers the fastest way to run the full project from raw INbreast
-files to the final report.
+This is the shortest path from a local INbreast copy to a validated run. The
+full experiment grid can take hours, so run the checks and smoke command first.
 
 ## 1. Prerequisites
 
-- Python 3.10+
+- Python 3.10, 3.11, or 3.12
+- `python3`, `python3-venv`, `python3-pip`
+- Build tools such as `build-essential` and `python3-dev`
 - The INbreast dataset available locally
-- Optional: NVIDIA GPU with TensorFlow-compatible drivers
+- Optional NVIDIA GPU support; see [`gpu.md`](gpu.md)
 
 Expected dataset layout:
 
@@ -19,6 +21,15 @@ data/INbreast Release 1.0/
 
 ## 2. Set Up the Environment
 
+On Debian/Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install python3 python3-venv python3-pip build-essential python3-dev
+```
+
+Create and install:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -27,29 +38,31 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-If you want the lint and test tools too:
+For development checks:
 
 ```bash
 python -m pip install -r requirements-dev.txt
 ```
 
-## 3. Review the Experiment Grid
+## 3. Validate Setup
+
+```bash
+python scripts/check_environment.py --require-venv
+python scripts/validate_dataset.py
+python scripts/check_gpu.py
+python scripts/smoke_run.py
+```
+
+Use `python scripts/check_gpu.py --require-gpu` only when the run must use GPU.
+
+## 4. Review the Experiment Grid
 
 The default grid lives in
-[`configs/experiment.default.json`](../configs/experiment.default.json).
+[`configs/experiment.default.json`](../configs/experiment.default.json). It
+controls paths, preprocessing combinations, model names, folds, epochs, batch
+size, and evaluation settings.
 
-That file controls:
-
-- dataset and artifact paths
-- preprocessing combinations
-- models to run
-- training settings such as folds, epochs, and batch size
-- evaluation settings
-
-If the default battery is too large for your machine or time budget, trim the
-config before launching the full queue.
-
-## 4. Preprocess the Dataset
+## 5. Preprocess the Dataset
 
 ```bash
 python preprocess.py
@@ -63,18 +76,26 @@ Main outputs:
 - `artifacts/processed/splits/test_split.csv`
 - `artifacts/processed/splits/split_summary.json`
 
-## 5. Run the Experiment Queue
+## 6. Optional Real Training Smoke
 
-Foreground run:
+After preprocessing, run a single real training task before the full grid:
+
+```bash
+python run_experiments.py run \
+  --models "custom cnn" \
+  --preprocessing none \
+  --no-combined-preprocessing \
+  --folds 0 \
+  --epochs 1 \
+  --limit 1
+```
+
+## 7. Run the Full Experiment Queue
+
+Only start this when the checks above pass and you are ready for a long run.
 
 ```bash
 python run_experiments.py run
-```
-
-Background run:
-
-```bash
-python run_experiments.py launch
 ```
 
 Local dashboard:
@@ -85,7 +106,7 @@ streamlit run experiment_dashboard.py
 
 The dashboard and CLI share the same persisted runner state.
 
-## 6. Check Status, Stop, and Resume
+## 8. Check Status, Stop, and Resume
 
 Check progress:
 
@@ -130,7 +151,7 @@ Reset state and remove saved run outputs:
 python run_experiments.py reset --purge-results
 ```
 
-## 7. Generate the Final Report
+## 9. Generate the Final Report
 
 ```bash
 python evaluate.py
@@ -141,7 +162,7 @@ Main outputs:
 - `artifacts/reports/final_comprehensive_results.csv`
 - `artifacts/reports/evaluation_details/`
 
-## 8. Where Everything Is Saved
+## 10. Where Everything Is Saved
 
 - Processed data: `artifacts/processed/`
 - Training history: `artifacts/runs/history/`
@@ -149,18 +170,3 @@ Main outputs:
 - Runner state: `artifacts/experiments/state/runner_state.json`
 - Runner summary: `artifacts/experiments/summary/experiment_runs.csv`
 - Runner log: `artifacts/experiments/logs/iterative-runner.log`
-
-## 9. Small Smoke Run
-
-If you want to validate the pipeline before launching the full battery:
-
-```bash
-python run_experiments.py run \
-  --models "custom cnn" \
-  --preprocessing none \
-  --no-combined-preprocessing \
-  --folds 0 \
-  --epochs 3
-```
-
-This keeps the same orchestration flow, but with a much smaller queue.

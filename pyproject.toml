@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "breast-cancer-analysis-pipeline"
 version = "0.1.0"
 description = "Reusable training and evaluation pipeline for the breast cancer analysis project."
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 
 [tool.setuptools.packages.find]
 include = ["pipeline*"]
@@ -15,6 +15,14 @@ include = ["pipeline*"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
+addopts = "-m 'not slow and not integration'"
+markers = [
+    "unit: fast deterministic tests that do not require external data or hardware",
+    "smoke: lightweight end-to-end checks with synthetic or mocked data",
+    "integration: checks that require local datasets, services, or external tools",
+    "gpu: GPU-related checks; mocked GPU tests may still run by default",
+    "slow: long-running tests excluded from default pytest",
+]
 
 [tool.ruff]
 target-version = "py310"

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -99,11 +100,16 @@ def _build_training_config(root: Path) -> tuple[TrainingConfig, object]:
 def _task(name: str, params: dict[str, object] | None = None) -> PreprocessingTask:
     resolved_params = params or {}
     param_json = json.dumps(resolved_params, sort_keys=True, separators=(",", ":"))
+    param_id = "default"
+    if resolved_params:
+        param_id = "-".join(
+            [name, *[f"{key}-{value}" for key, value in resolved_params.items()]]
+        )
     return PreprocessingTask(
         preproc_id=name,
         params=resolved_params,
         param_display="default" if not resolved_params else param_json,
-        param_id="default" if not resolved_params else f"{name}-params",
+        param_id=param_id,
         param_json=param_json,
         is_combined=False,
         apply=lambda image: image,
@@ -212,6 +218,103 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(second_snapshot["counts"]["failed"], 1)
             self.assertEqual(third_snapshot["counts"]["completed"], 1)
             self.assertEqual(third_snapshot["counts"]["failed"], 0)
+
+    def test_runner_continues_past_tenth_task_and_records_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            fit_calls = {"count": 0}
+
+            def fake_builder(*args, **kwargs):
+                def on_fit():
+                    fit_calls["count"] += 1
+                    if fit_calls["count"] == 10:
+                        raise RuntimeError("synthetic tenth failure")
+
+                return _CountingModel(0.84, on_fit=on_fit)
+
+            tasks = [_task(f"variant_{index:02d}") for index in range(12)]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": fake_builder},
+                preprocessing_tasks=tasks,
+            )
+
+            snapshot = runner.run()
+
+            self.assertEqual(fit_calls["count"], 12)
+            self.assertEqual(snapshot["counts"]["completed"], 11)
+            self.assertEqual(snapshot["counts"]["failed"], 1)
+
+            store = ExperimentStateStore(project_paths)
+            state = store.load_state()
+            statuses = [task["status"] for task in state["tasks"]]
+            self.assertEqual(len(statuses), 12)
+            self.assertEqual(statuses[9], "failed")
+            self.assertEqual(statuses[10:], ["completed", "completed"])
+            self.assertIn("synthetic tenth failure", state["tasks"][9]["error_summary"])
+            self.assertTrue(store.summary_path.exists())
+            self.assertEqual(
+                len(list(project_paths.experiment_task_dir.glob("*.json"))), 12
+            )
+
+    def test_status_reconciles_stale_running_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={
+                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
+                },
+                preprocessing_tasks=[_task("none")],
+            )
+            record, _ = runner.build_queue()[0]
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.sync_queue(
+                [record], config_path=Path("configs/experiment.default.json")
+            )
+            store.update_task_status(record["id"], status="running")
+
+            snapshot = store.summarize()
+            state = store.load_state()
+
+            self.assertEqual(snapshot["counts"]["running"], 0)
+            self.assertEqual(snapshot["counts"]["stopped"], 1)
+            self.assertEqual(state["tasks"][0]["status"], "stopped")
+
+    def test_keyboard_interrupt_marks_current_task_stopped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={
+                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
+                },
+                preprocessing_tasks=[_task("none")],
+            )
+
+            with patch(
+                "pipeline.experiments.runner.run_training_task",
+                side_effect=KeyboardInterrupt("manual stop"),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    runner.run()
+
+            store = ExperimentStateStore(project_paths)
+            state = store.load_state()
+            self.assertEqual(state["tasks"][0]["status"], "stopped")
+            self.assertIn("manual stop", state["tasks"][0]["error_summary"])
+            self.assertIsNone(state["current_task_id"])
+            self.assertFalse(store.pid_path.exists())
 
 
 if __name__ == "__main__":
