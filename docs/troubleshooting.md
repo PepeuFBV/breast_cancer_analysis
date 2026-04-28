@@ -97,6 +97,11 @@ Key files:
 - `artifacts/experiments/state/runner_state.json`
 - `artifacts/experiments/summary/experiment_runs.csv`
 - `artifacts/experiments/logs/iterative-runner.log`
+- `artifacts/experiments/tasks/*.json`
+
+If failures appear after several combinations, inspect memory snapshots in
+`iterative-runner.log` (`[memory] before:*` and `[memory] after:*`) and compare
+task-level JSON snapshots to identify where failures started.
 
 Failed tasks are not rerun by default:
 
@@ -114,4 +119,27 @@ Reset state and saved run outputs:
 
 ```bash
 python run_experiments.py reset --purge-results
+```
+
+## Long Runs Fail After 8-10 Combinations
+
+Use smoke validation instead of jumping directly to the full queue:
+
+```bash
+./.venv/bin/python scripts/check_runtime.py --device auto
+./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device cpu
+```
+
+CPU-only mode is supported:
+
+```bash
+./.venv/bin/python scripts/check_runtime.py --device cpu
+```
+
+GPU is optional unless `--require-gpu` is passed.
+
+Use the long-run validator before retrying the full queue:
+
+```bash
+./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device auto
 ```

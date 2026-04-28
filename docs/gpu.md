@@ -25,18 +25,28 @@ CPU/GPU optional check:
 
 ```bash
 ./.venv/bin/python scripts/check_gpu.py
+./.venv/bin/python scripts/check_runtime.py --device auto
 ```
 
 CPU-only check:
 
 ```bash
 ./.venv/bin/python scripts/check_gpu.py --cpu-only
+./.venv/bin/python scripts/check_runtime.py --device cpu
 ```
 
 Require a visible GPU:
 
 ```bash
 ./.venv/bin/python scripts/check_gpu.py --require-gpu
+./.venv/bin/python scripts/check_runtime.py --device gpu --require-gpu
+```
+
+If you want GPU when available but do not want the check to fail on CPU-only
+machines, use:
+
+```bash
+./.venv/bin/python scripts/check_runtime.py --device gpu
 ```
 
 The required check fails when TensorFlow cannot see a GPU. That usually means

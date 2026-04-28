@@ -93,6 +93,17 @@ pipeline will run on CPU. For WSL GPU troubleshooting, see
 Use `./.venv/bin/python scripts/check_gpu.py --require-gpu` only when the run
 must use GPU.
 
+Validate runtime device policy explicitly:
+
+```bash
+./.venv/bin/python scripts/check_runtime.py --device cpu
+./.venv/bin/python scripts/check_runtime.py --device auto
+./.venv/bin/python scripts/check_runtime.py --device gpu || true
+```
+
+These checks are the default validation path. Do not start with the full
+experiment grid.
+
 ## 4. Review the Experiment Grid
 
 The default grid lives in
@@ -134,6 +145,20 @@ After preprocessing, run a single real training task before the full grid:
   --epochs 1 \
   --limit 1
 ```
+
+Long-run orchestration smoke (recommended before full queue):
+
+```bash
+./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device cpu
+./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device auto
+```
+
+If the runner later fails after several combinations, inspect:
+
+- `artifacts/experiments/logs/iterative-runner.log`
+- `artifacts/experiments/state/runner_state.json`
+- `artifacts/experiments/summary/experiment_runs.csv`
+- `artifacts/experiments/tasks/*.json`
 
 ## 7. Run the Full Experiment Queue
 
@@ -222,3 +247,4 @@ Main outputs:
 - Runner state: `artifacts/experiments/state/runner_state.json`
 - Runner summary: `artifacts/experiments/summary/experiment_runs.csv`
 - Runner log: `artifacts/experiments/logs/iterative-runner.log`
+- Per-task snapshots: `artifacts/experiments/tasks/*.json`
