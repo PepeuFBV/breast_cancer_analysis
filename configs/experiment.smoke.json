@@ -1,0 +1,45 @@
+{
+  "paths": {
+    "raw_data_dir": "data/INbreast Release 1.0",
+    "artifacts_dir": "artifacts-smoke",
+    "train_split": null,
+    "test_split": null,
+    "history_dir": null,
+    "predictions_dir": null,
+    "report_output": null
+  },
+  "preprocess": {
+    "image_size": [16, 16],
+    "augmentations_per_image": 0,
+    "samples_per_class": 2,
+    "test_size": 0.25,
+    "random_state": 42,
+    "preprocessing_grid": {
+      "none": {}
+    }
+  },
+  "train": {
+    "model_names": ["custom cnn"],
+    "preprocessing_ids": ["none"],
+    "include_combinations": false,
+    "folds": 0,
+    "validation_size": 0.25,
+    "batch_size": 2,
+    "epochs": 1,
+    "learning_rate": 0.0001,
+    "loss": "categorical_crossentropy",
+    "run_skip": false,
+    "random_state": 42
+  },
+  "models": {
+    "custom cnn": {
+      "input_channels": 1,
+      "batch_size": 2,
+      "dense_units": 32,
+      "dropout_rates": [0.1, 0.1, 0.1, 0.1]
+    }
+  },
+  "evaluate": {
+    "top_k": 3
+  }
+}

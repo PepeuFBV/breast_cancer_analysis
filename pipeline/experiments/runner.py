@@ -29,7 +29,7 @@ from pipeline.train.runner import (
     run_training_task,
     save_run_result,
 )
-from pipeline.utils.memory import clear_ml_memory
+from pipeline.utils.memory import clear_ml_memory, log_memory_snapshot
 from pipeline.utils.paths import ProjectPaths
 
 STATE_SCHEMA_VERSION = 1
@@ -640,6 +640,7 @@ class IterativeExperimentRunner:
         self.store = ExperimentStateStore(project_paths)
         self.logger = self._build_logger()
         self._previous_signal_handlers: dict[int, Any] = {}
+        self._peak_process_memory_mb: float | None = None
 
     def _build_logger(self) -> logging.Logger:
         logger = logging.getLogger(
@@ -655,6 +656,17 @@ class IterativeExperimentRunner:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
         return logger
+
+    def _capture_memory_snapshot(self, label: str) -> dict[str, Any]:
+        snapshot = log_memory_snapshot(label, logger=self.logger)
+        process_memory_mb = snapshot.get("process_memory_mb")
+        if isinstance(process_memory_mb, (int, float)):
+            if (
+                self._peak_process_memory_mb is None
+                or process_memory_mb > self._peak_process_memory_mb
+            ):
+                self._peak_process_memory_mb = float(process_memory_mb)
+        return snapshot
 
     def build_queue(self) -> list[tuple[dict[str, Any], TrainingTask]]:
         available_builders = self.model_builders or MODEL_BUILDERS
@@ -736,7 +748,9 @@ class IterativeExperimentRunner:
 
         if not runnable_ids:
             self.logger.info("No pending experiments to run.")
-            return self.store.summarize()
+            snapshot = self.store.summarize()
+            snapshot["peak_process_memory_mb"] = self._peak_process_memory_mb
+            return snapshot
 
         self.store.clear_stop_request()
         command = [sys.executable, "run_experiments.py", "run"]
@@ -746,6 +760,7 @@ class IterativeExperimentRunner:
             "Starting iterative run with %s runnable experiments.",
             len(runnable_ids),
         )
+        self._capture_memory_snapshot("run:start")
 
         try:
             train_df = load_split_dataframe(self.training_config.train_split_path)
@@ -766,9 +781,10 @@ class IterativeExperimentRunner:
                 print(f"Running {training_task.label}")
                 self.store.update_task_status(task_id, status="running")
                 started_at = datetime.now(timezone.utc)
-                
+
                 clear_ml_memory()
                 time.sleep(2)  # Longer delay for memory release
+                self._capture_memory_snapshot(f"task:start:{task_id}")
 
                 try:
                     result = run_training_task(
@@ -808,6 +824,7 @@ class IterativeExperimentRunner:
                     result = None
                     history_summary = None
                     clear_ml_memory()
+                    self._capture_memory_snapshot(f"task:completed:{task_id}")
                 except Exception as error:
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at
@@ -828,6 +845,7 @@ class IterativeExperimentRunner:
                     )
                     print(f"Failed {training_task.label}: {error_summary}")
                     clear_ml_memory()
+                    self._capture_memory_snapshot(f"task:failed:{task_id}")
                 except BaseException as error:
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at
@@ -852,6 +870,7 @@ class IterativeExperimentRunner:
                         traceback.format_exc(),
                     )
                     clear_ml_memory()
+                    self._capture_memory_snapshot(f"task:interrupted:{task_id}")
                     raise
 
                 if self.store.stop_requested():
@@ -861,10 +880,13 @@ class IterativeExperimentRunner:
                     )
                     break
         finally:
+            self._capture_memory_snapshot("run:finish")
             self.store.clear_pid_record()
             self._restore_signal_handlers()
 
-        return self.store.summarize()
+        snapshot = self.store.summarize()
+        snapshot["peak_process_memory_mb"] = self._peak_process_memory_mb
+        return snapshot
 
 
 def launch_background_runner(
