@@ -114,3 +114,51 @@ def test_print_status_snapshot_works_without_background_logs(capsys) -> None:
     module._print_status_snapshot(snapshot)
     output = capsys.readouterr().out
     assert "Overall status: idle" in output
+
+
+def test_run_task_command_returns_zero_when_completed(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    fake_runner = SimpleNamespace(
+        config_path="configs/experiment.default.json",
+        project_paths=SimpleNamespace(),
+        training_config=SimpleNamespace(),
+    )
+    monkeypatch.setattr(module, "_build_runner", lambda args: fake_runner)
+    monkeypatch.setattr(
+        module,
+        "run_one_experiment_task",
+        lambda **kwargs: {"task_id": kwargs["task_id"], "status": "completed"},
+    )
+
+    exit_code = module.main(["run-task", "--task-id", "exp-abc123"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Task exp-abc123 completed successfully." in output
+
+
+def test_run_task_command_shows_clear_error_for_missing_task(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    fake_runner = SimpleNamespace(
+        config_path="configs/experiment.default.json",
+        project_paths=SimpleNamespace(),
+        training_config=SimpleNamespace(),
+    )
+    monkeypatch.setattr(module, "_build_runner", lambda args: fake_runner)
+
+    def _missing_task(**kwargs):
+        raise ValueError("Task id 'exp-missing' was not found.")
+
+    monkeypatch.setattr(module, "run_one_experiment_task", _missing_task)
+
+    exit_code = module.main(["run-task", "--task-id", "exp-missing"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "Task id 'exp-missing' was not found." in output

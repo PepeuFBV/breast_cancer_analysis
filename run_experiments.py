@@ -11,6 +11,7 @@ from pipeline.experiments import (
     IterativeExperimentRunner,
     IterativeRunOptions,
     launch_background_runner,
+    run_one_experiment_task,
 )
 from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
 from train import add_training_runtime_arguments
@@ -59,6 +60,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="Run or resume experiments.")
     _add_run_arguments(run_parser)
+
+    run_task_parser = subparsers.add_parser(
+        "run-task",
+        help="Run exactly one task from the persisted experiment queue.",
+    )
+    add_training_runtime_arguments(run_task_parser)
+    run_task_parser.add_argument(
+        "--task-id",
+        required=True,
+        help="Persisted experiment task id (example: exp-xxxxxxxxxxxxxxxx).",
+    )
 
     launch_parser = subparsers.add_parser(
         "launch",
@@ -218,6 +230,43 @@ def main(argv: list[str] | None = None) -> int:
             return 130
         _print_status_snapshot(snapshot)
         return 0
+
+    if args.command == "run-task":
+        runner = _build_runner(args)
+        try:
+            result = run_one_experiment_task(
+                task_id=args.task_id,
+                config_path=runner.config_path,
+                project_paths=runner.project_paths,
+                training_config=runner.training_config,
+            )
+        except RuntimeError as error:
+            print(str(error))
+            return 1
+        except ValueError as error:
+            print(str(error))
+            return 1
+        except KeyError as error:
+            print(str(error))
+            return 1
+        except KeyboardInterrupt:
+            print("Single-task run interrupted.")
+            return 130
+
+        status = str(result.get("status", "failed"))
+        if status == "completed":
+            if result.get("skipped"):
+                print("Task marked as completed without re-execution " f"(reason: {result.get('skip_reason')}).")
+            else:
+                print(f"Task {args.task_id} completed successfully.")
+            return 0
+
+        error_summary = result.get("error_summary")
+        if error_summary:
+            print(f"Task {args.task_id} failed: {error_summary}")
+        else:
+            print(f"Task {args.task_id} failed with status={status}.")
+        return 1
 
     project_paths = _load_project_paths(args)
     store = ExperimentStateStore(project_paths)

@@ -228,6 +228,18 @@ Useful rerun options:
 ./.venv/bin/python run_experiments.py run --rerun-completed
 ```
 
+Run exactly one persisted task by id (debugging and future isolated execution):
+
+```bash
+./.venv/bin/python run_experiments.py run-task --task-id <TASK_ID>
+```
+
+Notes:
+
+- `run-task` rebuilds/syncs the persisted queue before selecting the task id.
+- If the task is already completed (including artifact reconciliation when `run_skip` is enabled), it is not re-executed.
+- Use the same path/runtime overrides as `run` (`--config`, `--artifacts-dir`, `--raw-data-dir`, and training runtime flags) when reproducing a task.
+
 Reset only the orchestration state:
 
 ```bash
