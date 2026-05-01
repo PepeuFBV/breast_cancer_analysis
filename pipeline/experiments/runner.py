@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from pipeline.experiments.failures import classify_task_failure
 from pipeline.train.models import MODEL_BUILDERS, ModelBuilder
 from pipeline.train.preprocessing import count_preprocessing_tasks
 from pipeline.train.runner import (
@@ -33,7 +34,7 @@ from pipeline.train.runner import (
 from pipeline.utils.memory import clear_ml_memory, log_memory_snapshot
 from pipeline.utils.paths import ProjectPaths
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 RUNNER_STATE_FILENAME = "runner_state.json"
 RUNNER_SUMMARY_FILENAME = "experiment_runs.csv"
 RUNNER_LOG_FILENAME = "iterative-runner.log"
@@ -46,6 +47,8 @@ TASK_STATUSES = {"pending", "running", "completed", "failed", "stopped"}
 MAX_QUEUE_TASKS = 50_000
 ISOLATED_TASK_CHILD_MODE_ENV = "BREAST_CANCER_ANALYSIS_ISOLATED_TASK_CHILD"
 ISOLATED_TASK_PARENT_PID_ENV = "BREAST_CANCER_ANALYSIS_ISOLATED_TASK_PARENT_PID"
+DEVICE_POLICY_VALUES = {"gpu-first", "cpu-only", "gpu-only", "adaptive"}
+GPU_HEALTH_STATES = {"healthy", "cooling_down", "unhealthy"}
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,14 @@ class IterativeRunOptions:
     task_cooldown_seconds: float = 2.0
     task_timeout_seconds: float | None = None
     run_task_command_base: tuple[str, ...] | None = None
+    device_policy: str = "adaptive"
+    gpu_retries: int = 1
+    cpu_retries: int = 1
+    cooldown_after_oom_seconds: float = 15.0
+    gpu_recovery_cooldown_seconds: float = 60.0
+    max_consecutive_oom: int = 3
+    max_task_attempts: int = 4
+    fail_fast_on_oom: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,40 @@ def _timestamp_now() -> str:
 
 def _timestamp_from_path(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _default_runner_runtime() -> dict[str, Any]:
+    return {
+        "device_policy": "adaptive",
+        "preferred_device": "gpu",
+        "gpu_health": "healthy",
+        "gpu_oom_count": 0,
+        "cpu_fallback_successes": 0,
+        "consecutive_final_oom_failures": 0,
+        "last_gpu_oom_task_id": None,
+        "last_successful_device": None,
+        "gpu_recovery_cooldown_until": None,
+        "oom_policy_stop": None,
+    }
+
+
+def _apply_task_defaults(task: dict[str, Any]) -> dict[str, Any]:
+    task.setdefault("attempt_history", [])
+    task.setdefault("gpu_attempts", 0)
+    task.setdefault("cpu_attempts", 0)
+    task.setdefault("final_device", None)
+    task.setdefault("failure_kind", None)
+    task.setdefault("fallback_reason", None)
+    return task
 
 
 def _build_background_log_paths(logs_dir: Path) -> tuple[Path, Path]:
@@ -240,6 +285,12 @@ def build_experiment_record(task: TrainingTask, config: TrainingConfig) -> dict[
         "finished_at": None,
         "last_duration_seconds": None,
         "attempts": 0,
+        "attempt_history": [],
+        "gpu_attempts": 0,
+        "cpu_attempts": 0,
+        "final_device": None,
+        "failure_kind": None,
+        "fallback_reason": None,
         "error_summary": None,
         "result_summary": {},
     }
@@ -270,7 +321,10 @@ class ExperimentStateStore:
         state["predictions_dir"] = str(self.project_paths.predictions_dir)
         state["summary_path"] = str(self.summary_path)
         state["current_task_id"] = state.get("current_task_id")
-        state["tasks"] = list(state.get("tasks", []))
+        state["tasks"] = [_apply_task_defaults(dict(task)) for task in list(state.get("tasks", []))]
+        runtime = dict(_default_runner_runtime())
+        runtime.update(dict(state.get("runtime", {})))
+        state["runtime"] = runtime
         return state
 
     def read_pid_record(self) -> dict[str, Any] | None:
@@ -361,6 +415,12 @@ class ExperimentStateStore:
                     "finished_at": existing.get("finished_at"),
                     "last_duration_seconds": existing.get("last_duration_seconds"),
                     "attempts": int(existing.get("attempts", 0)),
+                    "attempt_history": list(existing.get("attempt_history", [])),
+                    "gpu_attempts": int(existing.get("gpu_attempts", 0)),
+                    "cpu_attempts": int(existing.get("cpu_attempts", 0)),
+                    "final_device": existing.get("final_device"),
+                    "failure_kind": existing.get("failure_kind"),
+                    "fallback_reason": existing.get("fallback_reason"),
                     "error_summary": existing.get("error_summary"),
                     "result_summary": dict(existing.get("result_summary", {})),
                 }
@@ -371,6 +431,9 @@ class ExperimentStateStore:
         state["queue_signature"] = _queue_signature(synced_tasks)
         state["updated_at"] = now
         state["current_task_id"] = None
+        runtime = dict(_default_runner_runtime())
+        runtime.update(dict(state.get("runtime", {})))
+        state["runtime"] = runtime
 
         self._reconcile_running_tasks(state)
         self._reconcile_artifacts(state)
@@ -462,6 +525,11 @@ class ExperimentStateStore:
             "param_display": task["param_display"],
             "param_json": task["param_json"],
             "attempts": task.get("attempts", 0),
+            "gpu_attempts": task.get("gpu_attempts", 0),
+            "cpu_attempts": task.get("cpu_attempts", 0),
+            "final_device": task.get("final_device"),
+            "failure_kind": task.get("failure_kind"),
+            "fallback_reason": task.get("fallback_reason"),
             "started_at": task.get("started_at"),
             "finished_at": task.get("finished_at"),
             "updated_at": task.get("updated_at"),
@@ -538,6 +606,69 @@ class ExperimentStateStore:
         self._persist_state(state)
         return state
 
+    def append_task_attempt(self, task_id: str, attempt_record: dict[str, Any]) -> dict[str, Any]:
+        state = self.load_state()
+        task_found = False
+        for task in state["tasks"]:
+            if task["id"] != task_id:
+                continue
+            task_found = True
+            _apply_task_defaults(task)
+            history = list(task.get("attempt_history", []))
+            history.append(_normalize_json_value(attempt_record))
+            task["attempt_history"] = history
+            device = str(attempt_record.get("device", "unknown"))
+            if device == "gpu":
+                task["gpu_attempts"] = int(task.get("gpu_attempts", 0)) + 1
+            elif device == "cpu":
+                task["cpu_attempts"] = int(task.get("cpu_attempts", 0)) + 1
+            failure_kind = attempt_record.get("failure_kind")
+            if failure_kind:
+                task["failure_kind"] = failure_kind
+            task["updated_at"] = _timestamp_now()
+            break
+        if not task_found:
+            raise KeyError(f"Task id not found in runner state: {task_id}")
+        self._persist_state(state)
+        return state
+
+    def update_task_execution_details(
+        self,
+        task_id: str,
+        *,
+        final_device: str | None = None,
+        failure_kind: str | None = None,
+        fallback_reason: str | None = None,
+    ) -> dict[str, Any]:
+        state = self.load_state()
+        task_found = False
+        for task in state["tasks"]:
+            if task["id"] != task_id:
+                continue
+            task_found = True
+            _apply_task_defaults(task)
+            if final_device is not None:
+                task["final_device"] = final_device
+            if failure_kind is not None:
+                task["failure_kind"] = failure_kind
+            if fallback_reason is not None:
+                task["fallback_reason"] = fallback_reason
+            task["updated_at"] = _timestamp_now()
+            break
+        if not task_found:
+            raise KeyError(f"Task id not found in runner state: {task_id}")
+        self._persist_state(state)
+        return state
+
+    def update_runtime(self, updates: dict[str, Any]) -> dict[str, Any]:
+        state = self.load_state()
+        runtime = dict(_default_runner_runtime())
+        runtime.update(dict(state.get("runtime", {})))
+        runtime.update(_normalize_json_value(updates))
+        state["runtime"] = runtime
+        self._persist_state(state)
+        return state
+
     def set_task_artifacts(self, task_id: str, *, history_path: Path, predictions_path: Path) -> dict[str, Any]:
         state = self.load_state()
         task_found = False
@@ -597,6 +728,8 @@ class ExperimentStateStore:
             overall_status = "completed"
         else:
             overall_status = "idle"
+        runtime = dict(_default_runner_runtime())
+        runtime.update(dict(state.get("runtime", {})))
 
         return {
             "overall_status": overall_status,
@@ -615,6 +748,15 @@ class ExperimentStateStore:
             "background_stderr_log_path": stderr_log_path,
             "config_path": state.get("config_path"),
             "updated_at": state.get("updated_at"),
+            "device_policy": runtime.get("device_policy"),
+            "preferred_device": runtime.get("preferred_device"),
+            "gpu_health": runtime.get("gpu_health"),
+            "last_gpu_oom_task_id": runtime.get("last_gpu_oom_task_id"),
+            "gpu_oom_count": runtime.get("gpu_oom_count"),
+            "cpu_fallback_successes": runtime.get("cpu_fallback_successes"),
+            "consecutive_final_oom_failures": runtime.get("consecutive_final_oom_failures"),
+            "last_successful_device": runtime.get("last_successful_device"),
+            "oom_policy_stop": runtime.get("oom_policy_stop"),
         }
 
     def reset(self, *, purge_results: bool = False) -> None:
@@ -869,22 +1011,41 @@ class IterativeExperimentRunner:
         record: dict[str, Any],
         command_base: tuple[str, ...] | None,
         timeout_seconds: float | None,
+        attempt_number: int,
+        device: str,
+        gpu_visible_devices: str | None,
     ) -> dict[str, Any]:
         task_id = record["id"]
         command = self._run_task_subprocess_command(task_id, command_base)
         env = os.environ.copy()
         env[ISOLATED_TASK_CHILD_MODE_ENV] = "1"
         env[ISOLATED_TASK_PARENT_PID_ENV] = str(os.getpid())
+        if device == "cpu":
+            env["CUDA_VISIBLE_DEVICES"] = "-1"
+        else:
+            if gpu_visible_devices is None:
+                env.pop("CUDA_VISIBLE_DEVICES", None)
+            else:
+                env["CUDA_VISIBLE_DEVICES"] = gpu_visible_devices
         started_at = datetime.now(timezone.utc)
-        self.logger.info("Running isolated task %s via subprocess: %s", task_id, " ".join(command))
-        print(f"Running isolated task {task_id}")
+        self.logger.info(
+            "Running isolated task %s via subprocess (attempt=%s, device=%s): %s",
+            task_id,
+            attempt_number,
+            device,
+            " ".join(command),
+        )
+        print(f"Running isolated task {task_id} (attempt={attempt_number}, device={device})")
         self._log_structured_phase(
             phase="task:subprocess_start",
             task_record=record,
             message=f"Launching isolated subprocess for {task_id}.",
+            attempt=attempt_number,
             extra={
                 "subprocess_command": command,
                 "task_timeout_seconds": timeout_seconds,
+                "device": device,
+                "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
             },
         )
 
@@ -897,12 +1058,37 @@ class IterativeExperimentRunner:
             )
         except subprocess.TimeoutExpired:
             duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+            failure_kind = classify_task_failure(
+                device=device,
+                exit_code=None,
+                timeout=True,
+                error_summary="subprocess timeout",
+            )
             error_summary = "Isolated task subprocess timed out after " f"{timeout_seconds:.2f}s."
             self.store.update_task_status(
                 task_id,
                 status="failed",
                 error_summary=error_summary[:500],
                 duration_seconds=duration_seconds,
+            )
+            finished_at = _timestamp_now()
+            self.store.append_task_attempt(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "attempt": attempt_number,
+                    "device": device,
+                    "exit_code": None,
+                    "failure_kind": failure_kind,
+                    "started_at": started_at.isoformat(),
+                    "finished_at": finished_at,
+                    "duration_seconds": duration_seconds,
+                },
+            )
+            self.store.update_task_execution_details(
+                task_id,
+                final_device=device,
+                failure_kind=failure_kind,
             )
             self.logger.error(
                 "Isolated task %s timed out after %.2fs.",
@@ -913,11 +1099,14 @@ class IterativeExperimentRunner:
             self._log_structured_phase(
                 phase="task:timeout",
                 task_record=record,
+                attempt=attempt_number,
                 message=error_summary,
                 extra={
                     "duration_seconds": duration_seconds,
                     "subprocess_command": command,
                     "task_timeout_seconds": timeout_seconds,
+                    "device": device,
+                    "failure_kind": failure_kind,
                 },
             )
             return {
@@ -927,12 +1116,25 @@ class IterativeExperimentRunner:
                 "timeout": True,
                 "exit_code": None,
                 "error_summary": error_summary,
+                "failure_kind": failure_kind,
+                "device": device,
+                "attempt": attempt_number,
             }
 
         duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
         exit_code = int(completed.returncode)
         task_state = self._task_state_by_id(task_id)
         task_status = str(task_state.get("status", "pending"))
+        task_events_path, _task_memory_path, task_log_path = self._task_log_paths(task_id)
+        error_summary = task_state.get("error_summary")
+        failure_kind = classify_task_failure(
+            device=device,
+            exit_code=exit_code,
+            timeout=False,
+            error_summary=None if error_summary is None else str(error_summary),
+            task_events_path=task_events_path,
+            task_log_path=task_log_path,
+        )
 
         if exit_code != 0 and task_status not in {"failed", "stopped"}:
             if task_status not in {"completed"}:
@@ -955,6 +1157,34 @@ class IterativeExperimentRunner:
             )
             task_status = "failed"
             task_state = self._task_state_by_id(task_id)
+            error_summary = task_state.get("error_summary")
+
+        finished_at = _timestamp_now()
+        self.store.append_task_attempt(
+            task_id,
+            {
+                "task_id": task_id,
+                "attempt": attempt_number,
+                "device": device,
+                "exit_code": exit_code,
+                "failure_kind": (None if task_status == "completed" else failure_kind),
+                "started_at": started_at.isoformat(),
+                "finished_at": finished_at,
+                "duration_seconds": duration_seconds,
+            },
+        )
+        if task_status == "completed":
+            self.store.update_task_execution_details(
+                task_id,
+                final_device=device,
+                failure_kind=None,
+            )
+        else:
+            self.store.update_task_execution_details(
+                task_id,
+                final_device=device,
+                failure_kind=failure_kind,
+            )
 
         self.logger.info(
             "Isolated task %s finished with exit code %s and status %s.",
@@ -965,6 +1195,7 @@ class IterativeExperimentRunner:
         self._log_structured_phase(
             phase="task:subprocess_exit",
             task_record=record,
+            attempt=attempt_number,
             message=f"Isolated subprocess finished with exit code {exit_code}.",
             extra={
                 "duration_seconds": duration_seconds,
@@ -972,22 +1203,304 @@ class IterativeExperimentRunner:
                 "task_status": task_status,
                 "subprocess_command": command,
                 "task_error_summary": task_state.get("error_summary"),
+                "device": device,
+                "failure_kind": (None if task_status == "completed" else failure_kind),
             },
         )
         if exit_code == 0:
-            print(f"Task {task_id} finished with status={task_status}")
+            print(f"Task {task_id} finished with status={task_status} (device={device})")
         else:
-            print(f"Task {task_id} subprocess failed with exit code {exit_code}")
+            print(f"Task {task_id} subprocess failed with exit code {exit_code} (device={device})")
         return {
             "task_id": task_id,
             "status": task_status,
             "duration_seconds": duration_seconds,
             "exit_code": exit_code,
             "timeout": False,
+            "failure_kind": (None if task_status == "completed" else failure_kind),
+            "device": device,
+            "attempt": attempt_number,
         }
 
     def _is_isolated_child_mode(self) -> bool:
         return os.environ.get(ISOLATED_TASK_CHILD_MODE_ENV) == "1"
+
+    def _sleep_with_log(self, seconds: float, *, reason: str) -> None:
+        delay = max(0.0, float(seconds))
+        if delay <= 0:
+            return
+        self.logger.info("Sleeping for %.2fs (%s).", delay, reason)
+        time.sleep(delay)
+
+    def _task_record_for_id(
+        self,
+        queue_entries: list[tuple[dict[str, Any], TrainingTask]],
+        task_id: str,
+    ) -> dict[str, Any]:
+        for record, _ in queue_entries:
+            if record["id"] == task_id:
+                return record
+        raise KeyError(f"Task id not found in queue: {task_id}")
+
+    def _run_task_with_isolated_device_policy(
+        self,
+        *,
+        record: dict[str, Any],
+        options: IterativeRunOptions,
+        runtime_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        task_id = record["id"]
+        policy = options.device_policy
+        attempt_results: list[dict[str, Any]] = []
+        attempted_devices: list[str] = []
+        gpu_retries_remaining = int(options.gpu_retries)
+        cpu_retries_remaining = int(options.cpu_retries)
+        total_attempts = 0
+        next_device = "cpu" if policy == "cpu-only" else str(runtime_state.get("preferred_device", "gpu"))
+
+        if policy == "gpu-only":
+            next_device = "gpu"
+        if policy == "gpu-first":
+            next_device = "gpu"
+        if policy == "adaptive":
+            cooldown_until = _parse_timestamp(runtime_state.get("gpu_recovery_cooldown_until"))
+            if next_device == "cpu" and cooldown_until is not None and datetime.now(timezone.utc) >= cooldown_until:
+                next_device = "gpu"
+                runtime_state["preferred_device"] = "gpu"
+                runtime_state["gpu_health"] = "cooling_down"
+                self._log_structured_phase(
+                    phase="task:gpu_recovery_probe_scheduled",
+                    event="gpu_recovery_probe_scheduled",
+                    task_record=record,
+                    message=f"GPU recovery probe scheduled for {task_id}.",
+                )
+
+        while total_attempts < int(options.max_task_attempts):
+            total_attempts += 1
+            attempt_result = self._execute_task_entry_isolated_subprocess(
+                record=record,
+                command_base=options.run_task_command_base,
+                timeout_seconds=options.task_timeout_seconds,
+                attempt_number=total_attempts,
+                device=next_device,
+                gpu_visible_devices=runtime_state.get("gpu_visible_devices"),
+            )
+            attempt_results.append(attempt_result)
+            attempted_devices.append(next_device)
+            failure_kind = attempt_result.get("failure_kind")
+            task_status = str(attempt_result.get("status", "failed"))
+            fallback_next: str | None = None
+            cooldown_seconds = 0.0
+
+            if task_status == "completed":
+                runtime_state["last_successful_device"] = next_device
+                runtime_state["consecutive_final_oom_failures"] = 0
+                if next_device == "gpu":
+                    if runtime_state.get("gpu_health") in {"cooling_down", "unhealthy"}:
+                        self._log_structured_phase(
+                            phase="task:gpu_recovered",
+                            event="gpu_recovered",
+                            task_record=record,
+                            attempt=total_attempts,
+                            message=f"GPU recovered on task {task_id}.",
+                        )
+                    runtime_state["preferred_device"] = "gpu"
+                    runtime_state["gpu_health"] = "healthy"
+                    runtime_state["gpu_recovery_cooldown_until"] = None
+                else:
+                    if "gpu" in attempted_devices:
+                        runtime_state["cpu_fallback_successes"] = int(runtime_state.get("cpu_fallback_successes", 0)) + 1
+                        self._log_structured_phase(
+                            phase="task:cpu_fallback_succeeded",
+                            event="cpu_fallback_succeeded",
+                            task_record=record,
+                            attempt=total_attempts,
+                            message=f"CPU fallback succeeded for {task_id}.",
+                        )
+                    if policy == "adaptive":
+                        runtime_state["preferred_device"] = "cpu"
+                        runtime_state["gpu_health"] = "cooling_down"
+                        runtime_state["gpu_recovery_cooldown_until"] = datetime.fromtimestamp(
+                            datetime.now(timezone.utc).timestamp() + float(options.gpu_recovery_cooldown_seconds),
+                            tz=timezone.utc,
+                        ).isoformat()
+                self._log_structured_phase(
+                    phase="task:attempt_finished",
+                    event="task_attempt_finished",
+                    task_record=record,
+                    attempt=total_attempts,
+                    extra={
+                        "task_id": task_id,
+                        "device": next_device,
+                        "exit_code": attempt_result.get("exit_code"),
+                        "failure_kind": None,
+                        "fallback_next": None,
+                        "cooldown_seconds": 0,
+                    },
+                )
+                return {
+                    **attempt_result,
+                    "attempts": attempt_results,
+                    "final_device": next_device,
+                    "failure_kind": None,
+                }
+
+            is_gpu_oom = failure_kind == "gpu_oom"
+            is_cpu_oom = failure_kind == "cpu_oom"
+            is_any_oom = failure_kind in {"oom", "gpu_oom", "cpu_oom"}
+            if is_gpu_oom:
+                runtime_state["gpu_oom_count"] = int(runtime_state.get("gpu_oom_count", 0)) + 1
+                runtime_state["last_gpu_oom_task_id"] = task_id
+                self._log_structured_phase(
+                    phase="task:gpu_oom_detected",
+                    event="gpu_oom_detected",
+                    task_record=record,
+                    attempt=total_attempts,
+                    message=f"GPU OOM detected while running {task_id}.",
+                    extra={
+                        "task_id": task_id,
+                        "failure_kind": failure_kind,
+                    },
+                )
+
+            if options.fail_fast_on_oom and is_any_oom:
+                self._log_structured_phase(
+                    phase="task:attempt_finished",
+                    event="task_attempt_finished",
+                    task_record=record,
+                    attempt=total_attempts,
+                    extra={
+                        "task_id": task_id,
+                        "device": next_device,
+                        "exit_code": attempt_result.get("exit_code"),
+                        "failure_kind": failure_kind,
+                        "fallback_next": None,
+                        "cooldown_seconds": 0,
+                    },
+                )
+                break
+
+            if next_device == "gpu" and is_any_oom and gpu_retries_remaining > 0:
+                gpu_retries_remaining -= 1
+                fallback_next = "gpu"
+                cooldown_seconds = max(0.0, float(options.cooldown_after_oom_seconds))
+                self._log_structured_phase(
+                    phase="task:gpu_retry_scheduled",
+                    event="gpu_retry_scheduled",
+                    task_record=record,
+                    attempt=total_attempts,
+                    message=f"Scheduling GPU retry for {task_id}.",
+                    extra={
+                        "remaining_gpu_retries": gpu_retries_remaining,
+                        "cooldown_seconds": cooldown_seconds,
+                    },
+                )
+                self._log_structured_phase(
+                    phase="task:attempt_finished",
+                    event="task_attempt_finished",
+                    task_record=record,
+                    attempt=total_attempts,
+                    extra={
+                        "task_id": task_id,
+                        "device": next_device,
+                        "exit_code": attempt_result.get("exit_code"),
+                        "failure_kind": failure_kind,
+                        "fallback_next": fallback_next,
+                        "cooldown_seconds": cooldown_seconds,
+                    },
+                )
+                self._sleep_with_log(cooldown_seconds, reason="gpu_oom_retry")
+                next_device = "gpu"
+                continue
+
+            if next_device == "gpu" and is_any_oom and policy in {"gpu-first", "adaptive"}:
+                if cpu_retries_remaining >= 0 and total_attempts < int(options.max_task_attempts):
+                    fallback_next = "cpu"
+                    runtime_state["gpu_health"] = "unhealthy"
+                    cooldown_until = datetime.now(timezone.utc).timestamp() + float(options.gpu_recovery_cooldown_seconds)
+                    runtime_state["gpu_recovery_cooldown_until"] = datetime.fromtimestamp(
+                        cooldown_until,
+                        tz=timezone.utc,
+                    ).isoformat()
+                    self.store.update_task_execution_details(
+                        task_id,
+                        fallback_reason="gpu_oom",
+                    )
+                    self._log_structured_phase(
+                        phase="task:cpu_fallback_scheduled",
+                        event="cpu_fallback_scheduled",
+                        task_record=record,
+                        attempt=total_attempts,
+                        message=f"Scheduling CPU fallback for {task_id}.",
+                    )
+                    self._log_structured_phase(
+                        phase="task:attempt_finished",
+                        event="task_attempt_finished",
+                        task_record=record,
+                        attempt=total_attempts,
+                        extra={
+                            "task_id": task_id,
+                            "device": next_device,
+                            "exit_code": attempt_result.get("exit_code"),
+                            "failure_kind": failure_kind,
+                            "fallback_next": fallback_next,
+                            "cooldown_seconds": 0,
+                        },
+                    )
+                    next_device = "cpu"
+                    continue
+
+            if next_device == "cpu" and is_cpu_oom and cpu_retries_remaining > 0:
+                cpu_retries_remaining -= 1
+                fallback_next = "cpu"
+                cooldown_seconds = max(0.0, float(options.cooldown_after_oom_seconds))
+                self._log_structured_phase(
+                    phase="task:attempt_finished",
+                    event="task_attempt_finished",
+                    task_record=record,
+                    attempt=total_attempts,
+                    extra={
+                        "task_id": task_id,
+                        "device": next_device,
+                        "exit_code": attempt_result.get("exit_code"),
+                        "failure_kind": failure_kind,
+                        "fallback_next": fallback_next,
+                        "cooldown_seconds": cooldown_seconds,
+                    },
+                )
+                self._sleep_with_log(cooldown_seconds, reason="cpu_oom_retry")
+                next_device = "cpu"
+                continue
+
+            self._log_structured_phase(
+                phase="task:attempt_finished",
+                event="task_attempt_finished",
+                task_record=record,
+                attempt=total_attempts,
+                extra={
+                    "task_id": task_id,
+                    "device": next_device,
+                    "exit_code": attempt_result.get("exit_code"),
+                    "failure_kind": failure_kind,
+                    "fallback_next": fallback_next,
+                    "cooldown_seconds": cooldown_seconds,
+                },
+            )
+            break
+
+        final_result = attempt_results[-1]
+        final_failure_kind = final_result.get("failure_kind")
+        is_final_oom = final_failure_kind in {"oom", "gpu_oom", "cpu_oom"}
+        if is_final_oom:
+            runtime_state["consecutive_final_oom_failures"] = int(runtime_state.get("consecutive_final_oom_failures", 0)) + 1
+        else:
+            runtime_state["consecutive_final_oom_failures"] = 0
+        return {
+            **final_result,
+            "attempts": attempt_results,
+            "final_device": final_result.get("device"),
+            "failure_kind": final_failure_kind,
+        }
 
     def _execute_task_entry(
         self,
@@ -1287,6 +1800,20 @@ class IterativeExperimentRunner:
         self._task_cooldown_seconds = max(0.0, float(resolved_options.task_cooldown_seconds))
         if resolved_options.task_timeout_seconds is not None and resolved_options.task_timeout_seconds <= 0:
             raise ValueError("task_timeout_seconds must be > 0 when provided.")
+        if resolved_options.device_policy not in DEVICE_POLICY_VALUES:
+            raise ValueError("device_policy must be one of: gpu-first, cpu-only, gpu-only, adaptive.")
+        if resolved_options.gpu_retries < 0:
+            raise ValueError("gpu_retries must be >= 0.")
+        if resolved_options.cpu_retries < 0:
+            raise ValueError("cpu_retries must be >= 0.")
+        if resolved_options.cooldown_after_oom_seconds < 0:
+            raise ValueError("cooldown_after_oom_seconds must be >= 0.")
+        if resolved_options.gpu_recovery_cooldown_seconds < 0:
+            raise ValueError("gpu_recovery_cooldown_seconds must be >= 0.")
+        if resolved_options.max_consecutive_oom <= 0:
+            raise ValueError("max_consecutive_oom must be > 0.")
+        if resolved_options.max_task_attempts <= 0:
+            raise ValueError("max_task_attempts must be > 0.")
         self.store.ensure_dirs()
         if self.store.has_active_run():
             pid_record = self.store.read_pid_record() or {}
@@ -1301,6 +1828,18 @@ class IterativeExperimentRunner:
         )
         if resolved_options.limit is not None:
             runnable_ids = runnable_ids[: resolved_options.limit]
+        runtime_state = dict(_default_runner_runtime())
+        runtime_state.update(dict(state.get("runtime", {})))
+        runtime_state["device_policy"] = resolved_options.device_policy
+        runtime_state.setdefault("preferred_device", "gpu")
+        runtime_state["gpu_visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if resolved_options.device_policy == "cpu-only":
+            runtime_state["preferred_device"] = "cpu"
+            runtime_state["gpu_health"] = "unhealthy"
+        elif resolved_options.device_policy == "gpu-only":
+            runtime_state["preferred_device"] = "gpu"
+            runtime_state["gpu_health"] = "healthy"
+        self.store.update_runtime(runtime_state)
 
         if not runnable_ids:
             self.logger.info("No pending experiments to run.")
@@ -1324,6 +1863,14 @@ class IterativeExperimentRunner:
                 "isolate_tasks": resolved_options.isolate_tasks,
                 "task_cooldown_seconds": self._task_cooldown_seconds,
                 "task_timeout_seconds": resolved_options.task_timeout_seconds,
+                "device_policy": resolved_options.device_policy,
+                "gpu_retries": resolved_options.gpu_retries,
+                "cpu_retries": resolved_options.cpu_retries,
+                "cooldown_after_oom_seconds": resolved_options.cooldown_after_oom_seconds,
+                "gpu_recovery_cooldown_seconds": resolved_options.gpu_recovery_cooldown_seconds,
+                "max_consecutive_oom": resolved_options.max_consecutive_oom,
+                "max_task_attempts": resolved_options.max_task_attempts,
+                "fail_fast_on_oom": resolved_options.fail_fast_on_oom,
             },
         )
 
@@ -1341,11 +1888,36 @@ class IterativeExperimentRunner:
                         )
                         break
 
-                    self._execute_task_entry_isolated_subprocess(
+                    task_result = self._run_task_with_isolated_device_policy(
                         record=record,
-                        command_base=resolved_options.run_task_command_base,
-                        timeout_seconds=resolved_options.task_timeout_seconds,
+                        options=resolved_options,
+                        runtime_state=runtime_state,
                     )
+                    self.store.update_runtime(runtime_state)
+                    if str(task_result.get("status", "failed")) != "completed":
+                        final_failure_kind = str(task_result.get("failure_kind") or "")
+                        is_final_oom = final_failure_kind in {"oom", "gpu_oom", "cpu_oom"}
+                        if is_final_oom and int(runtime_state.get("consecutive_final_oom_failures", 0)) >= int(resolved_options.max_consecutive_oom):
+                            runtime_state["oom_policy_stop"] = "Reached max_consecutive_oom=" f"{resolved_options.max_consecutive_oom} after task {task_id}."
+                            self.store.update_runtime(runtime_state)
+                            self._log_structured_phase(
+                                phase="run:oom_policy_stop",
+                                event="oom_policy_stop",
+                                task_record=record,
+                                message=str(runtime_state["oom_policy_stop"]),
+                                extra={
+                                    "task_id": task_id,
+                                    "consecutive_final_oom_failures": runtime_state.get("consecutive_final_oom_failures"),
+                                    "max_consecutive_oom": resolved_options.max_consecutive_oom,
+                                },
+                            )
+                            self.store.request_stop(reason="oom_policy_stop")
+                        elif not is_final_oom:
+                            runtime_state["consecutive_final_oom_failures"] = 0
+                            self.store.update_runtime(runtime_state)
+                    else:
+                        runtime_state["consecutive_final_oom_failures"] = 0
+                        self.store.update_runtime(runtime_state)
 
                     if self.store.stop_requested():
                         self.logger.info(

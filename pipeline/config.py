@@ -145,6 +145,14 @@ class ExperimentRunnerConfig:
     isolate_tasks: bool
     task_cooldown_seconds: float
     task_timeout_seconds: float | None
+    device_policy: str
+    gpu_retries: int
+    cpu_retries: int
+    cooldown_after_oom_seconds: float
+    gpu_recovery_cooldown_seconds: float
+    max_consecutive_oom: int
+    max_task_attempts: int
+    fail_fast_on_oom: bool
 
 
 @dataclass(frozen=True)
@@ -313,6 +321,28 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     timeout_seconds = None if timeout_raw is None else float(timeout_raw)
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("runner.task_timeout_seconds must be > 0 when provided.")
+    device_policy = str(raw_runner.get("device_policy", "adaptive"))
+    if device_policy not in {"gpu-first", "cpu-only", "gpu-only", "adaptive"}:
+        raise ValueError("runner.device_policy must be one of: gpu-first, cpu-only, gpu-only, adaptive.")
+    gpu_retries = int(raw_runner.get("gpu_retries", 1))
+    cpu_retries = int(raw_runner.get("cpu_retries", 1))
+    if gpu_retries < 0:
+        raise ValueError("runner.gpu_retries must be >= 0.")
+    if cpu_retries < 0:
+        raise ValueError("runner.cpu_retries must be >= 0.")
+    cooldown_after_oom_seconds = float(raw_runner.get("cooldown_after_oom_seconds", 15.0))
+    if cooldown_after_oom_seconds < 0:
+        raise ValueError("runner.cooldown_after_oom_seconds must be >= 0.")
+    gpu_recovery_cooldown_seconds = float(raw_runner.get("gpu_recovery_cooldown_seconds", 60.0))
+    if gpu_recovery_cooldown_seconds < 0:
+        raise ValueError("runner.gpu_recovery_cooldown_seconds must be >= 0.")
+    max_consecutive_oom = int(raw_runner.get("max_consecutive_oom", 3))
+    if max_consecutive_oom <= 0:
+        raise ValueError("runner.max_consecutive_oom must be > 0.")
+    max_task_attempts = int(raw_runner.get("max_task_attempts", 4))
+    if max_task_attempts <= 0:
+        raise ValueError("runner.max_task_attempts must be > 0.")
+    fail_fast_on_oom = bool(raw_runner.get("fail_fast_on_oom", False))
 
     return ExperimentConfig(
         source_path=config_path,
@@ -350,6 +380,14 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
             isolate_tasks=bool(raw_runner.get("isolate_tasks", False)),
             task_cooldown_seconds=cooldown_seconds,
             task_timeout_seconds=timeout_seconds,
+            device_policy=device_policy,
+            gpu_retries=gpu_retries,
+            cpu_retries=cpu_retries,
+            cooldown_after_oom_seconds=cooldown_after_oom_seconds,
+            gpu_recovery_cooldown_seconds=gpu_recovery_cooldown_seconds,
+            max_consecutive_oom=max_consecutive_oom,
+            max_task_attempts=max_task_attempts,
+            fail_fast_on_oom=fail_fast_on_oom,
         ),
         models=model_config,
         evaluate=ExperimentEvaluateConfig(
