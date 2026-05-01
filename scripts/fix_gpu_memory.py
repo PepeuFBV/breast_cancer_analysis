@@ -117,7 +117,7 @@ def print_diagnosis(gpu_info: dict, oom_info: dict, failed_count: int) -> None:
         print(f"  Used: {gpu_info['used_mb']} MB ({gpu_info['usage_percent']:.1f}%)")
         print(f"  Free: {gpu_info['free_mb']} MB")
     
-    print(f"\nExperiment Status:")
+    print("\nExperiment Status:")
     print(f"  Failed experiments: {failed_count}")
     print(f"  OOM errors in log: {oom_info['oom_count']}")
     if oom_info["models_with_oom"]:
