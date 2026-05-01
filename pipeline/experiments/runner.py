@@ -897,10 +897,7 @@ class IterativeExperimentRunner:
             )
         except subprocess.TimeoutExpired:
             duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
-            error_summary = (
-                "Isolated task subprocess timed out after "
-                f"{timeout_seconds:.2f}s."
-            )
+            error_summary = "Isolated task subprocess timed out after " f"{timeout_seconds:.2f}s."
             self.store.update_task_status(
                 task_id,
                 status="failed",
@@ -949,10 +946,7 @@ class IterativeExperimentRunner:
                 task_status = "failed"
                 task_state = self._task_state_by_id(task_id)
         elif exit_code == 0 and task_status in {"pending", "running"}:
-            error_summary = (
-                "Isolated task subprocess exited successfully, but task status "
-                f"remained '{task_status}'."
-            )
+            error_summary = "Isolated task subprocess exited successfully, but task status " f"remained '{task_status}'."
             self.store.update_task_status(
                 task_id,
                 status="failed",

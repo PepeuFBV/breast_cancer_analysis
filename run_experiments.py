@@ -178,23 +178,11 @@ def _build_runner(args: argparse.Namespace) -> IterativeExperimentRunner:
 
 def _resolve_runner_cli_options(args: argparse.Namespace) -> tuple[bool, float, float | None]:
     experiment_config = load_experiment_config(args.config)
-    isolate_tasks = (
-        experiment_config.runner.isolate_tasks
-        if getattr(args, "isolate_tasks", None) is None
-        else bool(getattr(args, "isolate_tasks"))
-    )
-    cooldown_seconds = (
-        experiment_config.runner.task_cooldown_seconds
-        if getattr(args, "task_cooldown_seconds", None) is None
-        else float(getattr(args, "task_cooldown_seconds"))
-    )
+    isolate_tasks = experiment_config.runner.isolate_tasks if getattr(args, "isolate_tasks", None) is None else bool(getattr(args, "isolate_tasks"))
+    cooldown_seconds = experiment_config.runner.task_cooldown_seconds if getattr(args, "task_cooldown_seconds", None) is None else float(getattr(args, "task_cooldown_seconds"))
     if cooldown_seconds < 0:
         raise ValueError("--task-cooldown-seconds must be >= 0.")
-    timeout_seconds = (
-        experiment_config.runner.task_timeout_seconds
-        if getattr(args, "task_timeout_seconds", None) is None
-        else float(getattr(args, "task_timeout_seconds"))
-    )
+    timeout_seconds = experiment_config.runner.task_timeout_seconds if getattr(args, "task_timeout_seconds", None) is None else float(getattr(args, "task_timeout_seconds"))
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("--task-timeout-seconds must be > 0 when provided.")
     return isolate_tasks, cooldown_seconds, timeout_seconds
@@ -236,11 +224,7 @@ def _build_run_task_forwarded_args(
     _add_optional_many("--preprocessing", args.preprocessing)
     _add_optional("--task-cooldown-seconds", task_cooldown_seconds)
     if args.include_combinations is not None:
-        forwarded.append(
-            "--combined-preprocessing"
-            if bool(args.include_combinations)
-            else "--no-combined-preprocessing"
-        )
+        forwarded.append("--combined-preprocessing" if bool(args.include_combinations) else "--no-combined-preprocessing")
     if args.run_skip is not None:
         forwarded.append("--run-skip" if bool(args.run_skip) else "--no-run-skip")
 
