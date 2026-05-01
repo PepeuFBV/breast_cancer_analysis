@@ -15,9 +15,7 @@ from pipeline.train.preprocessing import PreprocessingTask
 from pipeline.utils.memory import get_process_memory_mb
 from pipeline.utils.runtime_device import check_runtime_device
 
-
 DEFAULT_CONFIG_PATH = "configs/experiment.smoke.json"
-
 
 def _write_synthetic_splits(root: Path) -> tuple[Path, Path]:
     image_dir = root / "synthetic-images"

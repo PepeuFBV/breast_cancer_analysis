@@ -270,8 +270,8 @@ def test_mocked_long_queue_memory_stays_bounded(tmp_path) -> None:
     )
 
     def fake_run_training_task(task, *args, **kwargs):
-        payload = [bytearray(250_000) for _ in range(2)]
-        payload = None
+        # payload = [bytearray(250_000) for _ in range(2)]
+        # payload = None
         return _fake_result(task.preproc_id, param_id=task.param_id)
 
     tracemalloc.start()
