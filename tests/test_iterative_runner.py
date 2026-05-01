@@ -21,7 +21,7 @@ from pipeline.experiments import (
     launch_background_runner,
 )
 from pipeline.train.preprocessing import PreprocessingTask
-from pipeline.train.runner import TrainingConfig
+from pipeline.train.runner import TrainingConfig, artifact_paths_for_task
 from pipeline.utils.paths import build_project_paths
 
 
@@ -493,6 +493,147 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertIn("traceback_summary", failed_event)
             self.assertIn("task_metadata", failed_event)
             self.assertIn("process_memory_mb", failed_event)
+
+    def test_run_one_task_saves_artifacts_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.9)},
+                preprocessing_tasks=[_task("none")],
+            )
+            record, training_task = runner.build_queue()[0]
+
+            result = runner.run_one_task(record["id"])
+
+            self.assertEqual(result["status"], "completed")
+            self.assertFalse(result.get("skipped", False))
+            history_path, predictions_path = artifact_paths_for_task(config, training_task)
+            self.assertTrue(history_path.exists())
+            self.assertTrue(predictions_path.exists())
+
+            store = ExperimentStateStore(project_paths)
+            state = store.load_state()
+            self.assertEqual(state["tasks"][0]["status"], "completed")
+            self.assertEqual(state["tasks"][0]["attempts"], 1)
+
+    def test_run_one_task_fails_for_missing_task_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+
+            with self.assertRaises(ValueError) as context:
+                runner.run_one_task("exp-missing")
+
+            self.assertIn("was not found", str(context.exception))
+
+    def test_run_one_task_marks_failed_tasks_correctly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            record, _ = runner.build_queue()[0]
+
+            with patch(
+                "pipeline.experiments.runner.run_training_task",
+                side_effect=RuntimeError("single-task failure"),
+            ):
+                result = runner.run_one_task(record["id"])
+
+            self.assertEqual(result["status"], "failed")
+            store = ExperimentStateStore(project_paths)
+            state = store.load_state()
+            self.assertEqual(state["tasks"][0]["status"], "failed")
+            self.assertIn("single-task failure", state["tasks"][0]["error_summary"])
+
+    def test_run_one_task_does_not_corrupt_existing_queue_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            tasks = [_task("none"), _task("none", {"variant": "second"})]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.82)},
+                preprocessing_tasks=tasks,
+            )
+            queue_entries = runner.build_queue()
+            first_id = queue_entries[0][0]["id"]
+            second_id = queue_entries[1][0]["id"]
+
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.sync_queue([record for record, _ in queue_entries], config_path=Path("configs/experiment.default.json"))
+            store.update_task_status(second_id, status="failed", error_summary="preexisting failure")
+
+            result = runner.run_one_task(first_id)
+
+            self.assertEqual(result["status"], "completed")
+            state = store.load_state()
+            status_by_id = {task["id"]: task for task in state["tasks"]}
+            self.assertEqual(status_by_id[first_id]["status"], "completed")
+            self.assertEqual(status_by_id[second_id]["status"], "failed")
+            self.assertEqual(status_by_id[second_id]["error_summary"], "preexisting failure")
+
+    def test_run_one_task_respects_artifact_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            record, training_task = runner.build_queue()[0]
+            history_path, predictions_path = artifact_paths_for_task(config, training_task)
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            predictions_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(
+                [
+                    {
+                        "best_val_acc": 0.99,
+                        "best_epoch": 1,
+                        "preproc_id": training_task.preproc_id,
+                        "model_name": training_task.model_name,
+                        "param_id": training_task.param_id,
+                    }
+                ]
+            ).to_csv(history_path, index=False)
+            pd.DataFrame([{"y_true": 0, "y_pred": 0}]).to_csv(predictions_path, index=False)
+
+            with patch(
+                "pipeline.experiments.runner.run_training_task",
+                side_effect=AssertionError("run_training_task should not be called for reconciled tasks"),
+            ):
+                result = runner.run_one_task(record["id"])
+
+            self.assertEqual(result["status"], "completed")
+            self.assertTrue(result.get("skipped"))
+            self.assertEqual(result.get("skip_reason"), "reconciled_from_existing_artifacts")
+
+            store = ExperimentStateStore(project_paths)
+            state = store.load_state()
+            self.assertEqual(state["tasks"][0]["status"], "completed")
+            self.assertGreaterEqual(int(state["tasks"][0]["attempts"]), 1)
 
 
 if __name__ == "__main__":
