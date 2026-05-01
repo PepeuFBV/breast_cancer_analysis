@@ -36,6 +36,8 @@ STATE_SCHEMA_VERSION = 1
 RUNNER_STATE_FILENAME = "runner_state.json"
 RUNNER_SUMMARY_FILENAME = "experiment_runs.csv"
 RUNNER_LOG_FILENAME = "iterative-runner.log"
+RUN_EVENTS_FILENAME = "run-events.jsonl"
+TASK_LOGS_DIRNAME = "tasks"
 RUNNER_PID_FILENAME = "runner_pid.json"
 STOP_REQUEST_FILENAME = "stop_requested.flag"
 TASK_STATUSES = {"pending", "running", "completed", "failed", "stopped"}
@@ -107,6 +109,14 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         path,
         json.dumps(_normalize_json_value(payload), indent=2, sort_keys=True),
     )
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(_normalize_json_value(payload), sort_keys=True) + os.linesep
+        )
 
 
 def _load_json_file(path: Path) -> dict[str, Any] | None:
@@ -231,6 +241,8 @@ class ExperimentStateStore:
             project_paths.experiment_summary_dir / RUNNER_SUMMARY_FILENAME
         )
         self.log_path = project_paths.experiment_logs_dir / RUNNER_LOG_FILENAME
+        self.run_events_path = project_paths.experiment_logs_dir / RUN_EVENTS_FILENAME
+        self.task_logs_dir = project_paths.experiment_logs_dir / TASK_LOGS_DIRNAME
         self.pid_path = project_paths.experiment_control_dir / RUNNER_PID_FILENAME
         self.stop_flag_path = (
             project_paths.experiment_control_dir / STOP_REQUEST_FILENAME
@@ -668,6 +680,124 @@ class IterativeExperimentRunner:
                 self._peak_process_memory_mb = float(process_memory_mb)
         return snapshot
 
+    def _task_log_paths(self, task_id: str) -> tuple[Path, Path, Path]:
+        return (
+            self.store.task_logs_dir / f"{task_id}.events.jsonl",
+            self.store.task_logs_dir / f"{task_id}.memory.jsonl",
+            self.store.task_logs_dir / f"{task_id}.log",
+        )
+
+    def _append_task_log_line(
+        self,
+        task_id: str,
+        *,
+        timestamp: str,
+        phase: str,
+        attempt: int | None,
+        process_memory_mb: float | int | None,
+        message: str | None,
+        error_type: str | None,
+        error_message: str | None,
+    ) -> None:
+        _, _, task_log_path = self._task_log_paths(task_id)
+        line = (
+            f"{timestamp} phase={phase} attempt={attempt} "
+            f"process_memory_mb={process_memory_mb}"
+        )
+        if message:
+            line = f"{line} message={message}"
+        if error_type:
+            line = f"{line} error_type={error_type}"
+        if error_message:
+            line = f"{line} error_message={error_message}"
+        with task_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + os.linesep)
+
+    def _traceback_summary(self, error: BaseException, *, limit: int = 20) -> str:
+        summary = "".join(
+            traceback.format_exception(
+                type(error),
+                error,
+                error.__traceback__,
+                limit=limit,
+            )
+        )
+        return summary[:8_000]
+
+    def _log_structured_phase(
+        self,
+        *,
+        phase: str,
+        task_record: dict[str, Any] | None = None,
+        attempt: int | None = None,
+        message: str | None = None,
+        error: BaseException | None = None,
+        traceback_summary: str | None = None,
+        event: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        snapshot = self._capture_memory_snapshot(phase)
+        timestamp = _timestamp_now()
+        task_id = None if task_record is None else task_record.get("id")
+        resolved_error_type = None if error is None else error.__class__.__name__
+        resolved_error_message = None if error is None else str(error)
+
+        payload: dict[str, Any] = {
+            "timestamp": timestamp,
+            "event": event or phase,
+            "task_id": task_id,
+            "model_name": (
+                None if task_record is None else task_record.get("model_name")
+            ),
+            "preproc_id": (
+                None if task_record is None else task_record.get("preproc_id")
+            ),
+            "param_id": None if task_record is None else task_record.get("param_id"),
+            "phase": phase,
+            "attempt": attempt,
+            "process_memory_mb": snapshot.get("process_memory_mb"),
+            "peak_process_memory_mb": snapshot.get("peak_process_memory_mb"),
+            "gpu_memory": snapshot.get("gpu_memory") or {},
+            "tf_memory": snapshot.get("tf_memory") or {},
+            "message": message,
+            "error_type": resolved_error_type,
+            "error_message": resolved_error_message,
+        }
+        if traceback_summary:
+            payload["traceback_summary"] = traceback_summary
+        if extra:
+            payload.update(_normalize_json_value(extra))
+
+        _append_jsonl(self.store.run_events_path, payload)
+
+        if task_id:
+            task_events_path, task_memory_path, _ = self._task_log_paths(task_id)
+            _append_jsonl(task_events_path, payload)
+            _append_jsonl(
+                task_memory_path,
+                {
+                    "timestamp": timestamp,
+                    "task_id": task_id,
+                    "phase": phase,
+                    "attempt": attempt,
+                    "process_memory_mb": snapshot.get("process_memory_mb"),
+                    "peak_process_memory_mb": snapshot.get("peak_process_memory_mb"),
+                    "gpu_memory": snapshot.get("gpu_memory") or {},
+                    "tf_memory": snapshot.get("tf_memory") or {},
+                },
+            )
+            self._append_task_log_line(
+                task_id,
+                timestamp=timestamp,
+                phase=phase,
+                attempt=attempt,
+                process_memory_mb=snapshot.get("process_memory_mb"),
+                message=message,
+                error_type=resolved_error_type,
+                error_message=resolved_error_message,
+            )
+        return payload
+
     def build_queue(self) -> list[tuple[dict[str, Any], TrainingTask]]:
         available_builders = self.model_builders or MODEL_BUILDERS
         model_names = self.training_config.model_names or list(
@@ -760,7 +890,11 @@ class IterativeExperimentRunner:
             "Starting iterative run with %s runnable experiments.",
             len(runnable_ids),
         )
-        self._capture_memory_snapshot("run:start")
+        self._log_structured_phase(
+            phase="run:start",
+            message=f"Starting run with {len(runnable_ids)} runnable tasks.",
+            extra={"runnable_count": len(runnable_ids)},
+        )
 
         try:
             train_df = load_split_dataframe(self.training_config.train_split_path)
@@ -779,24 +913,58 @@ class IterativeExperimentRunner:
 
                 self.logger.info("Running %s", training_task.label)
                 print(f"Running {training_task.label}")
-                self.store.update_task_status(task_id, status="running")
+                updated_state = self.store.update_task_status(task_id, status="running")
+                task_snapshot = next(
+                    task for task in updated_state["tasks"] if task["id"] == task_id
+                )
+                attempt = int(task_snapshot.get("attempts", 1))
                 started_at = datetime.now(timezone.utc)
 
                 clear_ml_memory()
                 time.sleep(2)  # Longer delay for memory release
-                self._capture_memory_snapshot(f"task:start:{task_id}")
+                self._log_structured_phase(
+                    phase="task:start",
+                    task_record=record,
+                    attempt=attempt,
+                    message=f"Running {training_task.label}",
+                )
 
                 try:
+                    def _phase_observer(
+                        phase: str, details: dict[str, Any] | None
+                    ) -> None:
+                        self._log_structured_phase(
+                            phase=phase,
+                            task_record=record,
+                            attempt=attempt,
+                            extra=details,
+                        )
+
                     result = run_training_task(
                         training_task,
                         self.training_config,
                         train_df=train_df,
                         test_df=test_df,
                         model_builders=self.model_builders,
+                        phase_observer=_phase_observer,
                     )
                     history_summary = build_history_row(result, self.training_config)
+                    self._log_structured_phase(
+                        phase="before_save_artifacts",
+                        task_record=record,
+                        attempt=attempt,
+                    )
                     history_path, predictions_path = save_run_result(
                         result, self.training_config
+                    )
+                    self._log_structured_phase(
+                        phase="after_save_artifacts",
+                        task_record=record,
+                        attempt=attempt,
+                        extra={
+                            "history_path": str(history_path),
+                            "predictions_path": str(predictions_path),
+                        },
                     )
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at
@@ -824,7 +992,18 @@ class IterativeExperimentRunner:
                     result = None
                     history_summary = None
                     clear_ml_memory()
-                    self._capture_memory_snapshot(f"task:completed:{task_id}")
+                    self._log_structured_phase(
+                        phase="after_cleanup",
+                        task_record=record,
+                        attempt=attempt,
+                    )
+                    self._log_structured_phase(
+                        phase="task:completed",
+                        task_record=record,
+                        attempt=attempt,
+                        message=f"Completed in {duration_seconds:.2f}s",
+                        extra={"duration_seconds": duration_seconds},
+                    )
                 except Exception as error:
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at
@@ -845,7 +1024,33 @@ class IterativeExperimentRunner:
                     )
                     print(f"Failed {training_task.label}: {error_summary}")
                     clear_ml_memory()
-                    self._capture_memory_snapshot(f"task:failed:{task_id}")
+                    traceback_summary = self._traceback_summary(error)
+                    self._log_structured_phase(
+                        phase="after_cleanup",
+                        task_record=record,
+                        attempt=attempt,
+                        error=error,
+                        traceback_summary=traceback_summary,
+                    )
+                    self._log_structured_phase(
+                        phase="task:failed",
+                        task_record=record,
+                        attempt=attempt,
+                        message=f"Failed in {duration_seconds:.2f}s",
+                        error=error,
+                        traceback_summary=traceback_summary,
+                        extra={
+                            "duration_seconds": duration_seconds,
+                            "task_label": training_task.label,
+                            "task_metadata": {
+                                "id": record["id"],
+                                "model_name": record["model_name"],
+                                "preproc_id": record["preproc_id"],
+                                "param_id": record["param_id"],
+                                "param_display": record["param_display"],
+                            },
+                        },
+                    )
                 except BaseException as error:
                     duration_seconds = (
                         datetime.now(timezone.utc) - started_at
@@ -870,7 +1075,26 @@ class IterativeExperimentRunner:
                         traceback.format_exc(),
                     )
                     clear_ml_memory()
-                    self._capture_memory_snapshot(f"task:interrupted:{task_id}")
+                    traceback_summary = self._traceback_summary(error)
+                    self._log_structured_phase(
+                        phase="after_cleanup",
+                        task_record=record,
+                        attempt=attempt,
+                        error=error,
+                        traceback_summary=traceback_summary,
+                    )
+                    self._log_structured_phase(
+                        phase="task:failed",
+                        task_record=record,
+                        attempt=attempt,
+                        message=f"Interrupted in {duration_seconds:.2f}s",
+                        error=error,
+                        traceback_summary=traceback_summary,
+                        extra={
+                            "duration_seconds": duration_seconds,
+                            "task_label": training_task.label,
+                        },
+                    )
                     raise
 
                 if self.store.stop_requested():
@@ -880,7 +1104,7 @@ class IterativeExperimentRunner:
                     )
                     break
         finally:
-            self._capture_memory_snapshot("run:finish")
+            self._log_structured_phase(phase="run:finish", message="Run finished.")
             self.store.clear_pid_record()
             self._restore_signal_handlers()
 

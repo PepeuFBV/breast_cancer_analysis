@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import cv2
 import numpy as np
@@ -18,6 +18,22 @@ from pipeline.utils.gpu_env import configure_gpu_memory_growth
 from pipeline.utils.memory import clear_ml_memory
 from pipeline.utils.reproducibility import enforce_reproducibility
 from pipeline.utils.runtime import format_duration
+
+PhaseObserver = Callable[[str, dict[str, Any] | None], None]
+
+
+def _emit_phase(
+    phase_observer: PhaseObserver | None,
+    phase: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    if phase_observer is None:
+        return
+    try:
+        phase_observer(phase, details)
+    except Exception:
+        # Observability callbacks must not affect training behavior.
+        return
 
 
 @dataclass(frozen=True)
@@ -235,6 +251,7 @@ def run_model_with_preprocessing(
     random_state: int,
     model_runtime: ModelRuntimeConfig | None = None,
     max_retries: int = 3,
+    phase_observer: PhaseObserver | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     """Run model training with automatic retry on OOM errors.
     
@@ -250,6 +267,11 @@ def run_model_with_preprocessing(
             time.sleep(3 + attempt)  # Increasing delay: 4s, 5s, 6s
         
         try:
+            _emit_phase(
+                phase_observer,
+                "before_preprocess_train",
+                {"train_attempt": attempt + 1},
+            )
             return _run_model_with_preprocessing_impl(
                 train_df,
                 validation_df,
@@ -264,6 +286,7 @@ def run_model_with_preprocessing(
                 learning_rate=learning_rate,
                 random_state=random_state,
                 model_runtime=model_runtime,
+                phase_observer=phase_observer,
             )
         except Exception as error:
             last_error = error
@@ -295,6 +318,7 @@ def _run_model_with_preprocessing_impl(
     learning_rate: float,
     random_state: int,
     model_runtime: ModelRuntimeConfig | None = None,
+    phase_observer: PhaseObserver | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     enforce_reproducibility(random_state)
 
@@ -320,7 +344,9 @@ def _run_model_with_preprocessing_impl(
     try:
         x_train, y_train = preprocess_images(train_df, task.apply)
         x_validation, y_validation = preprocess_images(validation_df, task.apply)
+        _emit_phase(phase_observer, "after_preprocess_train")
 
+        _emit_phase(phase_observer, "before_prepare_train_inputs")
         train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(
             x_train,
             model_name,
@@ -340,7 +366,9 @@ def _run_model_with_preprocessing_impl(
         y_validation_encoded = _one_hot_encode(y_validation, num_classes)
         y_train = None
         y_validation = None
+        _emit_phase(phase_observer, "after_prepare_train_inputs")
 
+        _emit_phase(phase_observer, "before_model_build")
         model = model_fn(
             input_shape=input_shape,
             num_classes=num_classes,
@@ -348,7 +376,9 @@ def _run_model_with_preprocessing_impl(
             learning_rate=learning_rate,
             runtime=model_runtime,
         )
+        _emit_phase(phase_observer, "after_model_build")
 
+        _emit_phase(phase_observer, "before_fit")
         callbacks = _build_fit_callbacks()
         history = model.fit(
             train_inputs,
@@ -359,6 +389,7 @@ def _run_model_with_preprocessing_impl(
             verbose=0,
             callbacks=callbacks,
         )
+        _emit_phase(phase_observer, "after_fit")
 
         train_inputs = None
         validation_inputs = None
@@ -366,6 +397,7 @@ def _run_model_with_preprocessing_impl(
         y_validation_encoded = None
         callbacks = None
         clear_ml_memory(clear_session=False)
+        _emit_phase(phase_observer, "after_train_release")
 
         history_dict = dict(history.history)
         history = None
@@ -378,6 +410,7 @@ def _run_model_with_preprocessing_impl(
         best_epoch = int(np.argmax(val_accuracies)) + 1
         best_val_acc = float(np.max(val_accuracies))
 
+        _emit_phase(phase_observer, "before_eval_preprocess")
         x_evaluation, _ = preprocess_images(evaluation_df, task.apply)
         evaluation_inputs, _, _ = _prepare_model_inputs(
             x_evaluation,
@@ -386,9 +419,12 @@ def _run_model_with_preprocessing_impl(
             model_runtime,
         )
         x_evaluation = None
+        _emit_phase(phase_observer, "after_eval_preprocess")
+        _emit_phase(phase_observer, "before_predict")
         predictions_df = _predict_dataframe(
             model, evaluation_inputs, evaluation_df, effective_batch_size
         )
+        _emit_phase(phase_observer, "after_predict")
 
         evaluation_inputs = None
         clear_ml_memory(clear_session=False)
@@ -536,6 +572,7 @@ def _run_fixed_split(
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
     validation_split = _build_validation_split(train_df, config)
     model_runtime = (config.model_runtime or {}).get(model_name)
@@ -554,6 +591,7 @@ def _run_fixed_split(
             learning_rate=config.learning_rate,
             random_state=config.random_state,
             model_runtime=model_runtime,
+            phase_observer=phase_observer,
         )
     )
     return TrainingRunResult(
@@ -607,6 +645,7 @@ def _run_cross_validation(
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
     split_iterator, cv_strategy = _build_cv_indices(train_df, config)
 
@@ -642,6 +681,7 @@ def _run_cross_validation(
                     learning_rate=config.learning_rate,
                     random_state=fold_seed,
                     model_runtime=model_runtime,
+                    phase_observer=phase_observer,
                 )
             )
 
@@ -733,6 +773,7 @@ def run_training_task(
     train_df: pd.DataFrame | None = None,
     test_df: pd.DataFrame | None = None,
     model_builders: dict[str, ModelBuilder] | None = None,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
     available_builders = model_builders or MODEL_BUILDERS
     if task.model_name not in available_builders:
@@ -758,6 +799,7 @@ def run_training_task(
             task.model_name,
             model_fn,
             config,
+            phase_observer=phase_observer,
         )
     return _run_cross_validation(
         resolved_train_df,
@@ -766,6 +808,7 @@ def run_training_task(
         task.model_name,
         model_fn,
         config,
+        phase_observer=phase_observer,
     )
 
 
