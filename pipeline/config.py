@@ -141,11 +141,19 @@ class ExperimentEvaluateConfig:
 
 
 @dataclass(frozen=True)
+class ExperimentRunnerConfig:
+    isolate_tasks: bool
+    task_cooldown_seconds: float
+    task_timeout_seconds: float | None
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     source_path: Path
     paths: ExperimentPathsConfig
     preprocess: ExperimentPreprocessConfig
     train: ExperimentTrainConfig
+    runner: ExperimentRunnerConfig
     models: dict[str, ModelRuntimeConfig]
     evaluate: ExperimentEvaluateConfig
 
@@ -295,8 +303,16 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     )
     preprocessing_grid = {preproc_id: _normalize_grid_values(param_space) for preproc_id, param_space in raw_preprocessing_grid.items()}
     model_config = {model_name: _model_runtime_from_dict(model_values) for model_name, model_values in raw_config["models"].items()}
+    raw_runner = dict(raw_config.get("runner", {}))
 
     _validate_model_names(raw_config["train"].get("model_names"), model_config)
+    cooldown_seconds = float(raw_runner.get("task_cooldown_seconds", 2.0))
+    if cooldown_seconds < 0:
+        raise ValueError("runner.task_cooldown_seconds must be >= 0.")
+    timeout_raw = raw_runner.get("task_timeout_seconds")
+    timeout_seconds = None if timeout_raw is None else float(timeout_raw)
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError("runner.task_timeout_seconds must be > 0 when provided.")
 
     return ExperimentConfig(
         source_path=config_path,
@@ -329,6 +345,11 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
             loss=str(raw_config["train"]["loss"]),
             run_skip=bool(raw_config["train"]["run_skip"]),
             random_state=int(raw_config["train"].get("random_state", DEFAULT_RANDOM_STATE)),
+        ),
+        runner=ExperimentRunnerConfig(
+            isolate_tasks=bool(raw_runner.get("isolate_tasks", False)),
+            task_cooldown_seconds=cooldown_seconds,
+            task_timeout_seconds=timeout_seconds,
         ),
         models=model_config,
         evaluate=ExperimentEvaluateConfig(

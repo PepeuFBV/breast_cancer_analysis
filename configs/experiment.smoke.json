@@ -31,6 +31,11 @@
     "run_skip": false,
     "random_state": 42
   },
+  "runner": {
+    "isolate_tasks": false,
+    "task_cooldown_seconds": 2,
+    "task_timeout_seconds": null
+  },
   "models": {
     "custom cnn": {
       "input_channels": 1,

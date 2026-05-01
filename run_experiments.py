@@ -37,6 +37,31 @@ def _add_resolution_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     add_training_runtime_arguments(parser)
     parser.add_argument(
+        "--isolate-tasks",
+        dest="isolate_tasks",
+        action="store_true",
+        default=None,
+        help="Run each selected task in a separate python subprocess.",
+    )
+    parser.add_argument(
+        "--no-isolate-tasks",
+        dest="isolate_tasks",
+        action="store_false",
+        help="Run tasks in-process (legacy behavior).",
+    )
+    parser.add_argument(
+        "--task-cooldown-seconds",
+        type=float,
+        default=None,
+        help="Cooldown before each task execution. Defaults to config runner.task_cooldown_seconds (2).",
+    )
+    parser.add_argument(
+        "--task-timeout-seconds",
+        type=float,
+        default=None,
+        help="Optional timeout for each isolated task subprocess.",
+    )
+    parser.add_argument(
         "--rerun-failed",
         action="store_true",
         help="Re-execute experiments previously marked as failed.",
@@ -66,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run exactly one task from the persisted experiment queue.",
     )
     add_training_runtime_arguments(run_task_parser)
+    run_task_parser.add_argument(
+        "--task-cooldown-seconds",
+        type=float,
+        default=None,
+        help="Cooldown before executing the task. Defaults to config runner.task_cooldown_seconds (2).",
+    )
     run_task_parser.add_argument(
         "--task-id",
         required=True,
@@ -145,6 +176,61 @@ def _build_runner(args: argparse.Namespace) -> IterativeExperimentRunner:
     )
 
 
+def _resolve_runner_cli_options(args: argparse.Namespace) -> tuple[bool, float, float | None]:
+    experiment_config = load_experiment_config(args.config)
+    isolate_tasks = experiment_config.runner.isolate_tasks if getattr(args, "isolate_tasks", None) is None else bool(getattr(args, "isolate_tasks"))
+    cooldown_seconds = experiment_config.runner.task_cooldown_seconds if getattr(args, "task_cooldown_seconds", None) is None else float(getattr(args, "task_cooldown_seconds"))
+    if cooldown_seconds < 0:
+        raise ValueError("--task-cooldown-seconds must be >= 0.")
+    timeout_seconds = experiment_config.runner.task_timeout_seconds if getattr(args, "task_timeout_seconds", None) is None else float(getattr(args, "task_timeout_seconds"))
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        raise ValueError("--task-timeout-seconds must be > 0 when provided.")
+    return isolate_tasks, cooldown_seconds, timeout_seconds
+
+
+def _build_run_task_forwarded_args(
+    args: argparse.Namespace,
+    *,
+    task_cooldown_seconds: float,
+) -> list[str]:
+    forwarded: list[str] = []
+
+    def _add_optional(name: str, value: object) -> None:
+        if value is None:
+            return
+        forwarded.extend([name, str(value)])
+
+    def _add_optional_many(name: str, values: list[str] | None) -> None:
+        if not values:
+            return
+        forwarded.append(name)
+        forwarded.extend(values)
+
+    _add_optional("--config", args.config)
+    _add_optional("--raw-data-dir", args.raw_data_dir)
+    _add_optional("--artifacts-dir", args.artifacts_dir)
+    _add_optional("--train-split", args.train_split)
+    _add_optional("--test-split", args.test_split)
+    _add_optional("--history-dir", args.history_dir)
+    _add_optional("--predictions-dir", args.predictions_dir)
+    _add_optional("--folds", args.folds)
+    _add_optional("--validation-size", args.validation_size)
+    _add_optional("--random-state", args.random_state)
+    _add_optional("--batch-size", args.batch_size)
+    _add_optional("--epochs", args.epochs)
+    _add_optional("--learning-rate", args.learning_rate)
+    _add_optional("--loss", args.loss)
+    _add_optional_many("--models", args.models)
+    _add_optional_many("--preprocessing", args.preprocessing)
+    _add_optional("--task-cooldown-seconds", task_cooldown_seconds)
+    if args.include_combinations is not None:
+        forwarded.append("--combined-preprocessing" if bool(args.include_combinations) else "--no-combined-preprocessing")
+    if args.run_skip is not None:
+        forwarded.append("--run-skip" if bool(args.run_skip) else "--no-run-skip")
+
+    return forwarded
+
+
 def _print_status_snapshot(snapshot: dict[str, object]) -> None:
     counts = snapshot["counts"]
     current_task = snapshot["current_task"]
@@ -207,11 +293,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         runner = _build_runner(args)
         try:
+            isolate_tasks, task_cooldown_seconds, task_timeout_seconds = _resolve_runner_cli_options(args)
+            run_task_command_base = (
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "run-task",
+                *_build_run_task_forwarded_args(
+                    args,
+                    task_cooldown_seconds=task_cooldown_seconds,
+                ),
+            )
             snapshot = runner.run(
                 IterativeRunOptions(
                     rerun_failed=args.rerun_failed,
                     rerun_completed=args.rerun_completed,
                     limit=args.limit,
+                    isolate_tasks=isolate_tasks,
+                    task_cooldown_seconds=task_cooldown_seconds,
+                    task_timeout_seconds=task_timeout_seconds,
+                    run_task_command_base=run_task_command_base,
                 )
             )
         except RuntimeError as error:
@@ -234,11 +334,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-task":
         runner = _build_runner(args)
         try:
+            _, task_cooldown_seconds, _ = _resolve_runner_cli_options(args)
             result = run_one_experiment_task(
                 task_id=args.task_id,
                 config_path=runner.config_path,
                 project_paths=runner.project_paths,
                 training_config=runner.training_config,
+                task_cooldown_seconds=task_cooldown_seconds,
             )
         except RuntimeError as error:
             print(str(error))
