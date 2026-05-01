@@ -59,7 +59,9 @@ def classify_task_failure(
             _read_text_tail(task_log_path),
         ]
     )
-    has_oom_markers = _contains_any(base_text, OOM_MARKERS) or (not base_text and _contains_any(combined_text, OOM_MARKERS))
+    # Always inspect aggregated logs in addition to `error_summary` because
+    # subprocess failures may expose OOM markers only in stderr/task logs.
+    has_oom_markers = _contains_any(combined_text, OOM_MARKERS)
 
     if has_oom_markers:
         if device == "gpu":
