@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cv2
@@ -16,6 +18,7 @@ from pipeline.experiments import (
     ExperimentStateStore,
     IterativeExperimentRunner,
     IterativeRunOptions,
+    launch_background_runner,
 )
 from pipeline.train.preprocessing import PreprocessingTask
 from pipeline.train.runner import TrainingConfig
@@ -128,6 +131,65 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
 
 
 class IterativeRunnerTest(unittest.TestCase):
+    def test_launch_background_runner_captures_stdout_and_stderr_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            logs_dir = root / "artifacts" / "experiments" / "logs"
+            script_path = root / "run_experiments.py"
+            captured: dict[str, object] = {}
+
+            def fake_popen(*args, **kwargs):
+                captured["stdout"] = kwargs["stdout"]
+                captured["stderr"] = kwargs["stderr"]
+                return SimpleNamespace(pid=12345)
+
+            with patch("pipeline.experiments.runner.subprocess.Popen", side_effect=fake_popen):
+                launch = launch_background_runner(
+                    script_path=script_path,
+                    forwarded_args=["--limit", "2"],
+                    cwd=root,
+                    logs_dir=logs_dir,
+                )
+
+            self.assertEqual(launch.process.pid, 12345)
+            self.assertTrue(logs_dir.exists())
+            self.assertTrue(launch.stdout_path.exists())
+            self.assertTrue(launch.stderr_path.exists())
+            self.assertEqual(launch.stdout_path.suffixes[-2:], [".out", ".log"])
+            self.assertEqual(launch.stderr_path.suffixes[-2:], [".err", ".log"])
+            self.assertIsNot(captured["stdout"], subprocess.DEVNULL)
+            self.assertIsNot(captured["stderr"], subprocess.DEVNULL)
+            self.assertEqual(Path(str(getattr(captured["stdout"], "name"))), launch.stdout_path)
+            self.assertEqual(Path(str(getattr(captured["stderr"], "name"))), launch.stderr_path)
+
+    def test_write_pid_record_preserves_background_log_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            project_paths = build_project_paths(root / "raw-data", root / "artifacts")
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            stdout_path = project_paths.experiment_logs_dir / "background-runner.out.log"
+            stderr_path = project_paths.experiment_logs_dir / "background-runner.err.log"
+
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "run"],
+                pid=4444,
+                stdout_log_path=stdout_path,
+                stderr_log_path=stderr_path,
+            )
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "run"],
+                pid=4444,
+            )
+
+            record = store.read_pid_record()
+            assert record is not None
+            self.assertEqual(record["pid"], 4444)
+            self.assertEqual(record["stdout_log_path"], str(stdout_path))
+            self.assertEqual(record["stderr_log_path"], str(stderr_path))
+
     def test_build_experiment_id_does_not_resolve_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

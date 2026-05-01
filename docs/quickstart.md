@@ -172,6 +172,15 @@ For unattended execution, prefer the background launcher:
 ./.venv/bin/python run_experiments.py launch
 ```
 
+`launch` writes process output to `artifacts/experiments/logs/background-runner-*.out.log`
+and `artifacts/experiments/logs/background-runner-*.err.log` (or the same paths under
+`--artifacts-dir`). During long runs, inspect them with:
+
+```bash
+tail -f artifacts/experiments/logs/background-runner-*.out.log
+tail -f artifacts/experiments/logs/background-runner-*.err.log
+```
+
 Foreground mode is still available:
 
 ```bash

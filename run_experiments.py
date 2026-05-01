@@ -144,6 +144,10 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
     print(f"Stopped: {counts['stopped']}")
     if snapshot["active_pid"] is not None:
         print(f"Active PID: {snapshot['active_pid']}")
+    if snapshot.get("background_stdout_log_path"):
+        print(f"Background stdout log: {snapshot['background_stdout_log_path']}")
+    if snapshot.get("background_stderr_log_path"):
+        print(f"Background stderr log: {snapshot['background_stderr_log_path']}")
     if current_task:
         print("Current task: " f"{current_task['preproc_id']} [{current_task['model_name']} - " f"{current_task['param_display']}]")
     print(f"State file: {snapshot['state_path']}")
@@ -172,8 +176,20 @@ def main(argv: list[str] | None = None) -> int:
             script_path=Path(__file__).resolve(),
             forwarded_args=resolved_argv[1:],
             cwd=PROJECT_ROOT,
+            logs_dir=project_paths.experiment_logs_dir,
         )
-        print(f"Background runner started with pid={process.pid}.")
+        command = [sys.executable, str(Path(__file__).resolve()), "run", *resolved_argv[1:]]
+        store.write_pid_record(
+            config_path=Path(load_experiment_config(args.config).source_path),
+            command=command,
+            pid=process.process.pid,
+            stdout_log_path=process.stdout_path,
+            stderr_log_path=process.stderr_path,
+        )
+        print(f"Background runner started with pid={process.process.pid}.")
+        print(f"stdout: {process.stdout_path}")
+        print(f"stderr: {process.stderr_path}")
+        print("Check status with: python run_experiments.py status")
         return 0
 
     if args.command == "run":

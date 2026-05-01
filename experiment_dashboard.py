@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -167,8 +168,18 @@ def main() -> None:
                 script_path=PROJECT_ROOT / "run_experiments.py",
                 forwarded_args=launch_args,
                 cwd=PROJECT_ROOT,
+                logs_dir=store.project_paths.experiment_logs_dir,
             )
-            st.success(f"Runner started in background with pid={process.pid}.")
+            config_source = load_experiment_config(config_path or None).source_path
+            command = [sys.executable, str(PROJECT_ROOT / "run_experiments.py"), "run", *launch_args]
+            store.write_pid_record(
+                config_path=config_source,
+                command=command,
+                pid=process.process.pid,
+                stdout_log_path=process.stdout_path,
+                stderr_log_path=process.stderr_path,
+            )
+            st.success(f"Runner started in background with pid={process.process.pid}.")
             st.rerun()
 
     if stop_col.button("Stop", use_container_width=True):
