@@ -83,12 +83,23 @@ def test_print_status_snapshot_shows_background_logs_when_present(capsys) -> Non
         "active_pid": 123,
         "background_stdout_log_path": "/tmp/background.out.log",
         "background_stderr_log_path": "/tmp/background.err.log",
+        "device_policy": "adaptive",
+        "preferred_device": "gpu",
+        "gpu_health": "healthy",
+        "last_gpu_oom_task_id": "exp-oom",
+        "gpu_oom_count": 2,
+        "cpu_fallback_successes": 1,
+        "consecutive_final_oom_failures": 0,
+        "last_successful_device": "cpu",
     }
 
     module._print_status_snapshot(snapshot)
     output = capsys.readouterr().out
     assert "Background stdout log: /tmp/background.out.log" in output
     assert "Background stderr log: /tmp/background.err.log" in output
+    assert "Device policy: adaptive" in output
+    assert "Current preferred device: gpu" in output
+    assert "GPU OOM count: 2" in output
 
 
 def test_print_status_snapshot_works_without_background_logs(capsys) -> None:
