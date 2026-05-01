@@ -156,6 +156,9 @@ Long-run orchestration smoke (recommended before full queue):
 If the runner later fails after several combinations, inspect:
 
 - `artifacts/experiments/logs/iterative-runner.log`
+- `artifacts/experiments/logs/run-events.jsonl`
+- `artifacts/experiments/logs/tasks/exp-*.events.jsonl`
+- `artifacts/experiments/logs/tasks/exp-*.memory.jsonl`
 - `artifacts/experiments/state/runner_state.json`
 - `artifacts/experiments/summary/experiment_runs.csv`
 - `artifacts/experiments/tasks/*.json`
@@ -247,4 +250,6 @@ Main outputs:
 - Runner state: `artifacts/experiments/state/runner_state.json`
 - Runner summary: `artifacts/experiments/summary/experiment_runs.csv`
 - Runner log: `artifacts/experiments/logs/iterative-runner.log`
+- Structured run events: `artifacts/experiments/logs/run-events.jsonl`
+- Per-task event/memory logs: `artifacts/experiments/logs/tasks/`
 - Per-task snapshots: `artifacts/experiments/tasks/*.json`
