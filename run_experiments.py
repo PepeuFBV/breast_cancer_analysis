@@ -24,10 +24,7 @@ def _add_resolution_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
         default=None,
-        help=(
-            "Path to an experiment JSON config. "
-            "Defaults to configs/experiment.default.json."
-        ),
+        help=("Path to an experiment JSON config. " "Defaults to configs/experiment.default.json."),
     )
     parser.add_argument(
         "--artifacts-dir",
@@ -57,9 +54,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=("Control iterative, resumable execution of training experiments.")
-    )
+    parser = argparse.ArgumentParser(description=("Control iterative, resumable execution of training experiments."))
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Run or resume experiments.")
@@ -104,9 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _load_project_paths(args: argparse.Namespace):
     experiment_config = load_experiment_config(args.config)
-    return experiment_config.resolve_project_paths(
-        artifacts_dir=args.artifacts_dir
-    ).ensure_artifact_dirs()
+    return experiment_config.resolve_project_paths(artifacts_dir=args.artifacts_dir).ensure_artifact_dirs()
 
 
 def _build_runner(args: argparse.Namespace) -> IterativeExperimentRunner:
@@ -152,11 +145,7 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
     if snapshot["active_pid"] is not None:
         print(f"Active PID: {snapshot['active_pid']}")
     if current_task:
-        print(
-            "Current task: "
-            f"{current_task['preproc_id']} [{current_task['model_name']} - "
-            f"{current_task['param_display']}]"
-        )
+        print("Current task: " f"{current_task['preproc_id']} [{current_task['model_name']} - " f"{current_task['param_display']}]")
     print(f"State file: {snapshot['state_path']}")
     print(f"Summary file: {snapshot['summary_path']}")
     print(f"History dir: {snapshot['history_dir']}")

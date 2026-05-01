@@ -25,12 +25,7 @@ def _venv_root() -> Path:
 
 
 def _python_site_packages_dir(venv_root: Path) -> Path:
-    return (
-        venv_root
-        / "lib"
-        / f"python{sys.version_info.major}.{sys.version_info.minor}"
-        / "site-packages"
-    )
+    return venv_root / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 
 
 def _nvidia_lib_dirs(site_packages_dir: Path) -> list[Path]:
@@ -53,11 +48,7 @@ def _prepend_env_paths(
     variable_name: str,
     paths: list[Path],
 ) -> bool:
-    existing = [
-        entry
-        for entry in environment.get(variable_name, "").split(":")
-        if entry.strip()
-    ]
+    existing = [entry for entry in environment.get(variable_name, "").split(":") if entry.strip()]
     additions = [str(path) for path in paths if str(path) not in existing]
     if not additions:
         return False
@@ -67,20 +58,20 @@ def _prepend_env_paths(
 
 def configure_gpu_memory_growth() -> bool:
     """Configure TensorFlow to use GPU memory growth instead of pre-allocating.
-    
+
     Returns True if configuration was successful, False otherwise.
     """
     global _GPU_MEMORY_CONFIGURED
-    
+
     if _GPU_MEMORY_CONFIGURED:
         return True
 
     if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1":
         return False
-    
+
     try:
         import tensorflow as tf
-        
+
         gpus = tf.config.list_physical_devices("GPU")
         if gpus:
             for gpu in gpus:
@@ -89,7 +80,7 @@ def configure_gpu_memory_growth() -> bool:
             return True
     except Exception:
         pass
-    
+
     return False
 
 
@@ -98,12 +89,14 @@ def clear_gpu_memory() -> None:
     # Clear Keras/TensorFlow session
     try:
         from keras import backend as K
+
         K.clear_session()
     except Exception:
         pass
-    
+
     try:
         import tensorflow as tf
+
         tf.keras.backend.clear_session()
         # Reset default graph
         try:
@@ -112,17 +105,19 @@ def clear_gpu_memory() -> None:
             pass
     except Exception:
         pass
-    
+
     # Force garbage collection multiple times
     import gc
+
     for _ in range(3):
         gc.collect()
-    
+
     # Try to clear CUDA cache if available
     try:
         import tensorflow as tf
-        if hasattr(tf.config.experimental, 'reset_memory_stats'):
-            gpus = tf.config.list_physical_devices('GPU')
+
+        if hasattr(tf.config.experimental, "reset_memory_stats"):
+            gpus = tf.config.list_physical_devices("GPU")
             for gpu in gpus:
                 try:
                     tf.config.experimental.reset_memory_stats(gpu)
@@ -152,14 +147,9 @@ def ensure_tensorflow_wsl_gpu_env() -> None:
 
     if wsl_driver_dir.exists():
         changed = _prepend_env_paths(updated_env, "PATH", [wsl_driver_dir]) or changed
-        changed = (
-            _prepend_env_paths(updated_env, "LD_LIBRARY_PATH", [wsl_driver_dir])
-            or changed
-        )
+        changed = _prepend_env_paths(updated_env, "LD_LIBRARY_PATH", [wsl_driver_dir]) or changed
 
-    changed = (
-        _prepend_env_paths(updated_env, "LD_LIBRARY_PATH", nvidia_lib_dirs) or changed
-    )
+    changed = _prepend_env_paths(updated_env, "LD_LIBRARY_PATH", nvidia_lib_dirs) or changed
 
     if not changed:
         return

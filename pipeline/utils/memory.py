@@ -44,6 +44,22 @@ def get_process_memory_mb() -> float | None:
     return round(usage / (1024 * 1024), 2)
 
 
+def get_peak_process_memory_mb() -> float | None:
+    """Return peak RSS memory for the current process when available."""
+
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:
+        return None
+
+    if usage <= 0:
+        return None
+
+    if Path("/proc/self/status").exists():
+        return round(usage / 1024, 2)
+    return round(usage / (1024 * 1024), 2)
+
+
 def _nvidia_smi_command() -> list[str] | None:
     for candidate in ("nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi"):
         if candidate == "nvidia-smi" and shutil.which(candidate):
@@ -97,6 +113,44 @@ def get_gpu_memory_info() -> dict[str, Any] | None:
     return {"devices": devices}
 
 
+def get_tf_memory_info() -> dict[str, Any] | None:
+    """Return TensorFlow memory statistics when TensorFlow is available."""
+
+    try:
+        import tensorflow as tf  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        devices = tf.config.list_physical_devices("GPU")
+    except Exception as error:
+        return {"error": str(error)}
+
+    if not devices:
+        return {"devices": []}
+
+    resolved_devices: list[dict[str, Any]] = []
+    for index, _ in enumerate(devices):
+        logical_name = f"GPU:{index}"
+        try:
+            raw_stats = tf.config.experimental.get_memory_info(logical_name)
+        except Exception as error:
+            resolved_devices.append({"device": logical_name, "error": str(error)})
+            continue
+
+        current = raw_stats.get("current")
+        peak = raw_stats.get("peak")
+        resolved_devices.append(
+            {
+                "device": logical_name,
+                "current_mb": (round(float(current) / (1024 * 1024), 2) if isinstance(current, (int, float)) else None),
+                "peak_mb": (round(float(peak) / (1024 * 1024), 2) if isinstance(peak, (int, float)) else None),
+            }
+        )
+
+    return {"devices": resolved_devices}
+
+
 def log_memory_snapshot(
     label: str,
     *,
@@ -104,23 +158,29 @@ def log_memory_snapshot(
 ) -> dict[str, Any]:
     """Capture a point-in-time memory snapshot and optionally log it."""
 
+    try:
+        gpu_memory = get_gpu_memory_info()
+    except Exception as error:
+        gpu_memory = {"error": str(error)}
+
+    try:
+        tf_memory = get_tf_memory_info()
+    except Exception as error:
+        tf_memory = {"error": str(error)}
+
     snapshot = {
         "label": label,
         "process_memory_mb": get_process_memory_mb(),
-        "gpu_memory": get_gpu_memory_info(),
+        "peak_process_memory_mb": get_peak_process_memory_mb(),
+        "gpu_memory": gpu_memory,
+        "tf_memory": tf_memory,
     }
 
     if logger is not None:
-        message = f"[memory] {label}: process={snapshot['process_memory_mb']}MB"
+        message = f"[memory] {label}: process={snapshot['process_memory_mb']}MB, " f"peak={snapshot['peak_process_memory_mb']}MB"
         gpu_memory = snapshot["gpu_memory"]
         if isinstance(gpu_memory, dict) and gpu_memory.get("devices"):
-            gpu_parts = [
-                (
-                    f"{device['name']} "
-                    f"{device['memory_used_mb']}/{device['memory_total_mb']}MB"
-                )
-                for device in gpu_memory["devices"]
-            ]
+            gpu_parts = [(f"{device['name']} " f"{device['memory_used_mb']}/{device['memory_total_mb']}MB") for device in gpu_memory["devices"]]
             message = f"{message}; gpu={'; '.join(gpu_parts)}"
         elif isinstance(gpu_memory, dict) and gpu_memory.get("error"):
             message = f"{message}; gpu_error={gpu_memory['error']}"

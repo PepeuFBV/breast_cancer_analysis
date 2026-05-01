@@ -66,14 +66,8 @@ def check_runtime_device(
         tf = tensorflow_module or importlib.import_module("tensorflow")
     except Exception as error:
         extra_help = ""
-        if (
-            isinstance(error, ModuleNotFoundError)
-            and getattr(error, "name", None) == "tensorflow"
-        ):
-            extra_help = (
-                " Install the project environment with "
-                "`python3 scripts/bootstrap_env.py`."
-            )
+        if isinstance(error, ModuleNotFoundError) and getattr(error, "name", None) == "tensorflow":
+            extra_help = " Install the project environment with " "`python3 scripts/bootstrap_env.py`."
         return RuntimeDeviceCheck(
             requested_device=device,
             selected_device="cpu" if device == "cpu" else "unavailable",
@@ -117,31 +111,20 @@ def check_runtime_device(
             warnings.append(f"Could not enable GPU memory growth: {error}")
     else:
         selected_device = "cpu"
-        warning = (
-            "No TensorFlow GPU devices are visible; CPU execution is available."
-        )
+        warning = "No TensorFlow GPU devices are visible; CPU execution is available."
         if device == "gpu" and require_gpu:
-            errors.append(
-                "No TensorFlow GPU devices are visible. Check NVIDIA driver, "
-                "CUDA/cuDNN compatibility, WSL GPU passthrough if applicable, "
-                "and CUDA_VISIBLE_DEVICES."
-            )
+            errors.append("No TensorFlow GPU devices are visible. Check NVIDIA driver, " "CUDA/cuDNN compatibility, WSL GPU passthrough if applicable, " "and CUDA_VISIBLE_DEVICES.")
         else:
             warnings.append(warning)
 
     try:
-        logical_gpus = tuple(
-            _device_name(gpu) for gpu in tf.config.list_logical_devices("GPU")
-        )
+        logical_gpus = tuple(_device_name(gpu) for gpu in tf.config.list_logical_devices("GPU"))
     except Exception as error:
         logical_gpus = ()
         warnings.append(f"Could not list logical GPU devices: {error}")
 
     if device == "cpu" and logical_gpus:
-        warnings.append(
-            "GPU devices are still visible in CPU mode. Set "
-            "CUDA_VISIBLE_DEVICES before importing TensorFlow."
-        )
+        warnings.append("GPU devices are still visible in CPU mode. Set " "CUDA_VISIBLE_DEVICES before importing TensorFlow.")
 
     return RuntimeDeviceCheck(
         requested_device=device,

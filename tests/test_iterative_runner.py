@@ -104,9 +104,7 @@ def _task(name: str, params: dict[str, object] | None = None) -> PreprocessingTa
     param_json = json.dumps(resolved_params, sort_keys=True, separators=(",", ":"))
     param_id = "default"
     if resolved_params:
-        param_id = "-".join(
-            [name, *[f"{key}-{value}" for key, value in resolved_params.items()]]
-        )
+        param_id = "-".join([name, *[f"{key}-{value}" for key, value in resolved_params.items()]])
     return PreprocessingTask(
         preproc_id=name,
         params=resolved_params,
@@ -118,6 +116,17 @@ def _task(name: str, params: dict[str, object] | None = None) -> PreprocessingTa
     )
 
 
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
+
+
 class IterativeRunnerTest(unittest.TestCase):
     def test_build_experiment_id_does_not_resolve_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -127,9 +136,7 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
                 preprocessing_tasks=[_task("none")],
             )
 
@@ -278,9 +285,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(statuses[10:], ["completed", "completed"])
             self.assertIn("synthetic tenth failure", state["tasks"][9]["error_summary"])
             self.assertTrue(store.summary_path.exists())
-            self.assertEqual(
-                len(list(project_paths.experiment_task_dir.glob("*.json"))), 12
-            )
+            self.assertEqual(len(list(project_paths.experiment_task_dir.glob("*.json"))), 12)
 
     def test_status_reconciles_stale_running_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -290,17 +295,13 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
                 preprocessing_tasks=[_task("none")],
             )
             record, _ = runner.build_queue()[0]
             store = ExperimentStateStore(project_paths)
             store.ensure_dirs()
-            store.sync_queue(
-                [record], config_path=Path("configs/experiment.default.json")
-            )
+            store.sync_queue([record], config_path=Path("configs/experiment.default.json"))
             store.update_task_status(record["id"], status="running")
 
             snapshot = store.summarize()
@@ -324,9 +325,7 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=expanded_config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
             )
 
             with self.assertRaises(ValueError) as context:
@@ -342,9 +341,7 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
                 preprocessing_tasks=[_task("none")],
             )
 
@@ -361,6 +358,79 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertIn("manual stop", state["tasks"][0]["error_summary"])
             self.assertIsNone(state["current_task_id"])
             self.assertFalse(store.pid_path.exists())
+
+    def test_structured_logging_creates_run_and_task_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+
+            snapshot = runner.run()
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+
+            store = ExperimentStateStore(project_paths)
+            run_events_path = store.run_events_path
+            self.assertTrue(run_events_path.exists())
+
+            run_events = _read_jsonl(run_events_path)
+            phases = {row["phase"] for row in run_events}
+            self.assertIn("run:start", phases)
+            self.assertIn("run:finish", phases)
+
+            state = store.load_state()
+            task_id = state["tasks"][0]["id"]
+            task_events_path = store.task_logs_dir / f"{task_id}.events.jsonl"
+            task_memory_path = store.task_logs_dir / f"{task_id}.memory.jsonl"
+            task_log_path = store.task_logs_dir / f"{task_id}.log"
+
+            self.assertTrue(task_events_path.exists())
+            self.assertTrue(task_memory_path.exists())
+            self.assertTrue(task_log_path.exists())
+
+            task_phases = {row["phase"] for row in _read_jsonl(task_events_path)}
+            self.assertIn("task:start", task_phases)
+            self.assertIn("task:completed", task_phases)
+
+            memory_phases = {row["phase"] for row in _read_jsonl(task_memory_path)}
+            self.assertIn("task:start", memory_phases)
+            self.assertIn("after_cleanup", memory_phases)
+
+    def test_structured_logging_records_failure_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                preprocessing_tasks=[_task("none")],
+            )
+
+            with patch(
+                "pipeline.experiments.runner.run_training_task",
+                side_effect=RuntimeError("synthetic runner failure"),
+            ):
+                snapshot = runner.run()
+
+            self.assertEqual(snapshot["counts"]["failed"], 1)
+            store = ExperimentStateStore(project_paths)
+            state = store.load_state()
+            task_id = state["tasks"][0]["id"]
+            task_events = _read_jsonl(store.task_logs_dir / f"{task_id}.events.jsonl")
+            failed_events = [event for event in task_events if event.get("phase") == "task:failed"]
+            self.assertEqual(len(failed_events), 1)
+            failed_event = failed_events[0]
+            self.assertEqual(failed_event["error_type"], "RuntimeError")
+            self.assertIn("synthetic runner failure", failed_event["error_message"])
+            self.assertIn("traceback_summary", failed_event)
+            self.assertIn("task_metadata", failed_event)
+            self.assertIn("process_memory_mb", failed_event)
 
 
 if __name__ == "__main__":

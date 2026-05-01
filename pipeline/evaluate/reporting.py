@@ -72,15 +72,11 @@ def enrich_parameter_columns(results_df: pd.DataFrame) -> pd.DataFrame:
     param_df = pd.json_normalize(param_records)
     if param_df.empty:
         return results_df
-    return pd.concat(
-        [results_df.reset_index(drop=True), param_df.reset_index(drop=True)], axis=1
-    )
+    return pd.concat([results_df.reset_index(drop=True), param_df.reset_index(drop=True)], axis=1)
 
 
 def _resolve_probability_columns(predictions_df: pd.DataFrame) -> list[str]:
-    columns = [
-        column for column in predictions_df.columns if column.startswith("prob_class_")
-    ]
+    columns = [column for column in predictions_df.columns if column.startswith("prob_class_")]
     return sorted(columns, key=lambda column: int(column.rsplit("_", 1)[-1]))
 
 
@@ -90,9 +86,7 @@ def _label_name(label_index: int) -> str:
     return str(label_index)
 
 
-def _compute_top_k_summary(
-    probabilities: np.ndarray, y_true: np.ndarray, top_k: int
-) -> dict[str, Any]:
+def _compute_top_k_summary(probabilities: np.ndarray, y_true: np.ndarray, top_k: int) -> dict[str, Any]:
     if probabilities.size == 0:
         return {
             "top_k_accuracy": np.nan,
@@ -112,9 +106,7 @@ def _compute_top_k_summary(
     }
 
 
-def _compute_multiclass_auc(
-    y_true: np.ndarray, probabilities: np.ndarray
-) -> tuple[float, float]:
+def _compute_multiclass_auc(y_true: np.ndarray, probabilities: np.ndarray) -> tuple[float, float]:
     present_labels = sorted(np.unique(y_true).tolist())
     if len(present_labels) < 2:
         return np.nan, np.nan
@@ -123,9 +115,7 @@ def _compute_multiclass_auc(
         positive_label = present_labels[1]
         binary_target = (y_true == positive_label).astype(int)
         try:
-            auc_value = float(
-                roc_auc_score(binary_target, probabilities[:, positive_label])
-            )
+            auc_value = float(roc_auc_score(binary_target, probabilities[:, positive_label]))
             return auc_value, auc_value
         except ValueError:
             return np.nan, np.nan
@@ -178,9 +168,7 @@ def _build_classification_report_df(
         per_class_auc = np.nan
         if binary_target.min() != binary_target.max():
             try:
-                per_class_auc = float(
-                    roc_auc_score(binary_target, probabilities[:, label])
-                )
+                per_class_auc = float(roc_auc_score(binary_target, probabilities[:, label]))
             except ValueError:
                 per_class_auc = np.nan
 
@@ -199,9 +187,7 @@ def _build_classification_report_df(
     return pd.DataFrame(rows)
 
 
-def _build_confusion_matrix_df(
-    y_true: np.ndarray, y_pred: np.ndarray, *, normalize: bool
-) -> pd.DataFrame:
+def _build_confusion_matrix_df(y_true: np.ndarray, y_pred: np.ndarray, *, normalize: bool) -> pd.DataFrame:
     labels = list(range(len(VALID_LABELS)))
     matrix = confusion_matrix(
         y_true,
@@ -228,9 +214,7 @@ def _write_evaluation_details(
     confusion_path = run_dir / "confusion_matrix.csv"
     normalized_confusion_path = run_dir / "confusion_matrix_normalized.csv"
 
-    summary_path.write_text(
-        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     classification_report_df.to_csv(classification_path, index=False)
     confusion_df.to_csv(confusion_path, index=True)
     normalized_confusion_df.to_csv(normalized_confusion_path, index=True)
@@ -251,12 +235,7 @@ def compute_run_evaluation_stats(
 ) -> list[dict[str, Any]]:
     stats: list[dict[str, Any]] = []
     for _, row in results_df.iterrows():
-        predictions_path = (
-            predictions_dir
-            / row["preproc_id"]
-            / row["model_name"]
-            / f"{row['param_id']}.csv"
-        )
+        predictions_path = predictions_dir / row["preproc_id"] / row["model_name"] / f"{row['param_id']}.csv"
         if not predictions_path.exists():
             continue
 
@@ -275,23 +254,17 @@ def compute_run_evaluation_stats(
             average="macro",
             zero_division=0,
         )
-        precision_weighted, recall_weighted, f1_weighted, _ = (
-            precision_recall_fscore_support(
-                y_true,
-                y_pred,
-                average="weighted",
-                zero_division=0,
-            )
+        precision_weighted, recall_weighted, f1_weighted, _ = precision_recall_fscore_support(
+            y_true,
+            y_pred,
+            average="weighted",
+            zero_division=0,
         )
         macro_auc, weighted_auc = _compute_multiclass_auc(y_true, probabilities)
         top_k_summary = _compute_top_k_summary(probabilities, y_true, top_k)
-        classification_report_df = _build_classification_report_df(
-            y_true, y_pred, probabilities
-        )
+        classification_report_df = _build_classification_report_df(y_true, y_pred, probabilities)
         confusion_df = _build_confusion_matrix_df(y_true, y_pred, normalize=False)
-        normalized_confusion_df = _build_confusion_matrix_df(
-            y_true, y_pred, normalize=True
-        )
+        normalized_confusion_df = _build_confusion_matrix_df(y_true, y_pred, normalize=True)
 
         summary = {
             "preproc_id": row["preproc_id"],
@@ -322,9 +295,7 @@ def compute_run_evaluation_stats(
     return stats
 
 
-def build_final_results(
-    results_df: pd.DataFrame, evaluation_stats: list[dict[str, Any]]
-) -> pd.DataFrame:
+def build_final_results(results_df: pd.DataFrame, evaluation_stats: list[dict[str, Any]]) -> pd.DataFrame:
     final_results = enrich_parameter_columns(results_df.copy())
     stats_df = pd.DataFrame(evaluation_stats)
 
@@ -341,26 +312,14 @@ def build_final_results(
         final_results["test_accuracy"] = np.nan
 
     ranking_metric = final_results["f1_macro"].fillna(final_results["best_val_acc"])
-    final_results["accuracy_improvement"] = final_results[
-        "test_accuracy"
-    ] - final_results.groupby("model_name")["test_accuracy"].transform("mean")
-    final_results["f1_macro_improvement"] = ranking_metric - ranking_metric.groupby(
-        final_results["model_name"]
-    ).transform("mean")
+    final_results["accuracy_improvement"] = final_results["test_accuracy"] - final_results.groupby("model_name")["test_accuracy"].transform("mean")
+    final_results["f1_macro_improvement"] = ranking_metric - ranking_metric.groupby(final_results["model_name"]).transform("mean")
     final_results["convergence_speed"] = final_results["best_epoch"]
-    final_results["preprocessing_type"] = final_results["preproc_id"].apply(
-        lambda value: "combined" if "__" in value else "single"
-    )
+    final_results["preprocessing_type"] = final_results["preproc_id"].apply(lambda value: "combined" if "__" in value else "single")
     final_results["overall_rank"] = ranking_metric.rank(ascending=False, method="dense")
-    final_results["validation_rank"] = final_results["best_val_acc"].rank(
-        ascending=False, method="dense"
-    )
-    final_results["model_rank"] = ranking_metric.groupby(
-        final_results["model_name"]
-    ).rank(ascending=False, method="dense")
-    final_results["preproc_rank"] = ranking_metric.groupby(
-        final_results["preproc_id"]
-    ).rank(ascending=False, method="dense")
+    final_results["validation_rank"] = final_results["best_val_acc"].rank(ascending=False, method="dense")
+    final_results["model_rank"] = ranking_metric.groupby(final_results["model_name"]).rank(ascending=False, method="dense")
+    final_results["preproc_rank"] = ranking_metric.groupby(final_results["preproc_id"]).rank(ascending=False, method="dense")
 
     preferred_order = [
         "overall_rank",
@@ -399,12 +358,8 @@ def build_final_results(
         "metrics_summary_path",
         "param_json",
     ]
-    remaining_columns = [
-        column for column in final_results.columns if column not in preferred_order
-    ]
-    ordered_columns = [
-        column for column in preferred_order if column in final_results.columns
-    ] + remaining_columns
+    remaining_columns = [column for column in final_results.columns if column not in preferred_order]
+    ordered_columns = [column for column in preferred_order if column in final_results.columns] + remaining_columns
     return final_results[ordered_columns]
 
 

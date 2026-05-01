@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import cv2
 import numpy as np
@@ -18,6 +18,22 @@ from pipeline.utils.gpu_env import configure_gpu_memory_growth
 from pipeline.utils.memory import clear_ml_memory
 from pipeline.utils.reproducibility import enforce_reproducibility
 from pipeline.utils.runtime import format_duration
+
+PhaseObserver = Callable[[str, dict[str, Any] | None], None]
+
+
+def _emit_phase(
+    phase_observer: PhaseObserver | None,
+    phase: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    if phase_observer is None:
+        return
+    try:
+        phase_observer(phase, details)
+    except Exception:
+        # Observability callbacks must not affect training behavior.
+        return
 
 
 @dataclass(frozen=True)
@@ -101,16 +117,12 @@ def load_split_dataframe(path: Path) -> pd.DataFrame:
     mapped_labels = raw_labels.map(LABEL_MAPPING)
     if mapped_labels.isna().any():
         invalid_rows = raw_labels[mapped_labels.isna()]
-        raise ValueError(
-            f"Invalid labels found in split {path}: {sorted(invalid_rows.unique())}"
-        )
+        raise ValueError(f"Invalid labels found in split {path}: {sorted(invalid_rows.unique())}")
     dataframe["label"] = mapped_labels.astype(int)
     return dataframe
 
 
-def preprocess_images(
-    dataframe: pd.DataFrame, preproc_fn
-) -> tuple[np.ndarray, np.ndarray]:
+def preprocess_images(dataframe: pd.DataFrame, preproc_fn) -> tuple[np.ndarray, np.ndarray]:
     images: list[np.ndarray] = []
     labels: list[int] = []
     for _, row in dataframe.iterrows():
@@ -145,10 +157,7 @@ def _prepare_model_inputs(
         images = np.repeat(images, 3, axis=-1)
         return images, tuple(images.shape[1:]), effective_batch_size
 
-    raise ValueError(
-        "Unsupported input_channels="
-        f"{runtime.input_channels} configured for model '{model_name}'."
-    )
+    raise ValueError("Unsupported input_channels=" f"{runtime.input_channels} configured for model '{model_name}'.")
 
 
 def _one_hot_encode(labels: np.ndarray, num_classes: int) -> np.ndarray:
@@ -157,9 +166,7 @@ def _one_hot_encode(labels: np.ndarray, num_classes: int) -> np.ndarray:
 
 def _is_resource_exhausted_error(error: Exception) -> bool:
     error_name = error.__class__.__name__
-    return error_name in ("ResourceExhaustedError", "InternalError") or "OOM" in str(
-        error
-    )
+    return error_name in ("ResourceExhaustedError", "InternalError") or "OOM" in str(error)
 
 
 def _clear_keras_session() -> None:
@@ -235,21 +242,27 @@ def run_model_with_preprocessing(
     random_state: int,
     model_runtime: ModelRuntimeConfig | None = None,
     max_retries: int = 3,
+    phase_observer: PhaseObserver | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     """Run model training with automatic retry on OOM errors.
-    
+
     Args:
         max_retries: Number of times to retry on OOM errors with memory cleanup.
     """
     configure_gpu_memory_growth()
-    
+
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         if attempt > 0:
             clear_ml_memory()
             time.sleep(3 + attempt)  # Increasing delay: 4s, 5s, 6s
-        
+
         try:
+            _emit_phase(
+                phase_observer,
+                "before_preprocess_train",
+                {"train_attempt": attempt + 1},
+            )
             return _run_model_with_preprocessing_impl(
                 train_df,
                 validation_df,
@@ -264,6 +277,7 @@ def run_model_with_preprocessing(
                 learning_rate=learning_rate,
                 random_state=random_state,
                 model_runtime=model_runtime,
+                phase_observer=phase_observer,
             )
         except Exception as error:
             last_error = error
@@ -274,7 +288,7 @@ def run_model_with_preprocessing(
                 print(f"  OOM error on attempt {attempt + 1}/{max_retries + 1}, retrying after cleanup...")
                 continue
             raise
-    
+
     if last_error:
         raise last_error
     raise RuntimeError("Unexpected: no result and no error")
@@ -295,6 +309,7 @@ def _run_model_with_preprocessing_impl(
     learning_rate: float,
     random_state: int,
     model_runtime: ModelRuntimeConfig | None = None,
+    phase_observer: PhaseObserver | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     enforce_reproducibility(random_state)
 
@@ -320,7 +335,9 @@ def _run_model_with_preprocessing_impl(
     try:
         x_train, y_train = preprocess_images(train_df, task.apply)
         x_validation, y_validation = preprocess_images(validation_df, task.apply)
+        _emit_phase(phase_observer, "after_preprocess_train")
 
+        _emit_phase(phase_observer, "before_prepare_train_inputs")
         train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(
             x_train,
             model_name,
@@ -340,7 +357,9 @@ def _run_model_with_preprocessing_impl(
         y_validation_encoded = _one_hot_encode(y_validation, num_classes)
         y_train = None
         y_validation = None
+        _emit_phase(phase_observer, "after_prepare_train_inputs")
 
+        _emit_phase(phase_observer, "before_model_build")
         model = model_fn(
             input_shape=input_shape,
             num_classes=num_classes,
@@ -348,7 +367,9 @@ def _run_model_with_preprocessing_impl(
             learning_rate=learning_rate,
             runtime=model_runtime,
         )
+        _emit_phase(phase_observer, "after_model_build")
 
+        _emit_phase(phase_observer, "before_fit")
         callbacks = _build_fit_callbacks()
         history = model.fit(
             train_inputs,
@@ -359,6 +380,7 @@ def _run_model_with_preprocessing_impl(
             verbose=0,
             callbacks=callbacks,
         )
+        _emit_phase(phase_observer, "after_fit")
 
         train_inputs = None
         validation_inputs = None
@@ -366,18 +388,17 @@ def _run_model_with_preprocessing_impl(
         y_validation_encoded = None
         callbacks = None
         clear_ml_memory(clear_session=False)
+        _emit_phase(phase_observer, "after_train_release")
 
         history_dict = dict(history.history)
         history = None
         val_accuracies = history_dict.get("val_accuracy")
         if not val_accuracies:
-            raise ValueError(
-                "Model history does not contain val_accuracy, "
-                "required for model selection."
-            )
+            raise ValueError("Model history does not contain val_accuracy, " "required for model selection.")
         best_epoch = int(np.argmax(val_accuracies)) + 1
         best_val_acc = float(np.max(val_accuracies))
 
+        _emit_phase(phase_observer, "before_eval_preprocess")
         x_evaluation, _ = preprocess_images(evaluation_df, task.apply)
         evaluation_inputs, _, _ = _prepare_model_inputs(
             x_evaluation,
@@ -386,9 +407,10 @@ def _run_model_with_preprocessing_impl(
             model_runtime,
         )
         x_evaluation = None
-        predictions_df = _predict_dataframe(
-            model, evaluation_inputs, evaluation_df, effective_batch_size
-        )
+        _emit_phase(phase_observer, "after_eval_preprocess")
+        _emit_phase(phase_observer, "before_predict")
+        predictions_df = _predict_dataframe(model, evaluation_inputs, evaluation_df, effective_batch_size)
+        _emit_phase(phase_observer, "after_predict")
 
         evaluation_inputs = None
         clear_ml_memory(clear_session=False)
@@ -423,9 +445,7 @@ def _artifact_paths(
     return history_path, predictions_path
 
 
-def artifact_paths_for_task(
-    config: TrainingConfig, task: TrainingTask
-) -> tuple[Path, Path]:
+def artifact_paths_for_task(config: TrainingConfig, task: TrainingTask) -> tuple[Path, Path]:
     return _artifact_paths(
         config.history_dir,
         config.predictions_dir,
@@ -442,9 +462,7 @@ def check_if_model_exists(
     model_name: str,
     param_id: str,
 ) -> bool:
-    history_path, predictions_path = _artifact_paths(
-        history_dir, predictions_dir, preproc_id, model_name, param_id
-    )
+    history_path, predictions_path = _artifact_paths(history_dir, predictions_dir, preproc_id, model_name, param_id)
     return history_path.exists() and predictions_path.exists()
 
 
@@ -460,16 +478,10 @@ def task_has_existing_artifacts(config: TrainingConfig, task: TrainingTask) -> b
 
 def _metrics_at_best_epoch(result: TrainingRunResult) -> dict[str, Any]:
     best_epoch_index = result.best_epoch - 1
-    return {
-        key: values[best_epoch_index]
-        for key, values in result.history_dict.items()
-        if isinstance(values, list) and best_epoch_index < len(values)
-    }
+    return {key: values[best_epoch_index] for key, values in result.history_dict.items() if isinstance(values, list) and best_epoch_index < len(values)}
 
 
-def build_history_row(
-    result: TrainingRunResult, config: TrainingConfig
-) -> dict[str, Any]:
+def build_history_row(result: TrainingRunResult, config: TrainingConfig) -> dict[str, Any]:
     return {
         "fold": result.fold,
         "best_val_acc": result.best_val_acc,
@@ -489,9 +501,7 @@ def build_history_row(
     }
 
 
-def save_run_result(
-    result: TrainingRunResult, config: TrainingConfig
-) -> tuple[Path, Path]:
+def save_run_result(result: TrainingRunResult, config: TrainingConfig) -> tuple[Path, Path]:
     history_path, predictions_path = _artifact_paths(
         config.history_dir,
         config.predictions_dir,
@@ -513,13 +523,9 @@ def save_run_result(
     return history_path, predictions_path
 
 
-def _build_validation_split(
-    train_df: pd.DataFrame, config: TrainingConfig
-) -> DatasetSplitResult:
+def _build_validation_split(train_df: pd.DataFrame, config: TrainingConfig) -> DatasetSplitResult:
     if not 0 < config.validation_size < 1:
-        raise ValueError(
-            f"validation_size must be between 0 and 1, got {config.validation_size}."
-        )
+        raise ValueError(f"validation_size must be between 0 and 1, got {config.validation_size}.")
     return split_dataset(
         train_df,
         test_size=config.validation_size,
@@ -536,25 +542,25 @@ def _run_fixed_split(
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
     validation_split = _build_validation_split(train_df, config)
     model_runtime = (config.model_runtime or {}).get(model_name)
-    best_val_acc, best_epoch, history_dict, predictions_df = (
-        run_model_with_preprocessing(
-            validation_split.train_df,
-            validation_split.test_df,
-            test_df,
-            task,
-            model_name,
-            model_fn,
-            num_classes=config.num_classes,
-            batch_size=config.batch_size,
-            epochs=config.epochs,
-            loss=config.loss,
-            learning_rate=config.learning_rate,
-            random_state=config.random_state,
-            model_runtime=model_runtime,
-        )
+    best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
+        validation_split.train_df,
+        validation_split.test_df,
+        test_df,
+        task,
+        model_name,
+        model_fn,
+        num_classes=config.num_classes,
+        batch_size=config.batch_size,
+        epochs=config.epochs,
+        loss=config.loss,
+        learning_rate=config.learning_rate,
+        random_state=config.random_state,
+        model_runtime=model_runtime,
+        phase_observer=phase_observer,
     )
     return TrainingRunResult(
         preproc_id=task.preproc_id,
@@ -579,9 +585,7 @@ def _build_cv_indices(
     train_df: pd.DataFrame,
     config: TrainingConfig,
 ) -> tuple[Iterable[tuple[np.ndarray, np.ndarray]], str]:
-    groups = (
-        train_df["split_group_id"] if "split_group_id" in train_df.columns else None
-    )
+    groups = train_df["split_group_id"] if "split_group_id" in train_df.columns else None
     labels = train_df["label"]
 
     if groups is not None and groups.nunique() >= config.folds:
@@ -607,6 +611,7 @@ def _run_cross_validation(
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
     split_iterator, cv_strategy = _build_cv_indices(train_df, config)
 
@@ -627,22 +632,21 @@ def _run_cross_validation(
             fit_df = train_df.iloc[fit_idx].reset_index(drop=True)
             validation_df = train_df.iloc[validation_idx].reset_index(drop=True)
             fold_seed = config.random_state + fold_index
-            best_val_acc, best_epoch, history_dict, predictions_df = (
-                run_model_with_preprocessing(
-                    fit_df,
-                    validation_df,
-                    test_df,
-                    task,
-                    model_name,
-                    model_fn,
-                    num_classes=config.num_classes,
-                    batch_size=config.batch_size,
-                    epochs=config.epochs,
-                    loss=config.loss,
-                    learning_rate=config.learning_rate,
-                    random_state=fold_seed,
-                    model_runtime=model_runtime,
-                )
+            best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
+                fit_df,
+                validation_df,
+                test_df,
+                task,
+                model_name,
+                model_fn,
+                num_classes=config.num_classes,
+                batch_size=config.batch_size,
+                epochs=config.epochs,
+                loss=config.loss,
+                learning_rate=config.learning_rate,
+                random_state=fold_seed,
+                model_runtime=model_runtime,
+                phase_observer=phase_observer,
             )
 
             fold_scores.append(best_val_acc)
@@ -733,21 +737,14 @@ def run_training_task(
     train_df: pd.DataFrame | None = None,
     test_df: pd.DataFrame | None = None,
     model_builders: dict[str, ModelBuilder] | None = None,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
     available_builders = model_builders or MODEL_BUILDERS
     if task.model_name not in available_builders:
         raise ValueError(f"Unknown model name requested: {task.model_name}")
 
-    resolved_train_df = (
-        load_split_dataframe(config.train_split_path)
-        if train_df is None
-        else train_df
-    )
-    resolved_test_df = (
-        load_split_dataframe(config.test_split_path)
-        if test_df is None
-        else test_df
-    )
+    resolved_train_df = load_split_dataframe(config.train_split_path) if train_df is None else train_df
+    resolved_test_df = load_split_dataframe(config.test_split_path) if test_df is None else test_df
     model_fn = available_builders[task.model_name]
 
     if config.folds == 0:
@@ -758,6 +755,7 @@ def run_training_task(
             task.model_name,
             model_fn,
             config,
+            phase_observer=phase_observer,
         )
     return _run_cross_validation(
         resolved_train_df,
@@ -766,6 +764,7 @@ def run_training_task(
         task.model_name,
         model_fn,
         config,
+        phase_observer=phase_observer,
     )
 
 
@@ -811,11 +810,7 @@ def run_training_pipeline(
                 model_builders=available_builders,
             )
         except Exception as error:
-            prefix = (
-                "GPU memory error detected for"
-                if _is_resource_exhausted_error(error)
-                else "Error running"
-            )
+            prefix = "GPU memory error detected for" if _is_resource_exhausted_error(error) else "Error running"
             print(f"{prefix} {task.label}: {error}")
             clear_ml_memory()
             continue
@@ -824,10 +819,7 @@ def run_training_pipeline(
         summaries.append(result)
         elapsed = time.time() - model_started_at
         fold_label = f" fold {result.fold}" if result.fold else ""
-        print(
-            f"Saved best run for {task.label}{fold_label} with val_accuracy="
-            f"{result.best_val_acc:.4f} at epoch {result.best_epoch}."
-        )
+        print(f"Saved best run for {task.label}{fold_label} with val_accuracy=" f"{result.best_val_acc:.4f} at epoch {result.best_epoch}.")
         print(f"History: {history_path}")
         print(f"Predictions: {predictions_path}")
         print(f"Time taken: {format_duration(elapsed)}\n")

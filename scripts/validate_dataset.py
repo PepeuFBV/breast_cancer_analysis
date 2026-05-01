@@ -11,9 +11,7 @@ from pipeline.data.validation import (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Validate the expected INbreast dataset directory layout."
-    )
+    parser = argparse.ArgumentParser(description="Validate the expected INbreast dataset directory layout.")
     parser.add_argument(
         "--config",
         default=None,

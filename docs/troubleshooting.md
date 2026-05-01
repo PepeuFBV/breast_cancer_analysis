@@ -97,11 +97,39 @@ Key files:
 - `artifacts/experiments/state/runner_state.json`
 - `artifacts/experiments/summary/experiment_runs.csv`
 - `artifacts/experiments/logs/iterative-runner.log`
+- `artifacts/experiments/logs/run-events.jsonl`
+- `artifacts/experiments/logs/tasks/exp-*.events.jsonl`
+- `artifacts/experiments/logs/tasks/exp-*.memory.jsonl`
+- `artifacts/experiments/logs/tasks/exp-*.log`
 - `artifacts/experiments/tasks/*.json`
 
 If failures appear after several combinations, inspect memory snapshots in
 `iterative-runner.log` (`[memory] before:*` and `[memory] after:*`) and compare
 task-level JSON snapshots to identify where failures started.
+
+### Structured Memory Diagnostics
+
+Use `run-events.jsonl` for global timeline and `logs/tasks/` for per-task detail.
+
+1. Find recent failures:
+
+```bash
+tail -n 200 artifacts/experiments/logs/run-events.jsonl | rg '"phase":"task:failed"'
+```
+
+2. Inspect one failed task timeline:
+
+```bash
+task_id="exp-<id>"
+rg '"phase":"(task:start|after_cleanup|task:failed)"' \
+  "artifacts/experiments/logs/tasks/${task_id}.memory.jsonl"
+```
+
+3. Compare memory drift between task boundaries:
+
+- `task:start` shows baseline before training.
+- `after_cleanup` shows post-release memory for that task.
+- `task:failed` captures memory at failure with error metadata and traceback summary.
 
 Failed tasks are not rerun by default:
 

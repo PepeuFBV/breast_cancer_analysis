@@ -33,9 +33,7 @@ class PreprocessingTask:
     apply: ImageTransform
 
 
-def denoise_image(
-    image: np.ndarray, kernel_size: tuple[int, int] = (5, 5), sigma: float = 0
-) -> np.ndarray:
+def denoise_image(image: np.ndarray, kernel_size: tuple[int, int] = (5, 5), sigma: float = 0) -> np.ndarray:
     return cv2.GaussianBlur(image, kernel_size, sigma)
 
 
@@ -66,9 +64,7 @@ def binarize_image(
             11,
             2,
         )
-    raise ValueError(
-        "Unknown method: choose 'fixed', 'adaptive_mean', or 'adaptive_gaussian'"
-    )
+    raise ValueError("Unknown method: choose 'fixed', 'adaptive_mean', or 'adaptive_gaussian'")
 
 
 def lowpass_filter_image(
@@ -90,30 +86,22 @@ def lowpass_filter_image(
     return filtered
 
 
-def erode_image(
-    image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1
-) -> np.ndarray:
+def erode_image(image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1) -> np.ndarray:
     kernel = np.ones(kernel_size, np.uint8)
     return cv2.erode(image, kernel, iterations=iterations)
 
 
-def dilate_image(
-    image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1
-) -> np.ndarray:
+def dilate_image(image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1) -> np.ndarray:
     kernel = np.ones(kernel_size, np.uint8)
     return cv2.dilate(image, kernel, iterations=iterations)
 
 
-def open_image(
-    image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1
-) -> np.ndarray:
+def open_image(image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1) -> np.ndarray:
     kernel = np.ones(kernel_size, np.uint8)
     return cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel, iterations=iterations)
 
 
-def close_image(
-    image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1
-) -> np.ndarray:
+def close_image(image: np.ndarray, kernel_size: tuple[int, int] = (3, 3), iterations: int = 1) -> np.ndarray:
     kernel = np.ones(kernel_size, np.uint8)
     return cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel, iterations=iterations)
 
@@ -217,11 +205,7 @@ def _build_definitions(
     for preproc_id, definition in SINGLE_PREPROCESSING_METHODS.items():
         definitions[preproc_id] = PreprocessingDefinition(
             func=definition.func,
-            params=(
-                definition.params
-                if param_grids is None
-                else param_grids.get(preproc_id, {})
-            ),
+            params=(definition.params if param_grids is None else param_grids.get(preproc_id, {})),
         )
     return definitions
 
@@ -233,9 +217,7 @@ def _build_single_task(
 ) -> PreprocessingTask:
     definition = definitions[preproc_id]
 
-    def apply(
-        image: np.ndarray, *, func=definition.func, bound_params=params
-    ) -> np.ndarray:
+    def apply(image: np.ndarray, *, func=definition.func, bound_params=params) -> np.ndarray:
         return func(image, **bound_params)
 
     return PreprocessingTask(
@@ -309,9 +291,7 @@ def iter_preprocessing_tasks(
             continue
         for first_params in iter_param_grid(definitions[first_id].params):
             for second_params in iter_param_grid(definitions[second_id].params):
-                yield _build_combined_task(
-                    first_id, second_id, first_params, second_params, definitions
-                )
+                yield _build_combined_task(first_id, second_id, first_params, second_params, definitions)
 
 
 def count_preprocessing_tasks(
@@ -322,10 +302,7 @@ def count_preprocessing_tasks(
 ) -> int:
     definitions = _build_definitions(param_grids)
     selected = set(selected_ids) if selected_ids else None
-    grid_sizes = {
-        preproc_id: _param_grid_size(definition.params)
-        for preproc_id, definition in definitions.items()
-    }
+    grid_sizes = {preproc_id: _param_grid_size(definition.params) for preproc_id, definition in definitions.items()}
 
     total = 0
     for preproc_id, grid_size in grid_sizes.items():

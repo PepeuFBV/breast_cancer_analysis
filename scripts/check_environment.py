@@ -89,38 +89,24 @@ def run_environment_check(
     }
 
     if not (MIN_PYTHON <= sys.version_info[:2] < MAX_PYTHON_EXCLUSIVE):
-        errors.append(
-            "Python must be >=3.10 and <3.13 for the validated TensorFlow stack; "
-            f"found {sys.version.split()[0]}."
-        )
+        errors.append("Python must be >=3.10 and <3.13 for the validated TensorFlow stack; " f"found {sys.version.split()[0]}.")
 
     if require_venv and not _in_virtualenv():
-        errors.append(
-            "No active virtual environment detected. Create one with "
-            "`python3 -m venv .venv` and activate it before installing."
-        )
+        errors.append("No active virtual environment detected. Create one with " "`python3 -m venv .venv` and activate it before installing.")
     elif not _in_virtualenv():
-        warnings.append(
-            "No active virtual environment detected; using a venv is recommended."
-        )
+        warnings.append("No active virtual environment detected; using a venv is recommended.")
 
     versions, missing = _distribution_versions(REQUIRED_DISTRIBUTIONS)
     details["packages"] = versions
     if missing:
-        errors.append(
-            "Missing required package(s): "
-            f"{', '.join(missing)}. Install with "
-            "`python3 scripts/bootstrap_env.py`."
-        )
+        errors.append("Missing required package(s): " f"{', '.join(missing)}. Install with " "`python3 scripts/bootstrap_env.py`.")
 
     if not skip_tensorflow and "tensorflow" not in missing:
         try:
             ensure_tensorflow_wsl_gpu_env()
             tf = importlib.import_module("tensorflow")
             details["tensorflow_version"] = getattr(tf, "__version__", "unknown")
-            details["tensorflow_physical_gpus"] = [
-                str(device) for device in tf.config.list_physical_devices("GPU")
-            ]
+            details["tensorflow_physical_gpus"] = [str(device) for device in tf.config.list_physical_devices("GPU")]
         except Exception as error:
             errors.append(f"TensorFlow import failed: {error}")
 
@@ -195,15 +181,10 @@ def format_result(result: EnvironmentCheckResult) -> str:
     packages = result.details.get("packages", {})
     if isinstance(packages, dict):
         lines.append("Packages:")
-        lines.extend(
-            f"- {name}: {version}" for name, version in sorted(packages.items())
-        )
+        lines.extend(f"- {name}: {version}" for name, version in sorted(packages.items()))
     dataset = result.details.get("dataset")
     if isinstance(dataset, dict):
-        lines.append(
-            f"Dataset: {'OK' if dataset.get('ok') else 'FAILED'} "
-            f"({dataset.get('dicom_count')} DICOM files)"
-        )
+        lines.append(f"Dataset: {'OK' if dataset.get('ok') else 'FAILED'} " f"({dataset.get('dicom_count')} DICOM files)")
     if result.warnings:
         lines.append("Warnings:")
         lines.extend(f"- {warning}" for warning in result.warnings)
@@ -214,9 +195,7 @@ def format_result(result: EnvironmentCheckResult) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Validate local setup before running the project pipeline."
-    )
+    parser = argparse.ArgumentParser(description="Validate local setup before running the project pipeline.")
     parser.add_argument("--config", default=None)
     parser.add_argument("--raw-data-dir", default=None)
     parser.add_argument("--artifacts-dir", default=None)

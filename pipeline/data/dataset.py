@@ -98,22 +98,16 @@ def load_metadata(metadata_path: Path) -> pd.DataFrame:
     dataframe.columns = dataframe.columns.str.strip()
     dataframe["File Name"] = dataframe["File Name"].map(normalize_file_number)
     dataframe["Bi-Rads"] = dataframe["Bi-Rads"].astype(str).str.strip().str.lower()
-    dataframe = dataframe[dataframe["Bi-Rads"].isin(VALID_LABELS)].reset_index(
-        drop=True
-    )
+    dataframe = dataframe[dataframe["Bi-Rads"].isin(VALID_LABELS)].reset_index(drop=True)
     return dataframe
 
 
 def _normalize_column_name(column_name: str) -> str:
-    return "".join(
-        character for character in column_name.lower() if character.isalnum()
-    )
+    return "".join(character for character in column_name.lower() if character.isalnum())
 
 
 def _resolve_metadata_column(metadata: pd.DataFrame, *aliases: str) -> str | None:
-    normalized_lookup = {
-        _normalize_column_name(column): column for column in metadata.columns
-    }
+    normalized_lookup = {_normalize_column_name(column): column for column in metadata.columns}
     for alias in aliases:
         resolved = normalized_lookup.get(_normalize_column_name(alias))
         if resolved is not None:
@@ -144,12 +138,8 @@ def annotate_split_groups(
     exam_columns = tuple(
         column
         for column in (
-            _resolve_metadata_column(
-                annotated, "Accession Number", "Exam ID", "Exam_ID", "Study ID"
-            ),
-            _resolve_metadata_column(
-                annotated, "Acquisition Date", "Study Date", "Exam Date"
-            ),
+            _resolve_metadata_column(annotated, "Accession Number", "Exam ID", "Exam_ID", "Study ID"),
+            _resolve_metadata_column(annotated, "Acquisition Date", "Study Date", "Exam Date"),
             _resolve_metadata_column(annotated, "Laterality", "Side"),
             _resolve_metadata_column(annotated, "View", "View Position"),
         )
@@ -163,9 +153,7 @@ def annotate_split_groups(
 
     if exam_columns:
         annotated["split_group_id"] = annotated.apply(
-            lambda row: "|".join(
-                _normalize_group_value(row[column]) for column in exam_columns
-            ),
+            lambda row: "|".join(_normalize_group_value(row[column]) for column in exam_columns),
             axis=1,
         )
         return annotated, "exam", exam_columns
@@ -271,14 +259,9 @@ def export_image_dataset(
     return pd.DataFrame(generated_rows)
 
 
-def balance_df_trim_above(
-    dataframe: pd.DataFrame, samples_per_class: int, random_state: int
-) -> pd.DataFrame:
+def balance_df_trim_above(dataframe: pd.DataFrame, samples_per_class: int, random_state: int) -> pd.DataFrame:
     if dataframe.empty:
-        raise ValueError(
-            "No images were generated during dataset export. "
-            "Check metadata labels and DICOM filename mapping."
-        )
+        raise ValueError("No images were generated during dataset export. " "Check metadata labels and DICOM filename mapping.")
 
     balanced_frames: list[pd.DataFrame] = []
     for label in dataframe["label"].unique():
@@ -392,17 +375,12 @@ def split_dataset(
         train_df=train_df.reset_index(drop=True),
         test_df=test_df.reset_index(drop=True),
         strategy="image_stratified",
-        group_columns=(
-            tuple() if resolved_group_column is None else (resolved_group_column,)
-        ),
+        group_columns=(tuple() if resolved_group_column is None else (resolved_group_column,)),
     )
 
 
 def _class_distribution(dataframe: pd.DataFrame, label_column: str) -> dict[str, int]:
-    return {
-        str(label): int(count)
-        for label, count in dataframe[label_column].value_counts().sort_index().items()
-    }
+    return {str(label): int(count) for label, count in dataframe[label_column].value_counts().sort_index().items()}
 
 
 def _build_split_manifest(
@@ -431,12 +409,8 @@ def _build_split_manifest(
         "test_original_samples": int(len(test_metadata)),
         "train_images_after_balancing": int(len(train_df)),
         "test_images": int(len(test_df)),
-        "train_label_distribution_original": _class_distribution(
-            train_metadata, "Bi-Rads"
-        ),
-        "test_label_distribution_original": _class_distribution(
-            test_metadata, "Bi-Rads"
-        ),
+        "train_label_distribution_original": _class_distribution(train_metadata, "Bi-Rads"),
+        "test_label_distribution_original": _class_distribution(test_metadata, "Bi-Rads"),
         "train_label_distribution_images": _class_distribution(train_df, "label"),
         "test_label_distribution_images": _class_distribution(test_df, "label"),
         "shared_source_ids": int(len(train_source_ids & test_source_ids)),
@@ -482,11 +456,7 @@ def prepare_dataset(config: DatasetPreparationConfig) -> DatasetPreparationArtif
     balanced_train_df.to_csv(config.train_split_path, index=False)
     test_generated_df.to_csv(config.test_split_path, index=False)
 
-    split_strategy = (
-        f"grouped_{split_group_level}"
-        if split_group_level != "image"
-        else metadata_split.strategy
-    )
+    split_strategy = f"grouped_{split_group_level}" if split_group_level != "image" else metadata_split.strategy
     split_manifest = _build_split_manifest(
         config=config,
         train_metadata=metadata_split.train_df,
@@ -496,9 +466,7 @@ def prepare_dataset(config: DatasetPreparationConfig) -> DatasetPreparationArtif
         split_strategy=split_strategy,
         split_group_columns=split_group_columns,
     )
-    config.split_manifest_path.write_text(
-        json.dumps(split_manifest, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    config.split_manifest_path.write_text(json.dumps(split_manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     return DatasetPreparationArtifacts(
         train_split_path=config.train_split_path,
