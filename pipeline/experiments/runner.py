@@ -44,6 +44,8 @@ STOP_REQUEST_FILENAME = "stop_requested.flag"
 BACKGROUND_RUNNER_LOG_PREFIX = "background-runner"
 TASK_STATUSES = {"pending", "running", "completed", "failed", "stopped"}
 MAX_QUEUE_TASKS = 50_000
+ISOLATED_TASK_CHILD_MODE_ENV = "BREAST_CANCER_ANALYSIS_ISOLATED_TASK_CHILD"
+ISOLATED_TASK_PARENT_PID_ENV = "BREAST_CANCER_ANALYSIS_ISOLATED_TASK_PARENT_PID"
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,10 @@ class IterativeRunOptions:
     rerun_failed: bool = False
     rerun_completed: bool = False
     limit: int | None = None
+    isolate_tasks: bool = False
+    task_cooldown_seconds: float = 2.0
+    task_timeout_seconds: float | None = None
+    run_task_command_base: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -653,6 +659,7 @@ class IterativeExperimentRunner:
         self.logger = self._build_logger()
         self._previous_signal_handlers: dict[int, Any] = {}
         self._peak_process_memory_mb: float | None = None
+        self._task_cooldown_seconds: float = 2.0
 
     def _build_logger(self) -> logging.Logger:
         logger = logging.getLogger(f"iterative_experiment_runner:{self.project_paths.artifacts_dir}")
@@ -842,6 +849,152 @@ class IterativeExperimentRunner:
                 return record, training_task
         return None
 
+    def _task_state_by_id(self, task_id: str) -> dict[str, Any]:
+        state = self.store.load_state()
+        for task in state["tasks"]:
+            if task.get("id") == task_id:
+                return task
+        raise KeyError(f"Task id not found in runner state: {task_id}")
+
+    def _run_task_subprocess_command(self, task_id: str, command_base: tuple[str, ...] | None) -> list[str]:
+        if command_base is None:
+            command = [sys.executable, "run_experiments.py", "run-task"]
+        else:
+            command = [str(entry) for entry in command_base]
+        return [*command, "--task-id", task_id]
+
+    def _execute_task_entry_isolated_subprocess(
+        self,
+        *,
+        record: dict[str, Any],
+        command_base: tuple[str, ...] | None,
+        timeout_seconds: float | None,
+    ) -> dict[str, Any]:
+        task_id = record["id"]
+        command = self._run_task_subprocess_command(task_id, command_base)
+        env = os.environ.copy()
+        env[ISOLATED_TASK_CHILD_MODE_ENV] = "1"
+        env[ISOLATED_TASK_PARENT_PID_ENV] = str(os.getpid())
+        started_at = datetime.now(timezone.utc)
+        self.logger.info("Running isolated task %s via subprocess: %s", task_id, " ".join(command))
+        print(f"Running isolated task {task_id}")
+        self._log_structured_phase(
+            phase="task:subprocess_start",
+            task_record=record,
+            message=f"Launching isolated subprocess for {task_id}.",
+            extra={
+                "subprocess_command": command,
+                "task_timeout_seconds": timeout_seconds,
+            },
+        )
+
+        try:
+            completed = subprocess.run(
+                command,
+                env=env,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+            error_summary = (
+                "Isolated task subprocess timed out after "
+                f"{timeout_seconds:.2f}s."
+            )
+            self.store.update_task_status(
+                task_id,
+                status="failed",
+                error_summary=error_summary[:500],
+                duration_seconds=duration_seconds,
+            )
+            self.logger.error(
+                "Isolated task %s timed out after %.2fs.",
+                task_id,
+                duration_seconds,
+            )
+            print(f"Task {task_id} timed out after {timeout_seconds:.2f}s")
+            self._log_structured_phase(
+                phase="task:timeout",
+                task_record=record,
+                message=error_summary,
+                extra={
+                    "duration_seconds": duration_seconds,
+                    "subprocess_command": command,
+                    "task_timeout_seconds": timeout_seconds,
+                },
+            )
+            return {
+                "task_id": task_id,
+                "status": "failed",
+                "duration_seconds": duration_seconds,
+                "timeout": True,
+                "exit_code": None,
+                "error_summary": error_summary,
+            }
+
+        duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        exit_code = int(completed.returncode)
+        task_state = self._task_state_by_id(task_id)
+        task_status = str(task_state.get("status", "pending"))
+
+        if exit_code != 0 and task_status not in {"failed", "stopped"}:
+            if task_status not in {"completed"}:
+                error_summary = f"Isolated task subprocess exited with code {exit_code}."
+                self.store.update_task_status(
+                    task_id,
+                    status="failed",
+                    error_summary=error_summary,
+                    duration_seconds=duration_seconds,
+                )
+                task_status = "failed"
+                task_state = self._task_state_by_id(task_id)
+        elif exit_code == 0 and task_status in {"pending", "running"}:
+            error_summary = (
+                "Isolated task subprocess exited successfully, but task status "
+                f"remained '{task_status}'."
+            )
+            self.store.update_task_status(
+                task_id,
+                status="failed",
+                error_summary=error_summary[:500],
+                duration_seconds=duration_seconds,
+            )
+            task_status = "failed"
+            task_state = self._task_state_by_id(task_id)
+
+        self.logger.info(
+            "Isolated task %s finished with exit code %s and status %s.",
+            task_id,
+            exit_code,
+            task_status,
+        )
+        self._log_structured_phase(
+            phase="task:subprocess_exit",
+            task_record=record,
+            message=f"Isolated subprocess finished with exit code {exit_code}.",
+            extra={
+                "duration_seconds": duration_seconds,
+                "subprocess_exit_code": exit_code,
+                "task_status": task_status,
+                "subprocess_command": command,
+                "task_error_summary": task_state.get("error_summary"),
+            },
+        )
+        if exit_code == 0:
+            print(f"Task {task_id} finished with status={task_status}")
+        else:
+            print(f"Task {task_id} subprocess failed with exit code {exit_code}")
+        return {
+            "task_id": task_id,
+            "status": task_status,
+            "duration_seconds": duration_seconds,
+            "exit_code": exit_code,
+            "timeout": False,
+        }
+
+    def _is_isolated_child_mode(self) -> bool:
+        return os.environ.get(ISOLATED_TASK_CHILD_MODE_ENV) == "1"
+
     def _execute_task_entry(
         self,
         *,
@@ -859,7 +1012,8 @@ class IterativeExperimentRunner:
         started_at = datetime.now(timezone.utc)
 
         clear_ml_memory()
-        time.sleep(2)  # Longer delay for memory release
+        if self._task_cooldown_seconds > 0:
+            time.sleep(self._task_cooldown_seconds)
         self._log_structured_phase(
             phase="task:start",
             task_record=record,
@@ -1043,12 +1197,22 @@ class IterativeExperimentRunner:
             )
             raise
 
-    def run_one_task(self, task_id: str) -> dict[str, Any]:
+    def run_one_task(
+        self,
+        task_id: str,
+        *,
+        task_cooldown_seconds: float = 2.0,
+    ) -> dict[str, Any]:
+        self._task_cooldown_seconds = max(0.0, float(task_cooldown_seconds))
         self.store.ensure_dirs()
+        isolated_child_mode = self._is_isolated_child_mode()
         if self.store.has_active_run():
             pid_record = self.store.read_pid_record() or {}
             pid = pid_record.get("pid")
-            raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
+            parent_pid = os.environ.get(ISOLATED_TASK_PARENT_PID_ENV)
+            parent_matches = parent_pid is not None and str(pid) == parent_pid
+            if not (isolated_child_mode and parent_matches):
+                raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
         queue_entries, state = self._build_queue_and_sync_state()
         selected = self._find_task_in_queue(queue_entries, task_id)
@@ -1086,8 +1250,9 @@ class IterativeExperimentRunner:
 
         self.store.clear_stop_request()
         command = [sys.executable, "run_experiments.py", "run-task", "--task-id", task_id]
-        self.store.write_pid_record(config_path=self.config_path, command=command)
-        self._install_signal_handlers()
+        if not isolated_child_mode:
+            self.store.write_pid_record(config_path=self.config_path, command=command)
+            self._install_signal_handlers()
         self._log_structured_phase(
             phase="run-task:start",
             task_record=record,
@@ -1112,8 +1277,9 @@ class IterativeExperimentRunner:
                 message=f"Single-task run finished for {task_id}.",
                 extra={"task_id": task_id},
             )
-            self.store.clear_pid_record()
-            self._restore_signal_handlers()
+            if not isolated_child_mode:
+                self.store.clear_pid_record()
+                self._restore_signal_handlers()
 
         snapshot = self.store.summarize()
         return {
@@ -1124,6 +1290,9 @@ class IterativeExperimentRunner:
 
     def run(self, options: IterativeRunOptions | None = None) -> dict[str, Any]:
         resolved_options = options or IterativeRunOptions()
+        self._task_cooldown_seconds = max(0.0, float(resolved_options.task_cooldown_seconds))
+        if resolved_options.task_timeout_seconds is not None and resolved_options.task_timeout_seconds <= 0:
+            raise ValueError("task_timeout_seconds must be > 0 when provided.")
         self.store.ensure_dirs()
         if self.store.has_active_run():
             pid_record = self.store.read_pid_record() or {}
@@ -1156,37 +1325,67 @@ class IterativeExperimentRunner:
         self._log_structured_phase(
             phase="run:start",
             message=f"Starting run with {len(runnable_ids)} runnable tasks.",
-            extra={"runnable_count": len(runnable_ids)},
+            extra={
+                "runnable_count": len(runnable_ids),
+                "isolate_tasks": resolved_options.isolate_tasks,
+                "task_cooldown_seconds": self._task_cooldown_seconds,
+                "task_timeout_seconds": resolved_options.task_timeout_seconds,
+            },
         )
 
         try:
-            train_df = load_split_dataframe(self.training_config.train_split_path)
-            test_df = load_split_dataframe(self.training_config.test_split_path)
             runnable_set = set(runnable_ids)
-            for record, training_task in queue_entries:
-                task_id = record["id"]
-                if task_id not in runnable_set:
-                    continue
-                if self.store.stop_requested():
-                    self.logger.info(
-                        "Stop requested before starting %s. Ending current run.",
-                        task_id,
-                    )
-                    break
+            if resolved_options.isolate_tasks:
+                for record, _training_task in queue_entries:
+                    task_id = record["id"]
+                    if task_id not in runnable_set:
+                        continue
+                    if self.store.stop_requested():
+                        self.logger.info(
+                            "Stop requested before starting %s. Ending current run.",
+                            task_id,
+                        )
+                        break
 
-                self._execute_task_entry(
-                    record=record,
-                    training_task=training_task,
-                    train_df=train_df,
-                    test_df=test_df,
-                )
-
-                if self.store.stop_requested():
-                    self.logger.info(
-                        "Stop requested after finishing %s. Ending current run.",
-                        task_id,
+                    self._execute_task_entry_isolated_subprocess(
+                        record=record,
+                        command_base=resolved_options.run_task_command_base,
+                        timeout_seconds=resolved_options.task_timeout_seconds,
                     )
-                    break
+
+                    if self.store.stop_requested():
+                        self.logger.info(
+                            "Stop requested after finishing %s. Ending current run.",
+                            task_id,
+                        )
+                        break
+            else:
+                train_df = load_split_dataframe(self.training_config.train_split_path)
+                test_df = load_split_dataframe(self.training_config.test_split_path)
+                for record, training_task in queue_entries:
+                    task_id = record["id"]
+                    if task_id not in runnable_set:
+                        continue
+                    if self.store.stop_requested():
+                        self.logger.info(
+                            "Stop requested before starting %s. Ending current run.",
+                            task_id,
+                        )
+                        break
+
+                    self._execute_task_entry(
+                        record=record,
+                        training_task=training_task,
+                        train_df=train_df,
+                        test_df=test_df,
+                    )
+
+                    if self.store.stop_requested():
+                        self.logger.info(
+                            "Stop requested after finishing %s. Ending current run.",
+                            task_id,
+                        )
+                        break
         finally:
             self._log_structured_phase(phase="run:finish", message="Run finished.")
             self.store.clear_pid_record()
@@ -1203,6 +1402,7 @@ def run_one_experiment_task(
     config_path: Path,
     project_paths: ProjectPaths,
     training_config: TrainingConfig,
+    task_cooldown_seconds: float = 2.0,
     model_builders: dict[str, ModelBuilder] | None = None,
     preprocessing_tasks: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
@@ -1213,7 +1413,10 @@ def run_one_experiment_task(
         model_builders=model_builders,
         preprocessing_tasks=preprocessing_tasks,
     )
-    return runner.run_one_task(task_id)
+    return runner.run_one_task(
+        task_id,
+        task_cooldown_seconds=task_cooldown_seconds,
+    )
 
 
 def launch_background_runner(
