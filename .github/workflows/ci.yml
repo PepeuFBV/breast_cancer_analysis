@@ -30,4 +30,8 @@ jobs:
               run: python -m black --check .
 
             - name: Run Pytest
-              run: python -m pytest
+              run: |
+                  for test_file in tests/test_*.py; do
+                      echo "Running ${test_file}"
+                      python -m pytest -q "${test_file}"
+                  done
