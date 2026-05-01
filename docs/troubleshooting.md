@@ -171,3 +171,31 @@ Use the long-run validator before retrying the full queue:
 ```bash
 ./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device auto
 ```
+
+For production long runs, use adaptive per-task subprocess policy:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --isolate-tasks \
+  --device-policy adaptive \
+  --gpu-retries 1 \
+  --cpu-retries 1 \
+  --cooldown-after-oom-seconds 15 \
+  --gpu-recovery-cooldown-seconds 60 \
+  --max-consecutive-oom 3
+```
+
+How adaptive fallback behaves:
+
+- GPU is preferred for each new task.
+- GPU OOM retries happen in fresh subprocesses.
+- If GPU keeps failing, the same task falls back to CPU (`CUDA_VISIBLE_DEVICES=-1`).
+- Later tasks retry GPU after recovery cooldown.
+- Runner stops safely when `--max-consecutive-oom` is reached.
+
+Inspect OOM/fallback attempts:
+
+```bash
+rg '"event":"(gpu_oom_detected|gpu_retry_scheduled|cpu_fallback_scheduled|cpu_fallback_succeeded|gpu_recovery_probe_scheduled|gpu_recovered|oom_policy_stop|task_attempt_finished)"' \
+  artifacts/experiments/logs/run-events.jsonl
+```

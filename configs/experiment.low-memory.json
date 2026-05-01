@@ -1,0 +1,79 @@
+{
+  "paths": {
+    "raw_data_dir": "data/INbreast Release 1.0",
+    "artifacts_dir": "artifacts-low-memory",
+    "train_split": null,
+    "test_split": null,
+    "history_dir": null,
+    "predictions_dir": null,
+    "report_output": null
+  },
+  "preprocess": {
+    "image_size": [224, 224],
+    "augmentations_per_image": 1,
+    "samples_per_class": 20,
+    "test_size": 0.25,
+    "random_state": 42,
+    "preprocessing_grid": {
+      "none": {},
+      "denoise": {
+        "kernel_size": [[3, 3], [5, 5]],
+        "sigma": [0, 1]
+      },
+      "clahe": {
+        "tile_grid_size": [[3, 3], [5, 5]],
+        "iterations": [1]
+      }
+    }
+  },
+  "train": {
+    "model_names": ["custom cnn", "bcnet", "mobilenetv3"],
+    "preprocessing_ids": ["none", "denoise", "clahe"],
+    "include_combinations": false,
+    "folds": 0,
+    "validation_size": 0.25,
+    "batch_size": 2,
+    "epochs": 5,
+    "learning_rate": 0.0001,
+    "loss": "categorical_crossentropy",
+    "run_skip": true,
+    "random_state": 42
+  },
+  "runner": {
+    "isolate_tasks": true,
+    "task_cooldown_seconds": 2,
+    "task_timeout_seconds": null,
+    "device_policy": "adaptive",
+    "gpu_retries": 1,
+    "cpu_retries": 1,
+    "cooldown_after_oom_seconds": 15,
+    "gpu_recovery_cooldown_seconds": 60,
+    "max_consecutive_oom": 3,
+    "max_task_attempts": 4,
+    "fail_fast_on_oom": false
+  },
+  "models": {
+    "custom cnn": {
+      "input_channels": 1,
+      "batch_size": 1,
+      "dense_units": 64,
+      "dropout_rates": [0.2, 0.2, 0.3, 0.3]
+    },
+    "bcnet": {
+      "input_channels": 1,
+      "batch_size": 2,
+      "dense_units": 128,
+      "dropout_rates": [0.2, 0.3, 0.3, 0.4]
+    },
+    "mobilenetv3": {
+      "input_channels": 3,
+      "batch_size": 2,
+      "dense_units": 64,
+      "dropout_rate": 0.3,
+      "dropout_rates": []
+    }
+  },
+  "evaluate": {
+    "top_k": 3
+  }
+}

@@ -192,14 +192,46 @@ For long GPU runs, prefer per-task subprocess isolation:
 ```bash
 ./.venv/bin/python run_experiments.py run \
   --isolate-tasks \
-  --task-cooldown-seconds 2
+  --device-policy adaptive \
+  --gpu-retries 1 \
+  --cpu-retries 1 \
+  --cooldown-after-oom-seconds 15 \
+  --gpu-recovery-cooldown-seconds 60 \
+  --max-consecutive-oom 3
 ```
 
 Why this helps:
 
 - each task runs in a fresh Python process
 - TensorFlow/Keras/CUDA context is released by the OS after each task exits
+- GPU OOM attempts are retried safely, then fallback to CPU for that task
+- later tasks probe GPU again after cooldown (CPU fallback is not permanent)
 - repeated long-run memory growth and fragmentation are reduced, which helps avoid OOM crashes
+
+CPU-only long run:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --isolate-tasks \
+  --device-policy cpu-only
+```
+
+Strict GPU-only mode:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --isolate-tasks \
+  --device-policy gpu-only \
+  --gpu-retries 1 \
+  --fail-fast-on-oom
+```
+
+Low-memory preset:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --config configs/experiment.low-memory.json
+```
 
 Timeout (optional) for unstable environments:
 
@@ -229,6 +261,13 @@ Task child logs remain under:
 - `artifacts/experiments/logs/tasks/exp-*.log`
 - `artifacts/experiments/logs/tasks/exp-*.events.jsonl`
 - `artifacts/experiments/logs/tasks/exp-*.memory.jsonl`
+
+To inspect fallback/OOM flow quickly:
+
+```bash
+rg '"event":"(gpu_oom_detected|gpu_retry_scheduled|cpu_fallback_scheduled|cpu_fallback_succeeded|gpu_recovered|oom_policy_stop|task_attempt_finished)"' \
+  artifacts/experiments/logs/run-events.jsonl
+```
 
 Local dashboard:
 
