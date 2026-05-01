@@ -11,9 +11,7 @@ class ProjectPathsTest(unittest.TestCase):
         paths = build_project_paths()
 
         self.assertEqual(paths.project_root, PROJECT_ROOT)
-        self.assertEqual(
-            paths.raw_data_dir, PROJECT_ROOT / "data" / "INbreast Release 1.0"
-        )
+        self.assertEqual(paths.raw_data_dir, PROJECT_ROOT / "data" / "INbreast Release 1.0")
         self.assertEqual(
             paths.train_split_path,
             PROJECT_ROOT / "artifacts" / "processed" / "splits" / "train_split.csv",
@@ -33,9 +31,7 @@ class ProjectPathsTest(unittest.TestCase):
         self.assertEqual(paths.raw_data_dir, Path("/tmp/raw-data"))
         self.assertEqual(paths.artifacts_dir, Path("/tmp/custom-artifacts"))
         self.assertEqual(paths.history_dir, Path("/tmp/custom-artifacts/runs/history"))
-        self.assertEqual(
-            paths.experiment_logs_dir, Path("/tmp/custom-artifacts/experiments/logs")
-        )
+        self.assertEqual(paths.experiment_logs_dir, Path("/tmp/custom-artifacts/experiments/logs"))
 
 
 if __name__ == "__main__":

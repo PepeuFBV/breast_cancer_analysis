@@ -71,10 +71,7 @@ def _is_process_alive(pid: int | None) -> bool:
 
 def _normalize_json_value(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            str(key): _normalize_json_value(item)
-            for key, item in sorted(value.items(), key=lambda item: str(item[0]))
-        }
+        return {str(key): _normalize_json_value(item) for key, item in sorted(value.items(), key=lambda item: str(item[0]))}
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, tuple):
@@ -114,9 +111,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(
-            json.dumps(_normalize_json_value(payload), sort_keys=True) + os.linesep
-        )
+        handle.write(json.dumps(_normalize_json_value(payload), sort_keys=True) + os.linesep)
 
 
 def _load_json_file(path: Path) -> dict[str, Any] | None:
@@ -152,9 +147,7 @@ def _queue_signature(tasks: list[dict[str, Any]]) -> str:
     return digest
 
 
-def _model_runtime_signature(
-    config: TrainingConfig, model_name: str
-) -> dict[str, Any] | None:
+def _model_runtime_signature(config: TrainingConfig, model_name: str) -> dict[str, Any] | None:
     runtime = (config.model_runtime or {}).get(model_name)
     if runtime is None:
         return None
@@ -184,15 +177,11 @@ def build_experiment_id(task: TrainingTask, config: TrainingConfig) -> str:
         "random_state": config.random_state,
         "model_runtime": _model_runtime_signature(config, task.model_name),
     }
-    digest = hashlib.sha1(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    digest = hashlib.sha1(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return f"exp-{digest[:16]}"
 
 
-def build_experiment_record(
-    task: TrainingTask, config: TrainingConfig
-) -> dict[str, Any]:
+def build_experiment_record(task: TrainingTask, config: TrainingConfig) -> dict[str, Any]:
     history_path, predictions_path = artifact_paths_for_task(config, task)
     return {
         "id": build_experiment_id(task, config),
@@ -237,16 +226,12 @@ class ExperimentStateStore:
     def __init__(self, project_paths: ProjectPaths) -> None:
         self.project_paths = project_paths
         self.state_path = project_paths.experiment_state_dir / RUNNER_STATE_FILENAME
-        self.summary_path = (
-            project_paths.experiment_summary_dir / RUNNER_SUMMARY_FILENAME
-        )
+        self.summary_path = project_paths.experiment_summary_dir / RUNNER_SUMMARY_FILENAME
         self.log_path = project_paths.experiment_logs_dir / RUNNER_LOG_FILENAME
         self.run_events_path = project_paths.experiment_logs_dir / RUN_EVENTS_FILENAME
         self.task_logs_dir = project_paths.experiment_logs_dir / TASK_LOGS_DIRNAME
         self.pid_path = project_paths.experiment_control_dir / RUNNER_PID_FILENAME
-        self.stop_flag_path = (
-            project_paths.experiment_control_dir / STOP_REQUEST_FILENAME
-        )
+        self.stop_flag_path = project_paths.experiment_control_dir / STOP_REQUEST_FILENAME
 
     def ensure_dirs(self) -> None:
         self.project_paths.ensure_artifact_dirs()
@@ -256,9 +241,7 @@ class ExperimentStateStore:
         state.setdefault("schema_version", STATE_SCHEMA_VERSION)
         state.setdefault("created_at", _timestamp_now())
         state["updated_at"] = state.get("updated_at", state["created_at"])
-        state["config_path"] = (
-            str(config_path) if config_path else state.get("config_path")
-        )
+        state["config_path"] = str(config_path) if config_path else state.get("config_path")
         state["artifacts_dir"] = str(self.project_paths.artifacts_dir)
         state["history_dir"] = str(self.project_paths.history_dir)
         state["predictions_dir"] = str(self.project_paths.predictions_dir)
@@ -311,11 +294,7 @@ class ExperimentStateStore:
         config_path: Path,
     ) -> dict[str, Any]:
         state = self.load_state(config_path=config_path)
-        existing_by_id = {
-            task["id"]: task
-            for task in state["tasks"]
-            if isinstance(task, dict) and task.get("id")
-        }
+        existing_by_id = {task["id"]: task for task in state["tasks"] if isinstance(task, dict) and task.get("id")}
         now = _timestamp_now()
 
         synced_tasks: list[dict[str, Any]] = []
@@ -364,10 +343,7 @@ class ExperimentStateStore:
                 task["status"] = "stopped"
                 task["updated_at"] = now
                 task["finished_at"] = task.get("finished_at") or now
-                task["error_summary"] = (
-                    task.get("error_summary")
-                    or "Runner interrupted before experiment completion."
-                )
+                task["error_summary"] = task.get("error_summary") or "Runner interrupted before experiment completion."
 
     def _reconcile_artifacts(self, state: dict[str, Any]) -> None:
         now = _timestamp_now()
@@ -381,9 +357,7 @@ class ExperimentStateStore:
                 task["status"] = "pending"
                 task["updated_at"] = now
                 task["finished_at"] = None
-                task["error_summary"] = (
-                    "Persisted state referenced missing artifacts; task re-queued."
-                )
+                task["error_summary"] = "Persisted state referenced missing artifacts; task re-queued."
                 task["result_summary"] = {}
                 continue
 
@@ -393,9 +367,7 @@ class ExperimentStateStore:
             if task.get("status") in {"pending", "running", "stopped"}:
                 task["status"] = "completed"
                 task["updated_at"] = now
-                task["finished_at"] = task.get("finished_at") or _timestamp_from_path(
-                    history_path
-                )
+                task["finished_at"] = task.get("finished_at") or _timestamp_from_path(history_path)
                 task["attempts"] = max(1, int(task.get("attempts", 0)))
                 task["error_summary"] = None
                 task["result_summary"] = _read_first_csv_row(history_path)
@@ -456,16 +428,9 @@ class ExperimentStateStore:
             "error_summary": task.get("error_summary"),
             "history_path": task.get("artifacts", {}).get("history_path"),
             "predictions_path": task.get("artifacts", {}).get("predictions_path"),
-            "parameters_json": json.dumps(
-                task.get("parameters", {}), sort_keys=True, separators=(",", ":")
-            ),
+            "parameters_json": json.dumps(task.get("parameters", {}), sort_keys=True, separators=(",", ":")),
         }
-        row.update(
-            {
-                f"result_{key}": value
-                for key, value in task.get("result_summary", {}).items()
-            }
-        )
+        row.update({f"result_{key}": value for key, value in task.get("result_summary", {}).items()})
         return row
 
     def select_runnable_task_ids(
@@ -532,9 +497,7 @@ class ExperimentStateStore:
         self._persist_state(state)
         return state
 
-    def set_task_artifacts(
-        self, task_id: str, *, history_path: Path, predictions_path: Path
-    ) -> dict[str, Any]:
+    def set_task_artifacts(self, task_id: str, *, history_path: Path, predictions_path: Path) -> dict[str, Any]:
         state = self.load_state()
         task_found = False
         for task in state["tasks"]:
@@ -556,9 +519,7 @@ class ExperimentStateStore:
         pid_record = self.read_pid_record()
         active_pid = None if pid_record is None else pid_record.get("pid")
         active_run = _is_process_alive(active_pid)
-        if not active_run and any(
-            task.get("status") == "running" for task in state["tasks"]
-        ):
+        if not active_run and any(task.get("status") == "running" for task in state["tasks"]):
             self._reconcile_running_tasks(state)
             self._persist_state(state)
 
@@ -655,9 +616,7 @@ class IterativeExperimentRunner:
         self._peak_process_memory_mb: float | None = None
 
     def _build_logger(self) -> logging.Logger:
-        logger = logging.getLogger(
-            f"iterative_experiment_runner:{self.project_paths.artifacts_dir}"
-        )
+        logger = logging.getLogger(f"iterative_experiment_runner:{self.project_paths.artifacts_dir}")
         if logger.handlers:
             return logger
 
@@ -673,10 +632,7 @@ class IterativeExperimentRunner:
         snapshot = log_memory_snapshot(label, logger=self.logger)
         process_memory_mb = snapshot.get("process_memory_mb")
         if isinstance(process_memory_mb, (int, float)):
-            if (
-                self._peak_process_memory_mb is None
-                or process_memory_mb > self._peak_process_memory_mb
-            ):
+            if self._peak_process_memory_mb is None or process_memory_mb > self._peak_process_memory_mb:
                 self._peak_process_memory_mb = float(process_memory_mb)
         return snapshot
 
@@ -700,10 +656,7 @@ class IterativeExperimentRunner:
         error_message: str | None,
     ) -> None:
         _, _, task_log_path = self._task_log_paths(task_id)
-        line = (
-            f"{timestamp} phase={phase} attempt={attempt} "
-            f"process_memory_mb={process_memory_mb}"
-        )
+        line = f"{timestamp} phase={phase} attempt={attempt} " f"process_memory_mb={process_memory_mb}"
         if message:
             line = f"{line} message={message}"
         if error_type:
@@ -746,12 +699,8 @@ class IterativeExperimentRunner:
             "timestamp": timestamp,
             "event": event or phase,
             "task_id": task_id,
-            "model_name": (
-                None if task_record is None else task_record.get("model_name")
-            ),
-            "preproc_id": (
-                None if task_record is None else task_record.get("preproc_id")
-            ),
+            "model_name": (None if task_record is None else task_record.get("model_name")),
+            "preproc_id": (None if task_record is None else task_record.get("preproc_id")),
             "param_id": None if task_record is None else task_record.get("param_id"),
             "phase": phase,
             "attempt": attempt,
@@ -800,14 +749,8 @@ class IterativeExperimentRunner:
 
     def build_queue(self) -> list[tuple[dict[str, Any], TrainingTask]]:
         available_builders = self.model_builders or MODEL_BUILDERS
-        model_names = self.training_config.model_names or list(
-            available_builders.keys()
-        )
-        resolved_preprocessing_tasks = (
-            list(self.preprocessing_tasks)
-            if self.preprocessing_tasks is not None
-            else None
-        )
+        model_names = self.training_config.model_names or list(available_builders.keys())
+        resolved_preprocessing_tasks = list(self.preprocessing_tasks) if self.preprocessing_tasks is not None else None
         preprocessing_count = (
             len(resolved_preprocessing_tasks)
             if resolved_preprocessing_tasks is not None
@@ -819,23 +762,14 @@ class IterativeExperimentRunner:
         )
         estimated_task_count = preprocessing_count * len(model_names)
         if estimated_task_count > MAX_QUEUE_TASKS:
-            raise ValueError(
-                "The requested experiment grid expands to "
-                f"{estimated_task_count:,} training tasks, which exceeds the "
-                f"safety limit of {MAX_QUEUE_TASKS:,}. Narrow the run with "
-                "`--models`, `--preprocessing`, `--no-combined-preprocessing`, "
-                "or a smaller preprocessing grid."
-            )
+            raise ValueError("The requested experiment grid expands to " f"{estimated_task_count:,} training tasks, which exceeds the " f"safety limit of {MAX_QUEUE_TASKS:,}. Narrow the run with " "`--models`, `--preprocessing`, `--no-combined-preprocessing`, " "or a smaller preprocessing grid.")
 
         training_tasks = build_training_tasks(
             self.training_config,
             model_builders=self.model_builders,
             preprocessing_tasks=resolved_preprocessing_tasks,
         )
-        return [
-            (build_experiment_record(task, self.training_config), task)
-            for task in training_tasks
-        ]
+        return [(build_experiment_record(task, self.training_config), task) for task in training_tasks]
 
     def _install_signal_handlers(self) -> None:
         def _handle_signal(signum, frame):  # type: ignore[unused-argument]
@@ -860,14 +794,10 @@ class IterativeExperimentRunner:
         if self.store.has_active_run():
             pid_record = self.store.read_pid_record() or {}
             pid = pid_record.get("pid")
-            raise RuntimeError(
-                f"Another experiment runner is already active with pid={pid}."
-            )
+            raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
         queue_entries = self.build_queue()
-        state = self.store.sync_queue(
-            [record for record, _ in queue_entries], config_path=self.config_path
-        )
+        state = self.store.sync_queue([record for record, _ in queue_entries], config_path=self.config_path)
         runnable_ids = self.store.select_runnable_task_ids(
             state,
             rerun_failed=resolved_options.rerun_failed,
@@ -914,9 +844,7 @@ class IterativeExperimentRunner:
                 self.logger.info("Running %s", training_task.label)
                 print(f"Running {training_task.label}")
                 updated_state = self.store.update_task_status(task_id, status="running")
-                task_snapshot = next(
-                    task for task in updated_state["tasks"] if task["id"] == task_id
-                )
+                task_snapshot = next(task for task in updated_state["tasks"] if task["id"] == task_id)
                 attempt = int(task_snapshot.get("attempts", 1))
                 started_at = datetime.now(timezone.utc)
 
@@ -930,9 +858,8 @@ class IterativeExperimentRunner:
                 )
 
                 try:
-                    def _phase_observer(
-                        phase: str, details: dict[str, Any] | None
-                    ) -> None:
+
+                    def _phase_observer(phase: str, details: dict[str, Any] | None) -> None:
                         self._log_structured_phase(
                             phase=phase,
                             task_record=record,
@@ -954,9 +881,7 @@ class IterativeExperimentRunner:
                         task_record=record,
                         attempt=attempt,
                     )
-                    history_path, predictions_path = save_run_result(
-                        result, self.training_config
-                    )
+                    history_path, predictions_path = save_run_result(result, self.training_config)
                     self._log_structured_phase(
                         phase="after_save_artifacts",
                         task_record=record,
@@ -966,9 +891,7 @@ class IterativeExperimentRunner:
                             "predictions_path": str(predictions_path),
                         },
                     )
-                    duration_seconds = (
-                        datetime.now(timezone.utc) - started_at
-                    ).total_seconds()
+                    duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
                     self.store.set_task_artifacts(
                         task_id,
                         history_path=history_path,
@@ -985,10 +908,7 @@ class IterativeExperimentRunner:
                         training_task.label,
                         duration_seconds,
                     )
-                    print(
-                        f"Completed {training_task.label} "
-                        f"(history: {history_path}, predictions: {predictions_path})"
-                    )
+                    print(f"Completed {training_task.label} " f"(history: {history_path}, predictions: {predictions_path})")
                     result = None
                     history_summary = None
                     clear_ml_memory()
@@ -1005,9 +925,7 @@ class IterativeExperimentRunner:
                         extra={"duration_seconds": duration_seconds},
                     )
                 except Exception as error:
-                    duration_seconds = (
-                        datetime.now(timezone.utc) - started_at
-                    ).total_seconds()
+                    duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
                     error_summary = f"{error.__class__.__name__}: {error}"
                     self.store.update_task_status(
                         task_id,
@@ -1052,15 +970,9 @@ class IterativeExperimentRunner:
                         },
                     )
                 except BaseException as error:
-                    duration_seconds = (
-                        datetime.now(timezone.utc) - started_at
-                    ).total_seconds()
+                    duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
                     error_summary = f"{error.__class__.__name__}: {error}"
-                    status = (
-                        "stopped"
-                        if isinstance(error, (KeyboardInterrupt, SystemExit))
-                        else "failed"
-                    )
+                    status = "stopped" if isinstance(error, (KeyboardInterrupt, SystemExit)) else "failed"
                     self.store.update_task_status(
                         task_id,
                         status=status,

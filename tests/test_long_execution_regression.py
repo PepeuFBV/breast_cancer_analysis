@@ -99,9 +99,7 @@ def _fake_result(task: PreprocessingTask) -> TrainingRunResult:
     )
 
 
-def _build_runner(
-    tmp_path: Path, task_count: int
-) -> tuple[IterativeExperimentRunner, object]:
+def _build_runner(tmp_path: Path, task_count: int) -> tuple[IterativeExperimentRunner, object]:
     config, project_paths = _build_training_config(tmp_path)
     runner = IterativeExperimentRunner(
         config_path=Path("configs/experiment.smoke.json"),
@@ -175,9 +173,7 @@ def test_runner_resume_skips_completed_and_finishes_pending(tmp_path) -> None:
         "pipeline.experiments.runner.run_training_task",
         side_effect=fake_run_training_task,
     ):
-        first_snapshot = runner.run(
-            IterativeRunOptions(limit=3, rerun_failed=False, rerun_completed=False)
-        )
+        first_snapshot = runner.run(IterativeRunOptions(limit=3, rerun_failed=False, rerun_completed=False))
         second_snapshot = runner.run()
 
     store = ExperimentStateStore(project_paths)
@@ -196,9 +192,7 @@ def test_runner_resume_skips_completed_and_finishes_pending(tmp_path) -> None:
     assert [task["status"] for task in state["tasks"]] == ["completed"] * 6
 
 
-def test_validate_long_runner_main_reports_summary_paths(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_validate_long_runner_main_reports_summary_paths(tmp_path, monkeypatch, capsys) -> None:
     summary_path = tmp_path / "summary.csv"
     state_path = tmp_path / "runner_state.json"
     monkeypatch.setattr(

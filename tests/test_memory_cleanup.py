@@ -62,12 +62,8 @@ def _write_dataset(root: Path) -> tuple[pd.DataFrame, pd.DataFrame, Path, Path]:
     test_df = pd.DataFrame({"image_path": image_paths[6:], "label": [0, 1]})
     train_csv = root / "train.csv"
     test_csv = root / "test.csv"
-    pd.DataFrame({"image_path": image_paths[:6], "label": labels[:6]}).to_csv(
-        train_csv, index=False
-    )
-    pd.DataFrame({"image_path": image_paths[6:], "label": labels[6:]}).to_csv(
-        test_csv, index=False
-    )
+    pd.DataFrame({"image_path": image_paths[:6], "label": labels[:6]}).to_csv(train_csv, index=False)
+    pd.DataFrame({"image_path": image_paths[6:], "label": labels[6:]}).to_csv(test_csv, index=False)
     return train_df, test_df, train_csv, test_csv
 
 

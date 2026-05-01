@@ -53,14 +53,8 @@ def check_tensorflow_gpu(
             resolved_tensorflow = importlib.import_module("tensorflow")
         except Exception as error:
             extra_help = ""
-            if (
-                isinstance(error, ModuleNotFoundError)
-                and getattr(error, "name", None) == "tensorflow"
-            ):
-                extra_help = (
-                    " Install the project environment with "
-                    "`python3 scripts/bootstrap_env.py`."
-                )
+            if isinstance(error, ModuleNotFoundError) and getattr(error, "name", None) == "tensorflow":
+                extra_help = " Install the project environment with " "`python3 scripts/bootstrap_env.py`."
             return TensorFlowGpuCheck(
                 mode=mode,
                 tensorflow_available=False,
@@ -126,9 +120,7 @@ def format_result(result: TensorFlowGpuCheck) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Check TensorFlow import and GPU visibility."
-    )
+    parser = argparse.ArgumentParser(description="Check TensorFlow import and GPU visibility.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--require-gpu",

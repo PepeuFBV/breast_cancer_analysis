@@ -135,9 +135,7 @@ def get_tf_memory_info() -> dict[str, Any] | None:
         try:
             raw_stats = tf.config.experimental.get_memory_info(logical_name)
         except Exception as error:
-            resolved_devices.append(
-                {"device": logical_name, "error": str(error)}
-            )
+            resolved_devices.append({"device": logical_name, "error": str(error)})
             continue
 
         current = raw_stats.get("current")
@@ -145,16 +143,8 @@ def get_tf_memory_info() -> dict[str, Any] | None:
         resolved_devices.append(
             {
                 "device": logical_name,
-                "current_mb": (
-                    round(float(current) / (1024 * 1024), 2)
-                    if isinstance(current, (int, float))
-                    else None
-                ),
-                "peak_mb": (
-                    round(float(peak) / (1024 * 1024), 2)
-                    if isinstance(peak, (int, float))
-                    else None
-                ),
+                "current_mb": (round(float(current) / (1024 * 1024), 2) if isinstance(current, (int, float)) else None),
+                "peak_mb": (round(float(peak) / (1024 * 1024), 2) if isinstance(peak, (int, float)) else None),
             }
         )
 
@@ -187,19 +177,10 @@ def log_memory_snapshot(
     }
 
     if logger is not None:
-        message = (
-            f"[memory] {label}: process={snapshot['process_memory_mb']}MB, "
-            f"peak={snapshot['peak_process_memory_mb']}MB"
-        )
+        message = f"[memory] {label}: process={snapshot['process_memory_mb']}MB, " f"peak={snapshot['peak_process_memory_mb']}MB"
         gpu_memory = snapshot["gpu_memory"]
         if isinstance(gpu_memory, dict) and gpu_memory.get("devices"):
-            gpu_parts = [
-                (
-                    f"{device['name']} "
-                    f"{device['memory_used_mb']}/{device['memory_total_mb']}MB"
-                )
-                for device in gpu_memory["devices"]
-            ]
+            gpu_parts = [(f"{device['name']} " f"{device['memory_used_mb']}/{device['memory_total_mb']}MB") for device in gpu_memory["devices"]]
             message = f"{message}; gpu={'; '.join(gpu_parts)}"
         elif isinstance(gpu_memory, dict) and gpu_memory.get("error"):
             message = f"{message}; gpu_error={gpu_memory['error']}"

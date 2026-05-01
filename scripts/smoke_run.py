@@ -28,9 +28,7 @@ class _SmokeModel:
     def fit(self, *args: Any, **kwargs: Any) -> _SmokeHistory:
         return _SmokeHistory()
 
-    def predict(
-        self, model_inputs: np.ndarray, batch_size: int = 8, verbose: int = 0
-    ) -> np.ndarray:
+    def predict(self, model_inputs: np.ndarray, batch_size: int = 8, verbose: int = 0) -> np.ndarray:
         probabilities = np.full((len(model_inputs), 8), 0.01, dtype="float32")
         probabilities[:, 0] = 0.78
         probabilities[:, 1] = 0.15
@@ -138,9 +136,7 @@ def _run_smoke(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run a fast synthetic smoke check through runner and evaluation."
-    )
+    parser = argparse.ArgumentParser(description="Run a fast synthetic smoke check through runner and evaluation.")
     parser.add_argument("--config", default=None)
     parser.add_argument(
         "--artifacts-dir",

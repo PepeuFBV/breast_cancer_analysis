@@ -49,9 +49,7 @@ def _fake_tensorflow(*, physical_gpus=None, logical_gpus=None, cuda: bool = True
 
 @pytest.mark.gpu
 def test_gpu_optional_warns_without_visible_devices() -> None:
-    result = check_gpu.check_tensorflow_gpu(
-        tensorflow_module=_fake_tensorflow(physical_gpus=[])
-    )
+    result = check_gpu.check_tensorflow_gpu(tensorflow_module=_fake_tensorflow(physical_gpus=[]))
 
     assert result.ok
     assert result.mode == "optional"

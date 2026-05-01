@@ -47,9 +47,7 @@ def format_result(result: RuntimeDeviceCheck) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Check TensorFlow import and runtime device selection."
-    )
+    parser = argparse.ArgumentParser(description="Check TensorFlow import and runtime device selection.")
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "gpu"),

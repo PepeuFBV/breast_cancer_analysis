@@ -13,10 +13,7 @@ def add_training_runtime_arguments(
     parser.add_argument(
         "--config",
         default=None,
-        help=(
-            "Path to an experiment JSON config. "
-            "Defaults to configs/experiment.default.json."
-        ),
+        help=("Path to an experiment JSON config. " "Defaults to configs/experiment.default.json."),
     )
     parser.add_argument(
         "--raw-data-dir",
@@ -28,23 +25,15 @@ def add_training_runtime_arguments(
         default=None,
         help="Artifacts root directory. Defaults to artifacts/.",
     )
-    parser.add_argument(
-        "--train-split", default=None, help="Override train split CSV path."
-    )
-    parser.add_argument(
-        "--test-split", default=None, help="Override test split CSV path."
-    )
+    parser.add_argument("--train-split", default=None, help="Override train split CSV path.")
+    parser.add_argument("--test-split", default=None, help="Override test split CSV path.")
     parser.add_argument(
         "--history-dir",
         default=None,
         help="Override training history output directory.",
     )
-    parser.add_argument(
-        "--predictions-dir", default=None, help="Override prediction output directory."
-    )
-    parser.add_argument(
-        "--folds", type=int, default=None, help="Use 0 for fixed train/test evaluation."
-    )
+    parser.add_argument("--predictions-dir", default=None, help="Override prediction output directory.")
+    parser.add_argument("--folds", type=int, default=None, help="Use 0 for fixed train/test evaluation.")
     parser.add_argument(
         "--validation-size",
         type=float,
@@ -103,12 +92,7 @@ def add_training_runtime_arguments(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Run reusable training experiments "
-            "for the breast cancer analysis project."
-        )
-    )
+    parser = argparse.ArgumentParser(description=("Run reusable training experiments " "for the breast cancer analysis project."))
     return add_training_runtime_arguments(parser)
     return parser
 

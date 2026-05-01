@@ -104,9 +104,7 @@ def _task(name: str, params: dict[str, object] | None = None) -> PreprocessingTa
     param_json = json.dumps(resolved_params, sort_keys=True, separators=(",", ":"))
     param_id = "default"
     if resolved_params:
-        param_id = "-".join(
-            [name, *[f"{key}-{value}" for key, value in resolved_params.items()]]
-        )
+        param_id = "-".join([name, *[f"{key}-{value}" for key, value in resolved_params.items()]])
     return PreprocessingTask(
         preproc_id=name,
         params=resolved_params,
@@ -138,9 +136,7 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
                 preprocessing_tasks=[_task("none")],
             )
 
@@ -289,9 +285,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(statuses[10:], ["completed", "completed"])
             self.assertIn("synthetic tenth failure", state["tasks"][9]["error_summary"])
             self.assertTrue(store.summary_path.exists())
-            self.assertEqual(
-                len(list(project_paths.experiment_task_dir.glob("*.json"))), 12
-            )
+            self.assertEqual(len(list(project_paths.experiment_task_dir.glob("*.json"))), 12)
 
     def test_status_reconciles_stale_running_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -301,17 +295,13 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
                 preprocessing_tasks=[_task("none")],
             )
             record, _ = runner.build_queue()[0]
             store = ExperimentStateStore(project_paths)
             store.ensure_dirs()
-            store.sync_queue(
-                [record], config_path=Path("configs/experiment.default.json")
-            )
+            store.sync_queue([record], config_path=Path("configs/experiment.default.json"))
             store.update_task_status(record["id"], status="running")
 
             snapshot = store.summarize()
@@ -335,9 +325,7 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=expanded_config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
             )
 
             with self.assertRaises(ValueError) as context:
@@ -353,9 +341,7 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
                 preprocessing_tasks=[_task("none")],
             )
 
@@ -381,9 +367,7 @@ class IterativeRunnerTest(unittest.TestCase):
                 config_path=Path("configs/experiment.default.json"),
                 project_paths=project_paths,
                 training_config=config,
-                model_builders={
-                    "custom cnn": lambda *args, **kwargs: _CountingModel(0.8)
-                },
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
                 preprocessing_tasks=[_task("none")],
             )
 
@@ -438,12 +422,8 @@ class IterativeRunnerTest(unittest.TestCase):
             store = ExperimentStateStore(project_paths)
             state = store.load_state()
             task_id = state["tasks"][0]["id"]
-            task_events = _read_jsonl(
-                store.task_logs_dir / f"{task_id}.events.jsonl"
-            )
-            failed_events = [
-                event for event in task_events if event.get("phase") == "task:failed"
-            ]
+            task_events = _read_jsonl(store.task_logs_dir / f"{task_id}.events.jsonl")
+            failed_events = [event for event in task_events if event.get("phase") == "task:failed"]
             self.assertEqual(len(failed_events), 1)
             failed_event = failed_events[0]
             self.assertEqual(failed_event["error_type"], "RuntimeError")

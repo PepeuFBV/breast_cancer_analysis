@@ -17,6 +17,7 @@ from pipeline.utils.runtime_device import check_runtime_device
 
 DEFAULT_CONFIG_PATH = "configs/experiment.smoke.json"
 
+
 def _write_synthetic_splits(root: Path) -> tuple[Path, Path]:
     image_dir = root / "synthetic-images"
     image_dir.mkdir(parents=True, exist_ok=True)
@@ -117,12 +118,7 @@ def _run_validation(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Validate long-running experiment orchestration with tiny real "
-            "training tasks."
-        )
-    )
+    parser = argparse.ArgumentParser(description=("Validate long-running experiment orchestration with tiny real " "training tasks."))
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG_PATH,
@@ -206,10 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Summary CSV path: {result['summary_path']}")
     is_success = failed == 0 and completed >= args.combinations
     if not is_success:
-        print(
-            "Validation failed: expected all requested combinations to complete "
-            f"(requested={args.combinations}, completed={completed}, failed={failed})."
-        )
+        print("Validation failed: expected all requested combinations to complete " f"(requested={args.combinations}, completed={completed}, failed={failed}).")
     return 0 if is_success else 1
 
 

@@ -79,9 +79,7 @@ class GpuEnvHelperTest(unittest.TestCase):
                                 "pipeline.utils.gpu_env.Path.exists",
                                 return_value=True,
                             ):
-                                with patch(
-                                    "pipeline.utils.gpu_env.os.execvpe"
-                                ) as execvpe:
+                                with patch("pipeline.utils.gpu_env.os.execvpe") as execvpe:
                                     with patch.dict("os.environ", {}, clear=True):
                                         with patch("sys.argv", ["check_gpu.py"]):
                                             ensure_tensorflow_wsl_gpu_env()

@@ -16,7 +16,7 @@ def check_venv() -> tuple[bool, str]:
     """Check if virtualenv exists and is functional."""
     if not VENV_PYTHON.exists():
         return False, "Virtualenv not found. Run: python3 scripts/bootstrap_env.py"
-    
+
     result = subprocess.run(
         [str(VENV_PYTHON), "-c", "import tensorflow"],
         check=False,
@@ -26,7 +26,7 @@ def check_venv() -> tuple[bool, str]:
     )
     if result.returncode != 0:
         return False, "TensorFlow not installed. Run: python3 scripts/bootstrap_env.py"
-    
+
     return True, "Virtualenv is ready"
 
 
@@ -41,7 +41,7 @@ def check_dataset() -> tuple[bool, str]:
     )
     if result.returncode != 0:
         return False, "Dataset validation failed. Check data/INbreast Release 1.0/"
-    
+
     return True, "Dataset is valid"
 
 
@@ -49,16 +49,16 @@ def check_preprocessing() -> tuple[bool, str]:
     """Check if data has been preprocessed."""
     train_dir = PROCESSED_DIR / "images" / "train"
     test_dir = PROCESSED_DIR / "images" / "test"
-    
+
     if not train_dir.exists() or not test_dir.exists():
         return False, "Data not preprocessed. Run: ./.venv/bin/python preprocess.py"
-    
+
     train_images = list(train_dir.glob("*.png"))
     test_images = list(test_dir.glob("*.png"))
-    
+
     if not train_images or not test_images:
         return False, "Preprocessed images not found. Run: ./.venv/bin/python preprocess.py"
-    
+
     return True, f"Data preprocessed ({len(train_images)} train, {len(test_images)} test images)"
 
 
@@ -71,10 +71,10 @@ def check_gpu() -> tuple[bool, str]:
         stderr=subprocess.DEVNULL,
         cwd=PROJECT_ROOT,
     )
-    
+
     if result.returncode != 0:
         return False, "GPU check failed (will use CPU)"
-    
+
     try:
         data = json.loads(result.stdout.decode())
         if data.get("physical_gpus"):
@@ -90,26 +90,26 @@ def main() -> int:
     print("=" * 70)
     print("READINESS CHECK FOR UNATTENDED EXECUTION")
     print("=" * 70)
-    
+
     checks = [
         ("Virtualenv", check_venv()),
         ("Dataset", check_dataset()),
         ("Preprocessing", check_preprocessing()),
         ("GPU", check_gpu()),
     ]
-    
+
     all_critical_ok = True
-    
+
     for name, (ok, message) in checks:
         status = "✓" if ok else "✗"
         print(f"{status} {name:20} {message}")
-        
+
         # GPU is optional, others are critical
         if not ok and name != "GPU":
             all_critical_ok = False
-    
+
     print("=" * 70)
-    
+
     if all_critical_ok:
         print("\n✓ System is ready for unattended execution!")
         print("\nTo start the experiment queue:")
