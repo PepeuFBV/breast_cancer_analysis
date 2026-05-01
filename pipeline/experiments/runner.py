@@ -28,6 +28,7 @@ from pipeline.train.runner import (
     load_split_dataframe,
     run_training_task,
     save_run_result,
+    task_has_existing_artifacts,
 )
 from pipeline.utils.memory import clear_ml_memory, log_memory_snapshot
 from pipeline.utils.paths import ProjectPaths
@@ -826,6 +827,301 @@ class IterativeExperimentRunner:
             signal.signal(signum, previous_handler)
         self._previous_signal_handlers.clear()
 
+    def _build_queue_and_sync_state(self) -> tuple[list[tuple[dict[str, Any], TrainingTask]], dict[str, Any]]:
+        queue_entries = self.build_queue()
+        state = self.store.sync_queue([record for record, _ in queue_entries], config_path=self.config_path)
+        return queue_entries, state
+
+    def _find_task_in_queue(
+        self,
+        queue_entries: list[tuple[dict[str, Any], TrainingTask]],
+        task_id: str,
+    ) -> tuple[dict[str, Any], TrainingTask] | None:
+        for record, training_task in queue_entries:
+            if record["id"] == task_id:
+                return record, training_task
+        return None
+
+    def _execute_task_entry(
+        self,
+        *,
+        record: dict[str, Any],
+        training_task: TrainingTask,
+        train_df: Any,
+        test_df: Any,
+    ) -> dict[str, Any]:
+        task_id = record["id"]
+        self.logger.info("Running %s", training_task.label)
+        print(f"Running {training_task.label}")
+        updated_state = self.store.update_task_status(task_id, status="running")
+        task_snapshot = next(task for task in updated_state["tasks"] if task["id"] == task_id)
+        attempt = int(task_snapshot.get("attempts", 1))
+        started_at = datetime.now(timezone.utc)
+
+        clear_ml_memory()
+        time.sleep(2)  # Longer delay for memory release
+        self._log_structured_phase(
+            phase="task:start",
+            task_record=record,
+            attempt=attempt,
+            message=f"Running {training_task.label}",
+        )
+
+        try:
+
+            def _phase_observer(phase: str, details: dict[str, Any] | None) -> None:
+                self._log_structured_phase(
+                    phase=phase,
+                    task_record=record,
+                    attempt=attempt,
+                    extra=details,
+                )
+
+            result = run_training_task(
+                training_task,
+                self.training_config,
+                train_df=train_df,
+                test_df=test_df,
+                model_builders=self.model_builders,
+                phase_observer=_phase_observer,
+            )
+            history_summary = build_history_row(result, self.training_config)
+            self._log_structured_phase(
+                phase="before_save_artifacts",
+                task_record=record,
+                attempt=attempt,
+            )
+            history_path, predictions_path = save_run_result(result, self.training_config)
+            self._log_structured_phase(
+                phase="after_save_artifacts",
+                task_record=record,
+                attempt=attempt,
+                extra={
+                    "history_path": str(history_path),
+                    "predictions_path": str(predictions_path),
+                },
+            )
+            duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+            self.store.set_task_artifacts(
+                task_id,
+                history_path=history_path,
+                predictions_path=predictions_path,
+            )
+            self.store.update_task_status(
+                task_id,
+                status="completed",
+                result_summary=history_summary,
+                duration_seconds=duration_seconds,
+            )
+            self.logger.info(
+                "Completed %s in %.2fs.",
+                training_task.label,
+                duration_seconds,
+            )
+            print(f"Completed {training_task.label} " f"(history: {history_path}, predictions: {predictions_path})")
+            result = None
+            history_summary = None
+            clear_ml_memory()
+            self._log_structured_phase(
+                phase="after_cleanup",
+                task_record=record,
+                attempt=attempt,
+            )
+            self._log_structured_phase(
+                phase="task:completed",
+                task_record=record,
+                attempt=attempt,
+                message=f"Completed in {duration_seconds:.2f}s",
+                extra={"duration_seconds": duration_seconds},
+            )
+            return {
+                "task_id": task_id,
+                "status": "completed",
+                "task_label": training_task.label,
+                "duration_seconds": duration_seconds,
+                "history_path": str(history_path),
+                "predictions_path": str(predictions_path),
+                "attempt": attempt,
+            }
+        except Exception as error:
+            duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+            error_summary = f"{error.__class__.__name__}: {error}"
+            self.store.update_task_status(
+                task_id,
+                status="failed",
+                error_summary=error_summary[:500],
+                duration_seconds=duration_seconds,
+            )
+            self.logger.error(
+                "Failed %s in %.2fs: %s\n%s",
+                training_task.label,
+                duration_seconds,
+                error_summary,
+                traceback.format_exc(),
+            )
+            print(f"Failed {training_task.label}: {error_summary}")
+            clear_ml_memory()
+            traceback_summary = self._traceback_summary(error)
+            self._log_structured_phase(
+                phase="after_cleanup",
+                task_record=record,
+                attempt=attempt,
+                error=error,
+                traceback_summary=traceback_summary,
+            )
+            self._log_structured_phase(
+                phase="task:failed",
+                task_record=record,
+                attempt=attempt,
+                message=f"Failed in {duration_seconds:.2f}s",
+                error=error,
+                traceback_summary=traceback_summary,
+                extra={
+                    "duration_seconds": duration_seconds,
+                    "task_label": training_task.label,
+                    "task_metadata": {
+                        "id": record["id"],
+                        "model_name": record["model_name"],
+                        "preproc_id": record["preproc_id"],
+                        "param_id": record["param_id"],
+                        "param_display": record["param_display"],
+                    },
+                },
+            )
+            return {
+                "task_id": task_id,
+                "status": "failed",
+                "task_label": training_task.label,
+                "duration_seconds": duration_seconds,
+                "error_summary": error_summary[:500],
+                "attempt": attempt,
+            }
+        except BaseException as error:
+            duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+            error_summary = f"{error.__class__.__name__}: {error}"
+            status = "stopped" if isinstance(error, (KeyboardInterrupt, SystemExit)) else "failed"
+            self.store.update_task_status(
+                task_id,
+                status=status,
+                error_summary=error_summary[:500],
+                duration_seconds=duration_seconds,
+            )
+            self.logger.error(
+                "Interrupted %s in %.2fs: %s\n%s",
+                training_task.label,
+                duration_seconds,
+                error_summary,
+                traceback.format_exc(),
+            )
+            clear_ml_memory()
+            traceback_summary = self._traceback_summary(error)
+            self._log_structured_phase(
+                phase="after_cleanup",
+                task_record=record,
+                attempt=attempt,
+                error=error,
+                traceback_summary=traceback_summary,
+            )
+            self._log_structured_phase(
+                phase="task:failed",
+                task_record=record,
+                attempt=attempt,
+                message=f"Interrupted in {duration_seconds:.2f}s",
+                error=error,
+                traceback_summary=traceback_summary,
+                extra={
+                    "duration_seconds": duration_seconds,
+                    "task_label": training_task.label,
+                    "task_metadata": {
+                        "id": record["id"],
+                        "model_name": record["model_name"],
+                        "preproc_id": record["preproc_id"],
+                        "param_id": record["param_id"],
+                        "param_display": record["param_display"],
+                    },
+                },
+            )
+            raise
+
+    def run_one_task(self, task_id: str) -> dict[str, Any]:
+        self.store.ensure_dirs()
+        if self.store.has_active_run():
+            pid_record = self.store.read_pid_record() or {}
+            pid = pid_record.get("pid")
+            raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
+
+        queue_entries, state = self._build_queue_and_sync_state()
+        selected = self._find_task_in_queue(queue_entries, task_id)
+        if selected is None:
+            raise ValueError(f"Task id '{task_id}' was not found in the experiment queue for config '{self.config_path}'.")
+        record, training_task = selected
+        state_task = next(task for task in state["tasks"] if task["id"] == task_id)
+        resolved_status = str(state_task.get("status", "pending"))
+
+        if resolved_status == "completed":
+            artifacts_exist = task_has_existing_artifacts(self.training_config, training_task)
+            reason = "already_completed"
+            if self.training_config.run_skip and artifacts_exist:
+                reason = "reconciled_from_existing_artifacts"
+            message = f"Skipping {training_task.label} because it is already marked completed " f"(reason={reason})."
+            self.logger.info(message)
+            print(message)
+            self._log_structured_phase(
+                phase="task:skipped",
+                task_record=record,
+                message=message,
+                extra={
+                    "skip_reason": reason,
+                    "artifacts_exist": artifacts_exist,
+                    "run_skip_enabled": self.training_config.run_skip,
+                },
+            )
+            return {
+                "task_id": task_id,
+                "status": "completed",
+                "task_label": training_task.label,
+                "skipped": True,
+                "skip_reason": reason,
+            }
+
+        self.store.clear_stop_request()
+        command = [sys.executable, "run_experiments.py", "run-task", "--task-id", task_id]
+        self.store.write_pid_record(config_path=self.config_path, command=command)
+        self._install_signal_handlers()
+        self._log_structured_phase(
+            phase="run-task:start",
+            task_record=record,
+            message=f"Starting single-task run for {task_id}.",
+            extra={"task_id": task_id},
+        )
+
+        result: dict[str, Any]
+        try:
+            train_df = load_split_dataframe(self.training_config.train_split_path)
+            test_df = load_split_dataframe(self.training_config.test_split_path)
+            result = self._execute_task_entry(
+                record=record,
+                training_task=training_task,
+                train_df=train_df,
+                test_df=test_df,
+            )
+        finally:
+            self._log_structured_phase(
+                phase="run-task:finish",
+                task_record=record,
+                message=f"Single-task run finished for {task_id}.",
+                extra={"task_id": task_id},
+            )
+            self.store.clear_pid_record()
+            self._restore_signal_handlers()
+
+        snapshot = self.store.summarize()
+        return {
+            **result,
+            "snapshot": snapshot,
+            "peak_process_memory_mb": self._peak_process_memory_mb,
+        }
+
     def run(self, options: IterativeRunOptions | None = None) -> dict[str, Any]:
         resolved_options = options or IterativeRunOptions()
         self.store.ensure_dirs()
@@ -834,8 +1130,7 @@ class IterativeExperimentRunner:
             pid = pid_record.get("pid")
             raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
-        queue_entries = self.build_queue()
-        state = self.store.sync_queue([record for record, _ in queue_entries], config_path=self.config_path)
+        queue_entries, state = self._build_queue_and_sync_state()
         runnable_ids = self.store.select_runnable_task_ids(
             state,
             rerun_failed=resolved_options.rerun_failed,
@@ -879,173 +1174,12 @@ class IterativeExperimentRunner:
                     )
                     break
 
-                self.logger.info("Running %s", training_task.label)
-                print(f"Running {training_task.label}")
-                updated_state = self.store.update_task_status(task_id, status="running")
-                task_snapshot = next(task for task in updated_state["tasks"] if task["id"] == task_id)
-                attempt = int(task_snapshot.get("attempts", 1))
-                started_at = datetime.now(timezone.utc)
-
-                clear_ml_memory()
-                time.sleep(2)  # Longer delay for memory release
-                self._log_structured_phase(
-                    phase="task:start",
-                    task_record=record,
-                    attempt=attempt,
-                    message=f"Running {training_task.label}",
+                self._execute_task_entry(
+                    record=record,
+                    training_task=training_task,
+                    train_df=train_df,
+                    test_df=test_df,
                 )
-
-                try:
-
-                    def _phase_observer(phase: str, details: dict[str, Any] | None) -> None:
-                        self._log_structured_phase(
-                            phase=phase,
-                            task_record=record,
-                            attempt=attempt,
-                            extra=details,
-                        )
-
-                    result = run_training_task(
-                        training_task,
-                        self.training_config,
-                        train_df=train_df,
-                        test_df=test_df,
-                        model_builders=self.model_builders,
-                        phase_observer=_phase_observer,
-                    )
-                    history_summary = build_history_row(result, self.training_config)
-                    self._log_structured_phase(
-                        phase="before_save_artifacts",
-                        task_record=record,
-                        attempt=attempt,
-                    )
-                    history_path, predictions_path = save_run_result(result, self.training_config)
-                    self._log_structured_phase(
-                        phase="after_save_artifacts",
-                        task_record=record,
-                        attempt=attempt,
-                        extra={
-                            "history_path": str(history_path),
-                            "predictions_path": str(predictions_path),
-                        },
-                    )
-                    duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
-                    self.store.set_task_artifacts(
-                        task_id,
-                        history_path=history_path,
-                        predictions_path=predictions_path,
-                    )
-                    self.store.update_task_status(
-                        task_id,
-                        status="completed",
-                        result_summary=history_summary,
-                        duration_seconds=duration_seconds,
-                    )
-                    self.logger.info(
-                        "Completed %s in %.2fs.",
-                        training_task.label,
-                        duration_seconds,
-                    )
-                    print(f"Completed {training_task.label} " f"(history: {history_path}, predictions: {predictions_path})")
-                    result = None
-                    history_summary = None
-                    clear_ml_memory()
-                    self._log_structured_phase(
-                        phase="after_cleanup",
-                        task_record=record,
-                        attempt=attempt,
-                    )
-                    self._log_structured_phase(
-                        phase="task:completed",
-                        task_record=record,
-                        attempt=attempt,
-                        message=f"Completed in {duration_seconds:.2f}s",
-                        extra={"duration_seconds": duration_seconds},
-                    )
-                except Exception as error:
-                    duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
-                    error_summary = f"{error.__class__.__name__}: {error}"
-                    self.store.update_task_status(
-                        task_id,
-                        status="failed",
-                        error_summary=error_summary[:500],
-                        duration_seconds=duration_seconds,
-                    )
-                    self.logger.error(
-                        "Failed %s in %.2fs: %s\n%s",
-                        training_task.label,
-                        duration_seconds,
-                        error_summary,
-                        traceback.format_exc(),
-                    )
-                    print(f"Failed {training_task.label}: {error_summary}")
-                    clear_ml_memory()
-                    traceback_summary = self._traceback_summary(error)
-                    self._log_structured_phase(
-                        phase="after_cleanup",
-                        task_record=record,
-                        attempt=attempt,
-                        error=error,
-                        traceback_summary=traceback_summary,
-                    )
-                    self._log_structured_phase(
-                        phase="task:failed",
-                        task_record=record,
-                        attempt=attempt,
-                        message=f"Failed in {duration_seconds:.2f}s",
-                        error=error,
-                        traceback_summary=traceback_summary,
-                        extra={
-                            "duration_seconds": duration_seconds,
-                            "task_label": training_task.label,
-                            "task_metadata": {
-                                "id": record["id"],
-                                "model_name": record["model_name"],
-                                "preproc_id": record["preproc_id"],
-                                "param_id": record["param_id"],
-                                "param_display": record["param_display"],
-                            },
-                        },
-                    )
-                except BaseException as error:
-                    duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
-                    error_summary = f"{error.__class__.__name__}: {error}"
-                    status = "stopped" if isinstance(error, (KeyboardInterrupt, SystemExit)) else "failed"
-                    self.store.update_task_status(
-                        task_id,
-                        status=status,
-                        error_summary=error_summary[:500],
-                        duration_seconds=duration_seconds,
-                    )
-                    self.logger.error(
-                        "Interrupted %s in %.2fs: %s\n%s",
-                        training_task.label,
-                        duration_seconds,
-                        error_summary,
-                        traceback.format_exc(),
-                    )
-                    clear_ml_memory()
-                    traceback_summary = self._traceback_summary(error)
-                    self._log_structured_phase(
-                        phase="after_cleanup",
-                        task_record=record,
-                        attempt=attempt,
-                        error=error,
-                        traceback_summary=traceback_summary,
-                    )
-                    self._log_structured_phase(
-                        phase="task:failed",
-                        task_record=record,
-                        attempt=attempt,
-                        message=f"Interrupted in {duration_seconds:.2f}s",
-                        error=error,
-                        traceback_summary=traceback_summary,
-                        extra={
-                            "duration_seconds": duration_seconds,
-                            "task_label": training_task.label,
-                        },
-                    )
-                    raise
 
                 if self.store.stop_requested():
                     self.logger.info(
@@ -1061,6 +1195,25 @@ class IterativeExperimentRunner:
         snapshot = self.store.summarize()
         snapshot["peak_process_memory_mb"] = self._peak_process_memory_mb
         return snapshot
+
+
+def run_one_experiment_task(
+    *,
+    task_id: str,
+    config_path: Path,
+    project_paths: ProjectPaths,
+    training_config: TrainingConfig,
+    model_builders: dict[str, ModelBuilder] | None = None,
+    preprocessing_tasks: Iterable[Any] | None = None,
+) -> dict[str, Any]:
+    runner = IterativeExperimentRunner(
+        config_path=config_path,
+        project_paths=project_paths,
+        training_config=training_config,
+        model_builders=model_builders,
+        preprocessing_tasks=preprocessing_tasks,
+    )
+    return runner.run_one_task(task_id)
 
 
 def launch_background_runner(
