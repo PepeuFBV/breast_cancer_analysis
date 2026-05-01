@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -162,3 +163,125 @@ def test_run_task_command_shows_clear_error_for_missing_task(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "Task id 'exp-missing' was not found." in output
+
+
+def test_run_command_forwards_isolation_options_and_artifacts_dir(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    captured = {"options": None}
+
+    def _fake_run(options):
+        captured["options"] = options
+        return {
+            "overall_status": "idle",
+            "total": 0,
+            "counts": {
+                "pending": 0,
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+                "stopped": 0,
+            },
+            "current_task": None,
+            "state_path": "/tmp/state.json",
+            "summary_path": "/tmp/summary.csv",
+            "history_dir": "/tmp/history",
+            "predictions_dir": "/tmp/predictions",
+            "log_path": "/tmp/runner.log",
+            "active_pid": None,
+        }
+
+    fake_runner = SimpleNamespace(
+        run=_fake_run,
+        store=SimpleNamespace(summarize=lambda: {}),
+    )
+
+    monkeypatch.setattr(module, "_build_runner", lambda args: fake_runner)
+    monkeypatch.setattr(
+        module,
+        "load_experiment_config",
+        lambda _path: SimpleNamespace(
+            source_path=Path("configs/experiment.default.json"),
+            runner=SimpleNamespace(
+                isolate_tasks=False,
+                task_cooldown_seconds=2.0,
+                task_timeout_seconds=None,
+            ),
+        ),
+    )
+
+    exit_code = module.main(
+        [
+            "run",
+            "--isolate-tasks",
+            "--task-cooldown-seconds",
+            "4",
+            "--task-timeout-seconds",
+            "11",
+            "--artifacts-dir",
+            "/tmp/isolation-artifacts",
+            "--models",
+            "custom cnn",
+            "--preprocessing",
+            "none",
+            "--no-combined-preprocessing",
+            "--no-run-skip",
+        ]
+    )
+
+    assert exit_code == 0
+    options = captured["options"]
+    assert options is not None
+    assert options.isolate_tasks is True
+    assert options.task_cooldown_seconds == 4.0
+    assert options.task_timeout_seconds == 11.0
+    assert "--artifacts-dir" in options.run_task_command_base
+    assert "/tmp/isolation-artifacts" in options.run_task_command_base
+    assert "--models" in options.run_task_command_base
+    assert "--preprocessing" in options.run_task_command_base
+    assert "--no-combined-preprocessing" in options.run_task_command_base
+    assert "--no-run-skip" in options.run_task_command_base
+    assert "--task-cooldown-seconds" in options.run_task_command_base
+    capsys.readouterr()
+
+
+def test_run_task_command_uses_runner_cooldown_from_config(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    fake_runner = SimpleNamespace(
+        config_path=Path("configs/experiment.default.json"),
+        project_paths=SimpleNamespace(),
+        training_config=SimpleNamespace(),
+    )
+    captured = {"cooldown": None}
+
+    monkeypatch.setattr(module, "_build_runner", lambda args: fake_runner)
+    monkeypatch.setattr(
+        module,
+        "load_experiment_config",
+        lambda _path: SimpleNamespace(
+            source_path=Path("configs/experiment.default.json"),
+            runner=SimpleNamespace(
+                isolate_tasks=False,
+                task_cooldown_seconds=3.5,
+                task_timeout_seconds=None,
+            ),
+        ),
+    )
+
+    def _fake_run_one_experiment_task(**kwargs):
+        captured["cooldown"] = kwargs["task_cooldown_seconds"]
+        return {"task_id": kwargs["task_id"], "status": "completed"}
+
+    monkeypatch.setattr(module, "run_one_experiment_task", _fake_run_one_experiment_task)
+
+    exit_code = module.main(["run-task", "--task-id", "exp-cooldown"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Task exp-cooldown completed successfully." in output
+    assert captured["cooldown"] == 3.5

@@ -162,6 +162,243 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(Path(str(getattr(captured["stdout"], "name"))), launch.stdout_path)
             self.assertEqual(Path(str(getattr(captured["stderr"], "name"))), launch.stderr_path)
 
+    def test_isolated_runner_invokes_run_task_subprocess_for_each_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            tasks = [_task("none"), _task("none", {"variant": "second"})]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.81)},
+                preprocessing_tasks=tasks,
+            )
+            captured_commands: list[list[str]] = []
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                captured_commands.append([str(item) for item in command])
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.9},
+                    duration_seconds=0.25,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        run_task_command_base=(
+                            "python",
+                            "run_experiments.py",
+                            "run-task",
+                            "--artifacts-dir",
+                            str(project_paths.artifacts_dir),
+                        ),
+                    )
+                )
+
+            self.assertEqual(len(captured_commands), 2)
+            self.assertTrue(all("--task-id" in command for command in captured_commands))
+            self.assertTrue(all("--artifacts-dir" in command for command in captured_commands))
+            self.assertEqual(snapshot["counts"]["completed"], 2)
+            self.assertEqual(snapshot["counts"]["failed"], 0)
+
+    def test_isolated_runner_continues_after_failed_child_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            tasks = [_task(f"none_{index}") for index in range(3)]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.83)},
+                preprocessing_tasks=tasks,
+            )
+            calls = {"count": 0}
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                calls["count"] += 1
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                if calls["count"] == 1:
+                    runner.store.update_task_status(
+                        task_id,
+                        status="failed",
+                        error_summary="synthetic child failure",
+                        duration_seconds=0.2,
+                    )
+                    return SimpleNamespace(returncode=1)
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.88},
+                    duration_seconds=0.2,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                    )
+                )
+
+            self.assertEqual(calls["count"], 3)
+            self.assertEqual(snapshot["counts"]["failed"], 1)
+            self.assertEqual(snapshot["counts"]["completed"], 2)
+            state = runner.store.load_state()
+            statuses = [task["status"] for task in state["tasks"]]
+            self.assertEqual(statuses[0], "failed")
+            self.assertEqual(statuses[1:], ["completed", "completed"])
+
+    def test_isolated_runner_stops_before_next_task_when_stop_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            tasks = [_task(f"none_{index}") for index in range(3)]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.85)},
+                preprocessing_tasks=tasks,
+            )
+            calls = {"count": 0}
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                calls["count"] += 1
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.91},
+                    duration_seconds=0.1,
+                )
+                runner.store.request_stop(reason="test-stop")
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                    )
+                )
+
+            self.assertEqual(calls["count"], 1)
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(snapshot["counts"]["pending"], 2)
+            self.assertTrue(snapshot["stop_requested"])
+
+    def test_isolated_runner_records_child_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                return SimpleNamespace(returncode=7)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["failed"], 1)
+            state = runner.store.load_state()
+            self.assertIn("exited with code 7", state["tasks"][0]["error_summary"])
+            run_events = _read_jsonl(runner.store.run_events_path)
+            subprocess_events = [row for row in run_events if row.get("phase") == "task:subprocess_exit"]
+            self.assertEqual(len(subprocess_events), 1)
+            self.assertEqual(subprocess_events[0]["subprocess_exit_code"], 7)
+
+    def test_isolated_runner_marks_task_failed_on_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.89)},
+                preprocessing_tasks=[_task("none")],
+            )
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout", 0))
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        task_timeout_seconds=1.0,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["failed"], 1)
+            state = runner.store.load_state()
+            self.assertIn("timed out", state["tasks"][0]["error_summary"])
+            run_events = _read_jsonl(runner.store.run_events_path)
+            timeout_events = [row for row in run_events if row.get("phase") == "task:timeout"]
+            self.assertEqual(len(timeout_events), 1)
+
+    def test_run_without_isolation_keeps_in_process_execution_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.87)},
+                preprocessing_tasks=[_task("none")],
+            )
+
+            snapshot = runner.run(
+                IterativeRunOptions(
+                    isolate_tasks=False,
+                    task_cooldown_seconds=0,
+                )
+            )
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            run_events = _read_jsonl(runner.store.run_events_path)
+            subprocess_start_events = [row for row in run_events if row.get("phase") == "task:subprocess_start"]
+            self.assertEqual(subprocess_start_events, [])
+
     def test_write_pid_record_preserves_background_log_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
