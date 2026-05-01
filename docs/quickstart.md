@@ -187,6 +187,49 @@ Foreground mode is still available:
 ./.venv/bin/python run_experiments.py run
 ```
 
+For long GPU runs, prefer per-task subprocess isolation:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --isolate-tasks \
+  --task-cooldown-seconds 2
+```
+
+Why this helps:
+
+- each task runs in a fresh Python process
+- TensorFlow/Keras/CUDA context is released by the OS after each task exits
+- repeated long-run memory growth and fragmentation are reduced, which helps avoid OOM crashes
+
+Timeout (optional) for unstable environments:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --isolate-tasks \
+  --task-timeout-seconds 7200
+```
+
+`launch` supports the same flags:
+
+```bash
+./.venv/bin/python run_experiments.py launch --isolate-tasks
+```
+
+Optional config defaults (CLI flags override these values):
+
+```json
+"runner": {
+  "isolate_tasks": true,
+  "task_cooldown_seconds": 2
+}
+```
+
+Task child logs remain under:
+
+- `artifacts/experiments/logs/tasks/exp-*.log`
+- `artifacts/experiments/logs/tasks/exp-*.events.jsonl`
+- `artifacts/experiments/logs/tasks/exp-*.memory.jsonl`
+
 Local dashboard:
 
 ```bash
