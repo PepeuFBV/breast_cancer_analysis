@@ -40,6 +40,7 @@ RUN_EVENTS_FILENAME = "run-events.jsonl"
 TASK_LOGS_DIRNAME = "tasks"
 RUNNER_PID_FILENAME = "runner_pid.json"
 STOP_REQUEST_FILENAME = "stop_requested.flag"
+BACKGROUND_RUNNER_LOG_PREFIX = "background-runner"
 TASK_STATUSES = {"pending", "running", "completed", "failed", "stopped"}
 MAX_QUEUE_TASKS = 50_000
 
@@ -51,12 +52,27 @@ class IterativeRunOptions:
     limit: int | None = None
 
 
+@dataclass(frozen=True)
+class BackgroundRunnerLaunch:
+    process: subprocess.Popen[Any]
+    stdout_path: Path
+    stderr_path: Path
+
+
 def _timestamp_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _timestamp_from_path(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def _build_background_log_paths(logs_dir: Path) -> tuple[Path, Path]:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    return (
+        logs_dir / f"{BACKGROUND_RUNNER_LOG_PREFIX}-{timestamp}.out.log",
+        logs_dir / f"{BACKGROUND_RUNNER_LOG_PREFIX}-{timestamp}.err.log",
+    )
 
 
 def _is_process_alive(pid: int | None) -> bool:
@@ -258,16 +274,34 @@ class ExperimentStateStore:
         pid = None if pid_record is None else pid_record.get("pid")
         return _is_process_alive(pid)
 
-    def write_pid_record(self, *, config_path: Path, command: list[str]) -> None:
-        _atomic_write_json(
-            self.pid_path,
-            {
-                "pid": os.getpid(),
-                "config_path": str(config_path),
-                "command": command,
-                "started_at": _timestamp_now(),
-            },
-        )
+    def write_pid_record(
+        self,
+        *,
+        config_path: Path,
+        command: list[str],
+        pid: int | None = None,
+        stdout_log_path: Path | str | None = None,
+        stderr_log_path: Path | str | None = None,
+    ) -> None:
+        resolved_pid = os.getpid() if pid is None else int(pid)
+        existing = self.read_pid_record() or {}
+        if existing.get("pid") != resolved_pid:
+            existing = {}
+        resolved_stdout_log = existing.get("stdout_log_path") if stdout_log_path is None else stdout_log_path
+        resolved_stderr_log = existing.get("stderr_log_path") if stderr_log_path is None else stderr_log_path
+
+        payload: dict[str, Any] = {
+            "pid": resolved_pid,
+            "config_path": str(config_path),
+            "command": command,
+            "started_at": _timestamp_now(),
+        }
+        if resolved_stdout_log is not None:
+            payload["stdout_log_path"] = str(resolved_stdout_log)
+        if resolved_stderr_log is not None:
+            payload["stderr_log_path"] = str(resolved_stderr_log)
+
+        _atomic_write_json(self.pid_path, payload)
 
     def clear_pid_record(self) -> None:
         if self.pid_path.exists():
@@ -518,6 +552,8 @@ class ExperimentStateStore:
         state = self.load_state()
         pid_record = self.read_pid_record()
         active_pid = None if pid_record is None else pid_record.get("pid")
+        stdout_log_path = None if pid_record is None else pid_record.get("stdout_log_path")
+        stderr_log_path = None if pid_record is None else pid_record.get("stderr_log_path")
         active_run = _is_process_alive(active_pid)
         if not active_run and any(task.get("status") == "running" for task in state["tasks"]):
             self._reconcile_running_tasks(state)
@@ -568,6 +604,8 @@ class ExperimentStateStore:
             "log_path": str(self.log_path),
             "stop_requested": stop_requested,
             "active_pid": active_pid if active_run else None,
+            "background_stdout_log_path": stdout_log_path,
+            "background_stderr_log_path": stderr_log_path,
             "config_path": state.get("config_path"),
             "updated_at": state.get("updated_at"),
         }
@@ -1030,12 +1068,27 @@ def launch_background_runner(
     script_path: Path,
     forwarded_args: list[str],
     cwd: Path,
-) -> subprocess.Popen[Any]:
+    logs_dir: Path,
+) -> BackgroundRunnerLaunch:
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path, stderr_path = _build_background_log_paths(logs_dir)
     command = [sys.executable, str(script_path), "run", *forwarded_args]
-    return subprocess.Popen(
-        command,
-        cwd=str(cwd),
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    stdout_handle = stdout_path.open("a", encoding="utf-8")
+    stderr_handle = stderr_path.open("a", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            start_new_session=True,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+    finally:
+        stdout_handle.close()
+        stderr_handle.close()
+
+    return BackgroundRunnerLaunch(
+        process=process,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
     )
