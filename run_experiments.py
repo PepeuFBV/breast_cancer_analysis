@@ -77,6 +77,69 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Optional cap on how many runnable experiments to execute.",
     )
+    parser.add_argument(
+        "--device-policy",
+        choices=["gpu-first", "cpu-only", "gpu-only", "adaptive"],
+        default=None,
+        help="Execution policy for task device attempts. Defaults to config runner.device_policy (adaptive).",
+    )
+    parser.add_argument(
+        "--gpu-retries",
+        type=int,
+        default=None,
+        help="GPU retry count after OOM before fallback/stop. Defaults to config runner.gpu_retries (1).",
+    )
+    parser.add_argument(
+        "--cpu-retries",
+        type=int,
+        default=None,
+        help="CPU retry count after CPU OOM during fallback. Defaults to config runner.cpu_retries (1).",
+    )
+    parser.add_argument(
+        "--cooldown-after-oom-seconds",
+        type=float,
+        default=None,
+        help="Cooldown after OOM before retrying. Defaults to config runner.cooldown_after_oom_seconds (15).",
+    )
+    parser.add_argument(
+        "--gpu-recovery-cooldown-seconds",
+        type=float,
+        default=None,
+        help="Cooldown before probing GPU again after CPU fallback. Defaults to config runner.gpu_recovery_cooldown_seconds (60).",
+    )
+    parser.add_argument(
+        "--max-consecutive-oom",
+        type=int,
+        default=None,
+        help="Stop the run when final consecutive OOM failures reach this value. Defaults to config runner.max_consecutive_oom (3).",
+    )
+    parser.add_argument(
+        "--max-task-attempts",
+        type=int,
+        default=None,
+        help="Global cap of attempts for a single task across devices. Defaults to config runner.max_task_attempts (4).",
+    )
+    parser.add_argument(
+        "--fail-fast-on-oom",
+        action="store_true",
+        help="Stop retries/fallback for current task immediately when an OOM is detected.",
+    )
+    parser.add_argument(
+        "--max-queue-tasks",
+        type=int,
+        default=None,
+        help="Maximum allowed queue size before refusing to run. Defaults to safety limit (50,000).",
+    )
+    parser.add_argument(
+        "--allow-huge-queue",
+        action="store_true",
+        help="Disable queue-size cap. Use carefully for very large grids.",
+    )
+    parser.add_argument(
+        "--queue-export-path",
+        default=None,
+        help="Optional path to save the resolved queue as JSONL (metadata + one task per line).",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,6 +164,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--task-id",
         required=True,
         help="Persisted experiment task id (example: exp-xxxxxxxxxxxxxxxx).",
+    )
+    run_task_parser.add_argument(
+        "--max-queue-tasks",
+        type=int,
+        default=None,
+        help="Maximum allowed queue size before refusing to run. Defaults to safety limit (50,000).",
+    )
+    run_task_parser.add_argument(
+        "--allow-huge-queue",
+        action="store_true",
+        help="Disable queue-size cap. Use carefully for very large grids.",
+    )
+    run_task_parser.add_argument(
+        "--queue-export-path",
+        default=None,
+        help="Optional path to save the resolved queue as JSONL (metadata + one task per line).",
     )
 
     launch_parser = subparsers.add_parser(
@@ -176,7 +255,9 @@ def _build_runner(args: argparse.Namespace) -> IterativeExperimentRunner:
     )
 
 
-def _resolve_runner_cli_options(args: argparse.Namespace) -> tuple[bool, float, float | None]:
+def _resolve_runner_cli_options(
+    args: argparse.Namespace,
+) -> tuple[bool, float, float | None, str, int, int, float, float, int, int, bool]:
     experiment_config = load_experiment_config(args.config)
     isolate_tasks = experiment_config.runner.isolate_tasks if getattr(args, "isolate_tasks", None) is None else bool(getattr(args, "isolate_tasks"))
     cooldown_seconds = experiment_config.runner.task_cooldown_seconds if getattr(args, "task_cooldown_seconds", None) is None else float(getattr(args, "task_cooldown_seconds"))
@@ -185,7 +266,36 @@ def _resolve_runner_cli_options(args: argparse.Namespace) -> tuple[bool, float, 
     timeout_seconds = experiment_config.runner.task_timeout_seconds if getattr(args, "task_timeout_seconds", None) is None else float(getattr(args, "task_timeout_seconds"))
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("--task-timeout-seconds must be > 0 when provided.")
-    return isolate_tasks, cooldown_seconds, timeout_seconds
+    config_device_policy = getattr(experiment_config.runner, "device_policy", "adaptive")
+    config_gpu_retries = int(getattr(experiment_config.runner, "gpu_retries", 1))
+    config_cpu_retries = int(getattr(experiment_config.runner, "cpu_retries", 1))
+    config_cooldown_after_oom = float(getattr(experiment_config.runner, "cooldown_after_oom_seconds", 15.0))
+    config_gpu_recovery_cooldown = float(getattr(experiment_config.runner, "gpu_recovery_cooldown_seconds", 60.0))
+    config_max_consecutive_oom = int(getattr(experiment_config.runner, "max_consecutive_oom", 3))
+    config_max_task_attempts = int(getattr(experiment_config.runner, "max_task_attempts", 4))
+    config_fail_fast_on_oom = bool(getattr(experiment_config.runner, "fail_fast_on_oom", False))
+
+    device_policy = config_device_policy if getattr(args, "device_policy", None) is None else str(getattr(args, "device_policy"))
+    gpu_retries = config_gpu_retries if getattr(args, "gpu_retries", None) is None else int(getattr(args, "gpu_retries"))
+    cpu_retries = config_cpu_retries if getattr(args, "cpu_retries", None) is None else int(getattr(args, "cpu_retries"))
+    cooldown_after_oom_seconds = config_cooldown_after_oom if getattr(args, "cooldown_after_oom_seconds", None) is None else float(getattr(args, "cooldown_after_oom_seconds"))
+    gpu_recovery_cooldown_seconds = config_gpu_recovery_cooldown if getattr(args, "gpu_recovery_cooldown_seconds", None) is None else float(getattr(args, "gpu_recovery_cooldown_seconds"))
+    max_consecutive_oom = config_max_consecutive_oom if getattr(args, "max_consecutive_oom", None) is None else int(getattr(args, "max_consecutive_oom"))
+    max_task_attempts = config_max_task_attempts if getattr(args, "max_task_attempts", None) is None else int(getattr(args, "max_task_attempts"))
+    fail_fast_on_oom = bool(getattr(args, "fail_fast_on_oom", False) or config_fail_fast_on_oom)
+    return (
+        isolate_tasks,
+        cooldown_seconds,
+        timeout_seconds,
+        device_policy,
+        gpu_retries,
+        cpu_retries,
+        cooldown_after_oom_seconds,
+        gpu_recovery_cooldown_seconds,
+        max_consecutive_oom,
+        max_task_attempts,
+        fail_fast_on_oom,
+    )
 
 
 def _build_run_task_forwarded_args(
@@ -223,12 +333,23 @@ def _build_run_task_forwarded_args(
     _add_optional_many("--models", args.models)
     _add_optional_many("--preprocessing", args.preprocessing)
     _add_optional("--task-cooldown-seconds", task_cooldown_seconds)
+    _add_optional("--max-queue-tasks", args.max_queue_tasks)
+    if bool(getattr(args, "allow_huge_queue", False)):
+        forwarded.append("--allow-huge-queue")
     if args.include_combinations is not None:
         forwarded.append("--combined-preprocessing" if bool(args.include_combinations) else "--no-combined-preprocessing")
     if args.run_skip is not None:
         forwarded.append("--run-skip" if bool(args.run_skip) else "--no-run-skip")
 
     return forwarded
+
+
+def _resolve_max_queue_tasks(args: argparse.Namespace) -> int | None:
+    max_queue_tasks = getattr(args, "max_queue_tasks", None)
+    allow_huge_queue = bool(getattr(args, "allow_huge_queue", False))
+    if allow_huge_queue:
+        return None
+    return max_queue_tasks
 
 
 def _print_status_snapshot(snapshot: dict[str, object]) -> None:
@@ -248,6 +369,24 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print(f"Background stderr log: {snapshot['background_stderr_log_path']}")
     if current_task:
         print("Current task: " f"{current_task['preproc_id']} [{current_task['model_name']} - " f"{current_task['param_display']}]")
+    if snapshot.get("device_policy") is not None:
+        print(f"Device policy: {snapshot['device_policy']}")
+    if snapshot.get("preferred_device") is not None:
+        print(f"Current preferred device: {snapshot['preferred_device']}")
+    if snapshot.get("gpu_health") is not None:
+        print(f"GPU health: {snapshot['gpu_health']}")
+    if snapshot.get("last_gpu_oom_task_id"):
+        print(f"Last GPU OOM task: {snapshot['last_gpu_oom_task_id']}")
+    if snapshot.get("gpu_oom_count") is not None:
+        print(f"GPU OOM count: {snapshot['gpu_oom_count']}")
+    if snapshot.get("cpu_fallback_successes") is not None:
+        print(f"CPU fallback successes: {snapshot['cpu_fallback_successes']}")
+    if snapshot.get("consecutive_final_oom_failures") is not None:
+        print("Consecutive final OOM failures: " f"{snapshot['consecutive_final_oom_failures']}")
+    if snapshot.get("last_successful_device") is not None:
+        print(f"Last successful device: {snapshot['last_successful_device']}")
+    if snapshot.get("oom_policy_stop"):
+        print(f"OOM policy stop: {snapshot['oom_policy_stop']}")
     print(f"State file: {snapshot['state_path']}")
     print(f"Summary file: {snapshot['summary_path']}")
     print(f"History dir: {snapshot['history_dir']}")
@@ -293,7 +432,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         runner = _build_runner(args)
         try:
-            isolate_tasks, task_cooldown_seconds, task_timeout_seconds = _resolve_runner_cli_options(args)
+            (
+                isolate_tasks,
+                task_cooldown_seconds,
+                task_timeout_seconds,
+                device_policy,
+                gpu_retries,
+                cpu_retries,
+                cooldown_after_oom_seconds,
+                gpu_recovery_cooldown_seconds,
+                max_consecutive_oom,
+                max_task_attempts,
+                fail_fast_on_oom,
+            ) = _resolve_runner_cli_options(args)
             run_task_command_base = (
                 sys.executable,
                 str(Path(__file__).resolve()),
@@ -312,6 +463,16 @@ def main(argv: list[str] | None = None) -> int:
                     task_cooldown_seconds=task_cooldown_seconds,
                     task_timeout_seconds=task_timeout_seconds,
                     run_task_command_base=run_task_command_base,
+                    device_policy=device_policy,
+                    gpu_retries=gpu_retries,
+                    cpu_retries=cpu_retries,
+                    cooldown_after_oom_seconds=cooldown_after_oom_seconds,
+                    gpu_recovery_cooldown_seconds=gpu_recovery_cooldown_seconds,
+                    max_consecutive_oom=max_consecutive_oom,
+                    max_task_attempts=max_task_attempts,
+                    fail_fast_on_oom=fail_fast_on_oom,
+                    max_queue_tasks=_resolve_max_queue_tasks(args),
+                    queue_export_path=args.queue_export_path,
                 )
             )
         except RuntimeError as error:
@@ -334,13 +495,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-task":
         runner = _build_runner(args)
         try:
-            _, task_cooldown_seconds, _ = _resolve_runner_cli_options(args)
+            _, task_cooldown_seconds, _, *_unused = _resolve_runner_cli_options(args)
             result = run_one_experiment_task(
                 task_id=args.task_id,
                 config_path=runner.config_path,
                 project_paths=runner.project_paths,
                 training_config=runner.training_config,
                 task_cooldown_seconds=task_cooldown_seconds,
+                max_queue_tasks=_resolve_max_queue_tasks(args),
+                queue_export_path=args.queue_export_path,
             )
         except RuntimeError as error:
             print(str(error))

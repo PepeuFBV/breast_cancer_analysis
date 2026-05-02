@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ from pipeline.experiments import (
     IterativeRunOptions,
     launch_background_runner,
 )
+from pipeline.experiments.runner import MAX_QUEUE_TASKS
 from pipeline.train.preprocessing import PreprocessingTask
 from pipeline.train.runner import TrainingConfig, artifact_paths_for_task
 from pipeline.utils.paths import build_project_paths
@@ -342,6 +344,273 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(len(subprocess_events), 1)
             self.assertEqual(subprocess_events[0]["subprocess_exit_code"], 7)
 
+    def test_adaptive_policy_retries_gpu_then_falls_back_to_cpu_and_recovers_gpu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            tasks = [_task("none"), _task("none", {"variant": "second"})]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=tasks,
+            )
+            outcomes = [
+                ("gpu", 1, "failed", "ResourceExhaustedError: OOM"),
+                ("gpu", 1, "failed", "CUDA_ERROR_OUT_OF_MEMORY"),
+                ("cpu", 0, "completed", None),
+                ("gpu", 0, "completed", None),
+            ]
+            seen_devices: list[str] = []
+            original_run = subprocess.run
+            call_count = {"value": 0}
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                outcome = outcomes[call_count["value"]]
+                call_count["value"] += 1
+                expected_device, returncode, status, error_summary = outcome
+                env = kwargs.get("env", {})
+                observed_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+                seen_devices.append(observed_device)
+                self.assertEqual(observed_device, expected_device)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                if status == "completed":
+                    runner.store.update_task_status(
+                        task_id,
+                        status="completed",
+                        result_summary={"best_val_acc": 0.9},
+                        duration_seconds=0.2,
+                    )
+                else:
+                    runner.store.update_task_status(
+                        task_id,
+                        status="failed",
+                        error_summary=error_summary,
+                        duration_seconds=0.2,
+                    )
+                return SimpleNamespace(returncode=returncode)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="adaptive",
+                        gpu_retries=1,
+                        cpu_retries=1,
+                        cooldown_after_oom_seconds=0,
+                        gpu_recovery_cooldown_seconds=0,
+                        max_task_attempts=4,
+                    )
+                )
+
+            self.assertEqual(seen_devices, ["gpu", "gpu", "cpu", "gpu"])
+            self.assertEqual(snapshot["counts"]["completed"], 2)
+            self.assertEqual(snapshot["gpu_oom_count"], 2)
+            self.assertEqual(snapshot["cpu_fallback_successes"], 1)
+            self.assertEqual(snapshot["preferred_device"], "gpu")
+
+            state = runner.store.load_state()
+            first_task = state["tasks"][0]
+            second_task = state["tasks"][1]
+            self.assertEqual(first_task["status"], "completed")
+            self.assertEqual(first_task["final_device"], "cpu")
+            self.assertEqual(first_task["gpu_attempts"], 2)
+            self.assertEqual(first_task["cpu_attempts"], 1)
+            self.assertEqual(len(first_task["attempt_history"]), 3)
+            self.assertEqual(second_task["final_device"], "gpu")
+
+    def test_cpu_only_policy_never_uses_gpu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            tasks = [_task("none"), _task("none", {"variant": "second"})]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=tasks,
+            )
+            seen_devices: list[str] = []
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                env = kwargs.get("env", {})
+                observed_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+                seen_devices.append(observed_device)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.9},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="cpu-only",
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 2)
+            self.assertEqual(seen_devices, ["cpu", "cpu"])
+
+    def test_gpu_only_policy_never_falls_back_to_cpu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            seen_devices: list[str] = []
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                env = kwargs.get("env", {})
+                observed_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+                seen_devices.append(observed_device)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="failed",
+                    error_summary="ResourceExhaustedError: OOM",
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=1)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="gpu-only",
+                        gpu_retries=1,
+                        max_task_attempts=2,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["failed"], 1)
+            self.assertEqual(seen_devices, ["gpu", "gpu"])
+
+    def test_fail_fast_on_oom_stops_retries_and_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            seen_devices: list[str] = []
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                env = kwargs.get("env", {})
+                observed_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+                seen_devices.append(observed_device)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="failed",
+                    error_summary="ResourceExhaustedError: OOM",
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=1)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="gpu-first",
+                        gpu_retries=3,
+                        cpu_retries=3,
+                        fail_fast_on_oom=True,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["failed"], 1)
+            self.assertEqual(seen_devices, ["gpu"])
+            state = runner.store.load_state()
+            self.assertEqual(len(state["tasks"][0]["attempt_history"]), 1)
+
+    def test_consecutive_oom_limit_stops_new_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            tasks = [_task("none"), _task("none", {"variant": "second"}), _task("none", {"variant": "third"})]
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=tasks,
+            )
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="failed",
+                    error_summary="ResourceExhaustedError: OOM",
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=1)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="gpu-only",
+                        gpu_retries=0,
+                        max_consecutive_oom=2,
+                        max_task_attempts=1,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["failed"], 2)
+            self.assertEqual(snapshot["counts"]["pending"], 1)
+            self.assertTrue(snapshot["stop_requested"])
+            self.assertEqual(snapshot["consecutive_final_oom_failures"], 2)
+            self.assertIn("max_consecutive_oom=2", str(snapshot.get("oom_policy_stop")))
+
+            run_events = _read_jsonl(runner.store.run_events_path)
+            attempt_finished = [row for row in run_events if row.get("event") == "task_attempt_finished"]
+            self.assertGreaterEqual(len(attempt_finished), 2)
+            for event in attempt_finished:
+                self.assertIn("device", event)
+                self.assertIn("exit_code", event)
+                self.assertIn("failure_kind", event)
+
     def test_isolated_runner_marks_task_failed_on_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -610,6 +879,29 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["stopped"], 1)
             self.assertEqual(state["tasks"][0]["status"], "stopped")
 
+    def test_run_allows_active_pid_record_when_pid_is_current_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "run"],
+                pid=os.getpid(),
+            )
+
+            snapshot = runner.run()
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+
     def test_runner_rejects_excessively_large_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -631,6 +923,56 @@ class IterativeRunnerTest(unittest.TestCase):
                 runner.build_queue()
 
             self.assertIn("safety limit", str(context.exception))
+
+    def test_runner_allows_large_queue_with_explicit_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+            )
+
+            with (
+                patch(
+                    "pipeline.experiments.runner.count_preprocessing_tasks",
+                    return_value=MAX_QUEUE_TASKS + 1,
+                ),
+                patch(
+                    "pipeline.experiments.runner.build_training_tasks",
+                    return_value=[],
+                ),
+            ):
+                queue = runner.build_queue_with_options(max_queue_tasks=MAX_QUEUE_TASKS + 10)
+
+            self.assertEqual(queue, [])
+
+    def test_build_queue_can_export_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none"), _task("none", {"variant": "second"})],
+            )
+
+            queue_export_path = root / "queue-export.jsonl"
+            queue = runner.build_queue_with_options(queue_export_path=queue_export_path)
+
+            self.assertEqual(len(queue), 2)
+            lines = queue_export_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 3)
+            metadata = json.loads(lines[0])
+            first_task = json.loads(lines[1])
+            self.assertEqual(metadata["kind"], "metadata")
+            self.assertEqual(metadata["task_count"], 2)
+            self.assertEqual(first_task["kind"], "task")
+            self.assertIn("id", first_task)
 
     def test_keyboard_interrupt_marks_current_task_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

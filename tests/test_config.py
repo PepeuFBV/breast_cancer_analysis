@@ -27,6 +27,16 @@ class ExperimentConfigTest(unittest.TestCase):
         self.assertFalse(config.train.include_combinations)
         self.assertIn("custom cnn", config.models)
         self.assertEqual(config.models["custom cnn"].input_channels, 1)
+        self.assertEqual(config.runner.device_policy, "adaptive")
+        self.assertEqual(config.runner.gpu_retries, 1)
+        self.assertEqual(config.runner.cpu_retries, 1)
+
+    def test_low_memory_config_loads(self) -> None:
+        config = load_experiment_config("configs/experiment.low-memory.json")
+        self.assertEqual(config.runner.device_policy, "adaptive")
+        self.assertTrue(config.runner.isolate_tasks)
+        self.assertEqual(config.train.batch_size, 2)
+        self.assertEqual(config.models["custom cnn"].batch_size, 1)
 
     def test_relative_paths_resolve_from_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
