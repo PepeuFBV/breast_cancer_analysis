@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ from pipeline.experiments import (
     IterativeRunOptions,
     launch_background_runner,
 )
+from pipeline.experiments.runner import MAX_QUEUE_TASKS
 from pipeline.train.preprocessing import PreprocessingTask
 from pipeline.train.runner import TrainingConfig, artifact_paths_for_task
 from pipeline.utils.paths import build_project_paths
@@ -877,6 +879,29 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["stopped"], 1)
             self.assertEqual(state["tasks"][0]["status"], "stopped")
 
+    def test_run_allows_active_pid_record_when_pid_is_current_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "run"],
+                pid=os.getpid(),
+            )
+
+            snapshot = runner.run()
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+
     def test_runner_rejects_excessively_large_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -898,6 +923,56 @@ class IterativeRunnerTest(unittest.TestCase):
                 runner.build_queue()
 
             self.assertIn("safety limit", str(context.exception))
+
+    def test_runner_allows_large_queue_with_explicit_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+            )
+
+            with (
+                patch(
+                    "pipeline.experiments.runner.count_preprocessing_tasks",
+                    return_value=MAX_QUEUE_TASKS + 1,
+                ),
+                patch(
+                    "pipeline.experiments.runner.build_training_tasks",
+                    return_value=[],
+                ),
+            ):
+                queue = runner.build_queue_with_options(max_queue_tasks=MAX_QUEUE_TASKS + 10)
+
+            self.assertEqual(queue, [])
+
+    def test_build_queue_can_export_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none"), _task("none", {"variant": "second"})],
+            )
+
+            queue_export_path = root / "queue-export.jsonl"
+            queue = runner.build_queue_with_options(queue_export_path=queue_export_path)
+
+            self.assertEqual(len(queue), 2)
+            lines = queue_export_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 3)
+            metadata = json.loads(lines[0])
+            first_task = json.loads(lines[1])
+            self.assertEqual(metadata["kind"], "metadata")
+            self.assertEqual(metadata["task_count"], 2)
+            self.assertEqual(first_task["kind"], "task")
+            self.assertIn("id", first_task)
 
     def test_keyboard_interrupt_marks_current_task_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

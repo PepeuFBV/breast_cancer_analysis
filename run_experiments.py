@@ -124,6 +124,22 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Stop retries/fallback for current task immediately when an OOM is detected.",
     )
+    parser.add_argument(
+        "--max-queue-tasks",
+        type=int,
+        default=None,
+        help="Maximum allowed queue size before refusing to run. Defaults to safety limit (50,000).",
+    )
+    parser.add_argument(
+        "--allow-huge-queue",
+        action="store_true",
+        help="Disable queue-size cap. Use carefully for very large grids.",
+    )
+    parser.add_argument(
+        "--queue-export-path",
+        default=None,
+        help="Optional path to save the resolved queue as JSONL (metadata + one task per line).",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -148,6 +164,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--task-id",
         required=True,
         help="Persisted experiment task id (example: exp-xxxxxxxxxxxxxxxx).",
+    )
+    run_task_parser.add_argument(
+        "--max-queue-tasks",
+        type=int,
+        default=None,
+        help="Maximum allowed queue size before refusing to run. Defaults to safety limit (50,000).",
+    )
+    run_task_parser.add_argument(
+        "--allow-huge-queue",
+        action="store_true",
+        help="Disable queue-size cap. Use carefully for very large grids.",
+    )
+    run_task_parser.add_argument(
+        "--queue-export-path",
+        default=None,
+        help="Optional path to save the resolved queue as JSONL (metadata + one task per line).",
     )
 
     launch_parser = subparsers.add_parser(
@@ -301,12 +333,23 @@ def _build_run_task_forwarded_args(
     _add_optional_many("--models", args.models)
     _add_optional_many("--preprocessing", args.preprocessing)
     _add_optional("--task-cooldown-seconds", task_cooldown_seconds)
+    _add_optional("--max-queue-tasks", args.max_queue_tasks)
+    if bool(getattr(args, "allow_huge_queue", False)):
+        forwarded.append("--allow-huge-queue")
     if args.include_combinations is not None:
         forwarded.append("--combined-preprocessing" if bool(args.include_combinations) else "--no-combined-preprocessing")
     if args.run_skip is not None:
         forwarded.append("--run-skip" if bool(args.run_skip) else "--no-run-skip")
 
     return forwarded
+
+
+def _resolve_max_queue_tasks(args: argparse.Namespace) -> int | None:
+    max_queue_tasks = getattr(args, "max_queue_tasks", None)
+    allow_huge_queue = bool(getattr(args, "allow_huge_queue", False))
+    if allow_huge_queue:
+        return None
+    return max_queue_tasks
 
 
 def _print_status_snapshot(snapshot: dict[str, object]) -> None:
@@ -428,6 +471,8 @@ def main(argv: list[str] | None = None) -> int:
                     max_consecutive_oom=max_consecutive_oom,
                     max_task_attempts=max_task_attempts,
                     fail_fast_on_oom=fail_fast_on_oom,
+                    max_queue_tasks=_resolve_max_queue_tasks(args),
+                    queue_export_path=args.queue_export_path,
                 )
             )
         except RuntimeError as error:
@@ -457,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
                 project_paths=runner.project_paths,
                 training_config=runner.training_config,
                 task_cooldown_seconds=task_cooldown_seconds,
+                max_queue_tasks=_resolve_max_queue_tasks(args),
+                queue_export_path=args.queue_export_path,
             )
         except RuntimeError as error:
             print(str(error))

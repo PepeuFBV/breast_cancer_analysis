@@ -118,6 +118,16 @@ Enable them only when you intentionally want a much larger queue:
 ./.venv/bin/python run_experiments.py run --combined-preprocessing
 ```
 
+If the expanded grid is intentional and exceeds the default 50,000-task safety
+cap, explicitly opt in:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --combined-preprocessing \
+  --allow-huge-queue \
+  --queue-export-path artifacts/experiments/state/queue-export.jsonl
+```
+
 ## 5. Preprocess the Dataset
 
 ```bash
@@ -247,6 +257,15 @@ Timeout (optional) for unstable environments:
 ./.venv/bin/python run_experiments.py launch --isolate-tasks
 ```
 
+Large-queue launch example:
+
+```bash
+./.venv/bin/python run_experiments.py launch \
+  --combined-preprocessing \
+  --allow-huge-queue \
+  --queue-export-path artifacts/experiments/state/queue-export.jsonl
+```
+
 Optional config defaults (CLI flags override these values):
 
 ```json
@@ -284,6 +303,12 @@ Check progress:
 ```bash
 ./.venv/bin/python run_experiments.py status
 ```
+
+If `status` shows `Total experiments: 0` right after `launch`, the background
+runner likely exited before queue creation. Check:
+
+- `artifacts/experiments/logs/background-runner-*.out.log`
+- `artifacts/experiments/logs/background-runner-*.err.log`
 
 Request a safe stop:
 

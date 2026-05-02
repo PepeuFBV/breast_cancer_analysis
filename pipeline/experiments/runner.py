@@ -68,6 +68,8 @@ class IterativeRunOptions:
     max_consecutive_oom: int = 3
     max_task_attempts: int = 4
     fail_fast_on_oom: bool = False
+    max_queue_tasks: int | None = MAX_QUEUE_TASKS
+    queue_export_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -816,6 +818,15 @@ class IterativeExperimentRunner:
         logger.addHandler(handler)
         return logger
 
+    @staticmethod
+    def _pid_matches_current_process(pid: object) -> bool:
+        if pid is None:
+            return False
+        try:
+            return int(pid) == os.getpid()
+        except Exception:
+            return False
+
     def _capture_memory_snapshot(self, label: str) -> dict[str, Any]:
         snapshot = log_memory_snapshot(label, logger=self.logger)
         process_memory_mb = snapshot.get("process_memory_mb")
@@ -936,6 +947,14 @@ class IterativeExperimentRunner:
         return payload
 
     def build_queue(self) -> list[tuple[dict[str, Any], TrainingTask]]:
+        return self.build_queue_with_options()
+
+    def build_queue_with_options(
+        self,
+        *,
+        max_queue_tasks: int | None = MAX_QUEUE_TASKS,
+        queue_export_path: str | Path | None = None,
+    ) -> list[tuple[dict[str, Any], TrainingTask]]:
         available_builders = self.model_builders or MODEL_BUILDERS
         model_names = self.training_config.model_names or list(available_builders.keys())
         resolved_preprocessing_tasks = list(self.preprocessing_tasks) if self.preprocessing_tasks is not None else None
@@ -949,15 +968,57 @@ class IterativeExperimentRunner:
             )
         )
         estimated_task_count = preprocessing_count * len(model_names)
-        if estimated_task_count > MAX_QUEUE_TASKS:
-            raise ValueError("The requested experiment grid expands to " f"{estimated_task_count:,} training tasks, which exceeds the " f"safety limit of {MAX_QUEUE_TASKS:,}. Narrow the run with " "`--models`, `--preprocessing`, `--no-combined-preprocessing`, " "or a smaller preprocessing grid.")
+        if max_queue_tasks is not None and max_queue_tasks <= 0:
+            raise ValueError("max_queue_tasks must be > 0 when provided.")
+        if max_queue_tasks is not None and estimated_task_count > max_queue_tasks:
+            raise ValueError(
+                "The requested experiment grid expands to "
+                f"{estimated_task_count:,} training tasks, which exceeds the "
+                f"safety limit of {max_queue_tasks:,}. Narrow the run with "
+                "`--models`, `--preprocessing`, `--no-combined-preprocessing`, "
+                "a smaller preprocessing grid, or explicitly increase "
+                "`--max-queue-tasks` / use `--allow-huge-queue`."
+            )
 
         training_tasks = build_training_tasks(
             self.training_config,
             model_builders=self.model_builders,
             preprocessing_tasks=resolved_preprocessing_tasks,
         )
-        return [(build_experiment_record(task, self.training_config), task) for task in training_tasks]
+        queue_entries = [(build_experiment_record(task, self.training_config), task) for task in training_tasks]
+        if queue_export_path is not None:
+            self._write_queue_export(Path(queue_export_path), queue_entries)
+        return queue_entries
+
+    def _write_queue_export(
+        self,
+        queue_export_path: Path,
+        queue_entries: list[tuple[dict[str, Any], TrainingTask]],
+    ) -> None:
+        queue_export_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            dir=queue_export_path.parent,
+            delete=False,
+            encoding="utf-8",
+        ) as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "kind": "metadata",
+                        "generated_at": _timestamp_now(),
+                        "config_path": str(self.config_path),
+                        "task_count": len(queue_entries),
+                    },
+                    sort_keys=True,
+                )
+                + os.linesep
+            )
+            for record, _training_task in queue_entries:
+                line_payload = {"kind": "task", **record}
+                handle.write(json.dumps(_normalize_json_value(line_payload), sort_keys=True) + os.linesep)
+            temp_path = Path(handle.name)
+        temp_path.replace(queue_export_path)
 
     def _install_signal_handlers(self) -> None:
         def _handle_signal(signum, frame):  # type: ignore[unused-argument]
@@ -976,8 +1037,16 @@ class IterativeExperimentRunner:
             signal.signal(signum, previous_handler)
         self._previous_signal_handlers.clear()
 
-    def _build_queue_and_sync_state(self) -> tuple[list[tuple[dict[str, Any], TrainingTask]], dict[str, Any]]:
-        queue_entries = self.build_queue()
+    def _build_queue_and_sync_state(
+        self,
+        *,
+        max_queue_tasks: int | None = MAX_QUEUE_TASKS,
+        queue_export_path: str | Path | None = None,
+    ) -> tuple[list[tuple[dict[str, Any], TrainingTask]], dict[str, Any]]:
+        queue_entries = self.build_queue_with_options(
+            max_queue_tasks=max_queue_tasks,
+            queue_export_path=queue_export_path,
+        )
         state = self.store.sync_queue([record for record, _ in queue_entries], config_path=self.config_path)
         return queue_entries, state
 
@@ -1709,19 +1778,28 @@ class IterativeExperimentRunner:
         task_id: str,
         *,
         task_cooldown_seconds: float = 2.0,
+        max_queue_tasks: int | None = MAX_QUEUE_TASKS,
+        queue_export_path: str | Path | None = None,
     ) -> dict[str, Any]:
         self._task_cooldown_seconds = max(0.0, float(task_cooldown_seconds))
+        if max_queue_tasks is not None and max_queue_tasks <= 0:
+            raise ValueError("max_queue_tasks must be > 0 when provided.")
         self.store.ensure_dirs()
         isolated_child_mode = self._is_isolated_child_mode()
         if self.store.has_active_run():
             pid_record = self.store.read_pid_record() or {}
             pid = pid_record.get("pid")
+            if self._pid_matches_current_process(pid):
+                pid = None
             parent_pid = os.environ.get(ISOLATED_TASK_PARENT_PID_ENV)
             parent_matches = parent_pid is not None and str(pid) == parent_pid
-            if not (isolated_child_mode and parent_matches):
+            if pid is not None and not (isolated_child_mode and parent_matches):
                 raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
-        queue_entries, state = self._build_queue_and_sync_state()
+        queue_entries, state = self._build_queue_and_sync_state(
+            max_queue_tasks=max_queue_tasks,
+            queue_export_path=queue_export_path,
+        )
         selected = self._find_task_in_queue(queue_entries, task_id)
         if selected is None:
             raise ValueError(f"Task id '{task_id}' was not found in the experiment queue for config '{self.config_path}'.")
@@ -1814,13 +1892,19 @@ class IterativeExperimentRunner:
             raise ValueError("max_consecutive_oom must be > 0.")
         if resolved_options.max_task_attempts <= 0:
             raise ValueError("max_task_attempts must be > 0.")
+        if resolved_options.max_queue_tasks is not None and resolved_options.max_queue_tasks <= 0:
+            raise ValueError("max_queue_tasks must be > 0 when provided.")
         self.store.ensure_dirs()
         if self.store.has_active_run():
             pid_record = self.store.read_pid_record() or {}
             pid = pid_record.get("pid")
-            raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
+            if not self._pid_matches_current_process(pid):
+                raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
-        queue_entries, state = self._build_queue_and_sync_state()
+        queue_entries, state = self._build_queue_and_sync_state(
+            max_queue_tasks=resolved_options.max_queue_tasks,
+            queue_export_path=resolved_options.queue_export_path,
+        )
         runnable_ids = self.store.select_runnable_task_ids(
             state,
             rerun_failed=resolved_options.rerun_failed,
@@ -1871,6 +1955,8 @@ class IterativeExperimentRunner:
                 "max_consecutive_oom": resolved_options.max_consecutive_oom,
                 "max_task_attempts": resolved_options.max_task_attempts,
                 "fail_fast_on_oom": resolved_options.fail_fast_on_oom,
+                "max_queue_tasks": resolved_options.max_queue_tasks,
+                "queue_export_path": resolved_options.queue_export_path,
             },
         )
 
@@ -1969,6 +2055,8 @@ def run_one_experiment_task(
     project_paths: ProjectPaths,
     training_config: TrainingConfig,
     task_cooldown_seconds: float = 2.0,
+    max_queue_tasks: int | None = MAX_QUEUE_TASKS,
+    queue_export_path: str | Path | None = None,
     model_builders: dict[str, ModelBuilder] | None = None,
     preprocessing_tasks: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
@@ -1982,6 +2070,8 @@ def run_one_experiment_task(
     return runner.run_one_task(
         task_id,
         task_cooldown_seconds=task_cooldown_seconds,
+        max_queue_tasks=max_queue_tasks,
+        queue_export_path=queue_export_path,
     )
 
 
