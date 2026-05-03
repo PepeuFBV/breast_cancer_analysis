@@ -8,6 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from pipeline.experiments import ExperimentStateStore
+from pipeline.utils.paths import build_project_paths
+from pipeline.utils.runtime_limits import CpuExecutionLimits
+
 pytestmark = pytest.mark.unit
 
 
@@ -215,6 +219,7 @@ def test_run_command_forwards_isolation_options_and_artifacts_dir(
         "load_experiment_config",
         lambda _path: SimpleNamespace(
             source_path=Path("configs/experiment.default.json"),
+            build_cpu_execution_limits=lambda **kwargs: CpuExecutionLimits(),
             runner=SimpleNamespace(
                 isolate_tasks=False,
                 task_cooldown_seconds=2.0,
@@ -237,6 +242,16 @@ def test_run_command_forwards_isolation_options_and_artifacts_dir(
             "/tmp/queue-export.jsonl",
             "--artifacts-dir",
             "/tmp/isolation-artifacts",
+            "--cpu-max-threads",
+            "2",
+            "--cpu-opencv-threads",
+            "1",
+            "--cpu-inter-op-threads",
+            "1",
+            "--cpu-intra-op-threads",
+            "2",
+            "--cpu-nice",
+            "10",
             "--models",
             "custom cnn",
             "--preprocessing",
@@ -261,6 +276,11 @@ def test_run_command_forwards_isolation_options_and_artifacts_dir(
     assert "--task-cooldown-seconds" in options.run_task_command_base
     assert "--max-queue-tasks" in options.run_task_command_base
     assert "123456" in options.run_task_command_base
+    assert "--cpu-max-threads" in options.run_task_command_base
+    assert "--cpu-opencv-threads" in options.run_task_command_base
+    assert "--cpu-inter-op-threads" in options.run_task_command_base
+    assert "--cpu-intra-op-threads" in options.run_task_command_base
+    assert "--cpu-nice" in options.run_task_command_base
     assert options.max_queue_tasks == 123456
     assert options.queue_export_path == "/tmp/queue-export.jsonl"
     capsys.readouterr()
@@ -284,6 +304,7 @@ def test_run_task_command_uses_runner_cooldown_from_config(
         "load_experiment_config",
         lambda _path: SimpleNamespace(
             source_path=Path("configs/experiment.default.json"),
+            build_cpu_execution_limits=lambda **kwargs: CpuExecutionLimits(),
             runner=SimpleNamespace(
                 isolate_tasks=False,
                 task_cooldown_seconds=3.5,
@@ -304,6 +325,135 @@ def test_run_task_command_uses_runner_cooldown_from_config(
     assert exit_code == 0
     assert "Task exp-cooldown completed successfully." in output
     assert captured["cooldown"] == 3.5
+
+
+def test_run_task_command_forwards_cpu_limits(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    fake_runner = SimpleNamespace(
+        config_path=Path("configs/experiment.default.json"),
+        project_paths=SimpleNamespace(),
+        training_config=SimpleNamespace(),
+    )
+    captured = {"limits": None}
+
+    monkeypatch.setattr(module, "_build_runner", lambda args: fake_runner)
+    monkeypatch.setattr(
+        module,
+        "load_experiment_config",
+        lambda _path: SimpleNamespace(
+            source_path=Path("configs/experiment.default.json"),
+            build_cpu_execution_limits=lambda **kwargs: CpuExecutionLimits(
+                max_threads=kwargs.get("cpu_max_threads"),
+                opencv_threads=kwargs.get("cpu_opencv_threads"),
+                inter_op_threads=kwargs.get("cpu_inter_op_threads"),
+                intra_op_threads=kwargs.get("cpu_intra_op_threads"),
+                nice=kwargs.get("cpu_nice"),
+            ),
+            runner=SimpleNamespace(
+                isolate_tasks=False,
+                task_cooldown_seconds=3.5,
+                task_timeout_seconds=None,
+            ),
+        ),
+    )
+
+    def _fake_run_one_experiment_task(**kwargs):
+        captured["limits"] = kwargs["cpu_execution_limits"]
+        return {"task_id": kwargs["task_id"], "status": "completed"}
+
+    monkeypatch.setattr(module, "run_one_experiment_task", _fake_run_one_experiment_task)
+
+    exit_code = module.main(
+        [
+            "run-task",
+            "--task-id",
+            "exp-cpu-limits",
+            "--cpu-max-threads",
+            "2",
+            "--cpu-opencv-threads",
+            "1",
+            "--cpu-inter-op-threads",
+            "1",
+            "--cpu-intra-op-threads",
+            "2",
+            "--cpu-nice",
+            "10",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["limits"] == CpuExecutionLimits(
+        max_threads=2,
+        opencv_threads=1,
+        inter_op_threads=1,
+        intra_op_threads=2,
+        nice=10,
+    )
+    capsys.readouterr()
+
+
+def test_probe_runtime_command_emits_json(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    monkeypatch.setattr(
+        module,
+        "collect_runtime_probe",
+        lambda **kwargs: SimpleNamespace(
+            ok=True,
+            requested_device="cpu",
+            effective_device="cpu",
+            python_executable=sys.executable,
+            tensorflow_imported=True,
+            tensorflow_version="test-tf",
+            cuda_visible_devices="-1",
+            physical_gpu_devices=(),
+            logical_gpu_devices=(),
+            tensorflow_visible_devices=(),
+            nvidia_smi_available=False,
+            nvidia_smi_command=(),
+            gpu_memory_summary={"devices": []},
+            effective_cpu_thread_env={"OMP_NUM_THREADS": "2"},
+            tensorflow_tiny_gpu_op=False,
+            tensorflow_tiny_gpu_op_device=None,
+            gpu_used=False,
+            opencv_threads=1,
+            warnings=(),
+            errors=(),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_experiment_config",
+        lambda _path: SimpleNamespace(
+            build_cpu_execution_limits=lambda **kwargs: CpuExecutionLimits(max_threads=kwargs.get("cpu_max_threads")),
+        ),
+    )
+
+    exit_code = module.main(["probe-runtime", "--device", "cpu", "--cpu-max-threads", "2", "--json"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert '"requested_device": "cpu"' in output
+    assert '"effective_cpu_thread_env"' in output
+
+
+def test_quickstart_contains_common_operations_commands() -> None:
+    quickstart = Path("docs/quickstart.md").read_text(encoding="utf-8")
+
+    assert "probe-runtime --device gpu" in quickstart
+    assert "probe-runtime --device cpu" in quickstart
+    assert "run_experiments.py launch" in quickstart
+    assert "run_experiments.py status" in quickstart
+    assert "run_experiments.py stop" in quickstart
+    assert "run_experiments.py reset --purge-results" in quickstart
+    assert "run_experiments.py stop --config configs/experiment.low-memory.json --kill" in quickstart
+    assert "run_experiments.py reset --config configs/experiment.low-memory.json --purge-results --kill-active" in quickstart
+    assert "tail -f artifacts/experiments/logs/iterative-runner.log" in quickstart
 
 
 def test_run_command_allow_huge_queue_disables_limit(
@@ -345,6 +495,7 @@ def test_run_command_allow_huge_queue_disables_limit(
         "load_experiment_config",
         lambda _path: SimpleNamespace(
             source_path=Path("configs/experiment.default.json"),
+            build_cpu_execution_limits=lambda **kwargs: CpuExecutionLimits(),
             runner=SimpleNamespace(
                 isolate_tasks=False,
                 task_cooldown_seconds=2.0,
@@ -368,3 +519,82 @@ def test_run_command_allow_huge_queue_disables_limit(
     assert options is not None
     assert options.max_queue_tasks is None
     capsys.readouterr()
+
+
+def test_status_auto_discovers_single_active_runner_without_config(
+    capsys,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_run_experiments_module()
+    default_paths = build_project_paths(tmp_path / "raw-data", tmp_path / "artifacts").ensure_artifact_dirs()
+    active_paths = build_project_paths(tmp_path / "raw-data", tmp_path / "artifacts-low-memory").ensure_artifact_dirs()
+    active_store = ExperimentStateStore(active_paths)
+    stdout_path = active_paths.experiment_logs_dir / "background.out.log"
+    stderr_path = active_paths.experiment_logs_dir / "background.err.log"
+    active_store.write_pid_record(
+        config_path=Path("configs/experiment.low-memory.json"),
+        command=["python", "run_experiments.py", "run"],
+        pid=2222,
+        stdout_log_path=stdout_path,
+        stderr_log_path=stderr_path,
+    )
+
+    monkeypatch.setattr(module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(module, "_load_project_paths", lambda args: default_paths)
+    monkeypatch.setattr("pipeline.experiments.runner._is_process_alive", lambda pid: int(pid or 0) == 2222)
+
+    exit_code = module.main(["status"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Using the only active runner found under" in output
+    assert "Active PID: 2222" in output
+    assert "artifacts-low-memory" in output
+
+
+def test_stop_command_can_kill_active_runner(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    captured = {"force": None}
+
+    def _terminate_active_run(*, force: bool):
+        captured["force"] = force
+        return 4321
+
+    fake_store = SimpleNamespace(
+        has_active_run=lambda: True,
+        terminate_active_run=_terminate_active_run,
+    )
+    monkeypatch.setattr(module, "_resolve_store_for_control_command", lambda args: (fake_store, None))
+
+    exit_code = module.main(["stop", "--kill"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert captured["force"] is True
+    assert "Runner pid=4321 was terminated." in output
+
+
+def test_reset_command_forwards_kill_active(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    captured = {"purge_results": None, "kill_active": None}
+
+    def _reset(*, purge_results: bool, kill_active: bool):
+        captured["purge_results"] = purge_results
+        captured["kill_active"] = kill_active
+
+    fake_store = SimpleNamespace(reset=_reset)
+    monkeypatch.setattr(module, "_resolve_store_for_control_command", lambda args: (fake_store, None))
+
+    exit_code = module.main(["reset", "--purge-results", "--kill-active"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert captured == {"purge_results": True, "kill_active": True}
+    assert "Runner state and training results were removed." in output

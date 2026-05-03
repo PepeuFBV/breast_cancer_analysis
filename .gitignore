@@ -7,3 +7,7 @@ __pycache__/
 
 # runtime pipeline dir
 *.egg-info/
+
+# artifacts
+artifacts/
+artifacts*/

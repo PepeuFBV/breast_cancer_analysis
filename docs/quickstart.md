@@ -1,383 +1,176 @@
 # Quick Start
 
-This is the shortest path from a local INbreast copy to a validated run. The
-full experiment grid can take hours, so run the checks and smoke command first.
+Use the same `--config` for `preprocess.py`, `run_experiments.py launch`,
+`status`, `stop`, and `reset`. If you launch `configs/experiment.low-memory.json`,
+do not preprocess or check status against the default `artifacts/` tree by
+accident.
 
-## Unattended Setup (Recommended)
+Windows PowerShell equivalents:
 
-For a fully automated setup that handles everything:
+- Python: `.\.venv\Scripts\python.exe`
+- Follow logs: `Get-Content <log-path> -Wait`
+- Delete artifacts: `Remove-Item <path> -Recurse -Force`
 
-```bash
-python3 scripts/unattended_setup.py --gpu auto
-```
-
-This will:
-1. Bootstrap the Python environment
-2. Validate the dataset
-3. Run smoke tests
-4. Preprocess the data
-
-After this completes successfully, skip to step 7 to run experiments.
-
-For CPU-only mode:
+## 1. Check Runtime
 
 ```bash
-python3 scripts/unattended_setup.py --gpu off
+./.venv/bin/python run_experiments.py probe-runtime --device gpu
+./.venv/bin/python run_experiments.py probe-runtime --device cpu
+./.venv/bin/python run_experiments.py probe-runtime --device gpu --json
+./.venv/bin/python run_experiments.py probe-runtime --device cpu --json
 ```
 
-Verify readiness:
+## 2. Preprocess
 
-```bash
-python3 scripts/check_readiness.py
-```
-
-## Manual Setup
-
-If you prefer step-by-step control, follow the sections below.
-
-## 1. Prerequisites
-
-- Python 3.10, 3.11, or 3.12
-- `python3`, `python3-venv`, `python3-pip`
-- Build tools such as `build-essential` and `python3-dev`
-- The INbreast dataset available locally
-- Optional NVIDIA GPU support; see [`gpu.md`](gpu.md) and [`wsl_gpu_setup.md`](wsl_gpu_setup.md)
-
-Note: GPU is optional. The pipeline runs on CPU if GPU is not available.
-
-Expected dataset layout:
-
-```text
-data/INbreast Release 1.0/
-  INbreast.csv
-  AllDICOMs/*.dcm
-```
-
-## 2. Set Up the Environment
-
-On Debian/Ubuntu:
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip build-essential python3-dev
-```
-
-Create and install:
-
-```bash
-python3 scripts/bootstrap_env.py --gpu auto
-```
-
-For development checks:
-
-```bash
-python3 scripts/bootstrap_env.py --gpu auto --dev
-```
-
-Use `--gpu required` instead of `--gpu auto` when the run must fail unless
-TensorFlow can use the GPU. Use `--gpu off` to force CPU-only mode.
-
-Note: If GPU setup fails with `--gpu auto`, the bootstrap will succeed and the
-pipeline will run on CPU. For WSL GPU troubleshooting, see
-[`wsl_gpu_setup.md`](wsl_gpu_setup.md).
-
-## 3. Validate Setup
-
-```bash
-./.venv/bin/python scripts/check_environment.py --require-venv
-./.venv/bin/python scripts/validate_dataset.py
-./.venv/bin/python scripts/check_gpu.py
-./.venv/bin/python scripts/smoke_run.py
-```
-
-Use `./.venv/bin/python scripts/check_gpu.py --require-gpu` only when the run
-must use GPU.
-
-Validate runtime device policy explicitly:
-
-```bash
-./.venv/bin/python scripts/check_runtime.py --device cpu
-./.venv/bin/python scripts/check_runtime.py --device auto
-./.venv/bin/python scripts/check_runtime.py --device gpu || true
-```
-
-These checks are the default validation path. Do not start with the full
-experiment grid.
-
-## 4. Review the Experiment Grid
-
-The default grid lives in
-[`configs/experiment.default.json`](../configs/experiment.default.json). It
-controls paths, preprocessing combinations, model names, folds, epochs, batch
-size, and evaluation settings.
-
-The shipped config disables pairwise preprocessing combinations by default.
-Enable them only when you intentionally want a much larger queue:
-
-```bash
-./.venv/bin/python run_experiments.py run --combined-preprocessing
-```
-
-If the expanded grid is intentional and exceeds the default 50,000-task safety
-cap, explicitly opt in:
-
-```bash
-./.venv/bin/python run_experiments.py run \
-  --combined-preprocessing \
-  --allow-huge-queue \
-  --queue-export-path artifacts/experiments/state/queue-export.jsonl
-```
-
-## 5. Preprocess the Dataset
+Default artifacts:
 
 ```bash
 ./.venv/bin/python preprocess.py
 ```
 
-Main outputs:
-
-- `artifacts/processed/images/train/`
-- `artifacts/processed/images/test/`
-- `artifacts/processed/splits/train_split.csv`
-- `artifacts/processed/splits/test_split.csv`
-- `artifacts/processed/splits/split_summary.json`
-
-## 6. Optional Real Training Smoke
-
-After preprocessing, run a single real training task before the full grid:
+Low-memory config:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
-  --models "custom cnn" \
-  --preprocessing none \
-  --no-combined-preprocessing \
-  --folds 0 \
-  --epochs 1 \
-  --limit 1
+./.venv/bin/python preprocess.py --config configs/experiment.low-memory.json
 ```
 
-Long-run orchestration smoke (recommended before full queue):
+## 3. Start A Safe Adaptive Run
 
 ```bash
-./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device cpu
-./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device auto
-```
-
-If the runner later fails after several combinations, inspect:
-
-- `artifacts/experiments/logs/iterative-runner.log`
-- `artifacts/experiments/logs/run-events.jsonl`
-- `artifacts/experiments/logs/tasks/exp-*.events.jsonl`
-- `artifacts/experiments/logs/tasks/exp-*.memory.jsonl`
-- `artifacts/experiments/state/runner_state.json`
-- `artifacts/experiments/summary/experiment_runs.csv`
-- `artifacts/experiments/tasks/*.json`
-
-## 7. Run the Full Experiment Queue
-
-Only start this when the checks above pass and you are ready for a long run.
-For unattended execution, prefer the background launcher:
-
-```bash
-./.venv/bin/python run_experiments.py launch
-```
-
-`launch` writes process output to `artifacts/experiments/logs/background-runner-*.out.log`
-and `artifacts/experiments/logs/background-runner-*.err.log` (or the same paths under
-`--artifacts-dir`). During long runs, inspect them with:
-
-```bash
-tail -f artifacts/experiments/logs/background-runner-*.out.log
-tail -f artifacts/experiments/logs/background-runner-*.err.log
-```
-
-Foreground mode is still available:
-
-```bash
-./.venv/bin/python run_experiments.py run
-```
-
-For long GPU runs, prefer per-task subprocess isolation:
-
-```bash
-./.venv/bin/python run_experiments.py run \
+./.venv/bin/python run_experiments.py launch \
+  --config configs/experiment.low-memory.json \
   --isolate-tasks \
   --device-policy adaptive \
   --gpu-retries 1 \
   --cpu-retries 1 \
-  --cooldown-after-oom-seconds 15 \
-  --gpu-recovery-cooldown-seconds 60 \
-  --max-consecutive-oom 3
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1 \
+  --cpu-inter-op-threads 1 \
+  --cpu-intra-op-threads 2 \
+  --cpu-nice 10
 ```
 
-Why this helps:
+## 4. Status And Logs
 
-- each task runs in a fresh Python process
-- TensorFlow/Keras/CUDA context is released by the OS after each task exits
-- GPU OOM attempts are retried safely, then fallback to CPU for that task
-- later tasks probe GPU again after cooldown (CPU fallback is not permanent)
-- repeated long-run memory growth and fragmentation are reduced, which helps avoid OOM crashes
-
-CPU-only long run:
+Explicit config:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
-  --isolate-tasks \
-  --device-policy cpu-only
+./.venv/bin/python run_experiments.py status --config configs/experiment.low-memory.json
 ```
 
-Strict GPU-only mode:
-
-```bash
-./.venv/bin/python run_experiments.py run \
-  --isolate-tasks \
-  --device-policy gpu-only \
-  --gpu-retries 1 \
-  --fail-fast-on-oom
-```
-
-Low-memory preset:
-
-```bash
-./.venv/bin/python run_experiments.py run \
-  --config configs/experiment.low-memory.json
-```
-
-Timeout (optional) for unstable environments:
-
-```bash
-./.venv/bin/python run_experiments.py run \
-  --isolate-tasks \
-  --task-timeout-seconds 7200
-```
-
-`launch` supports the same flags:
-
-```bash
-./.venv/bin/python run_experiments.py launch --isolate-tasks
-```
-
-Large-queue launch example:
-
-```bash
-./.venv/bin/python run_experiments.py launch \
-  --combined-preprocessing \
-  --allow-huge-queue \
-  --queue-export-path artifacts/experiments/state/queue-export.jsonl
-```
-
-Optional config defaults (CLI flags override these values):
-
-```json
-"runner": {
-  "isolate_tasks": true,
-  "task_cooldown_seconds": 2
-}
-```
-
-Task child logs remain under:
-
-- `artifacts/experiments/logs/tasks/exp-*.log`
-- `artifacts/experiments/logs/tasks/exp-*.events.jsonl`
-- `artifacts/experiments/logs/tasks/exp-*.memory.jsonl`
-
-To inspect fallback/OOM flow quickly:
-
-```bash
-rg '"event":"(gpu_oom_detected|gpu_retry_scheduled|cpu_fallback_scheduled|cpu_fallback_succeeded|gpu_recovered|oom_policy_stop|task_attempt_finished)"' \
-  artifacts/experiments/logs/run-events.jsonl
-```
-
-Local dashboard:
-
-```bash
-./.venv/bin/streamlit run experiment_dashboard.py
-```
-
-The dashboard and CLI share the same persisted runner state.
-
-## 8. Check Status, Stop, and Resume
-
-Check progress:
+Plain status also works when there is only one active runner:
 
 ```bash
 ./.venv/bin/python run_experiments.py status
 ```
 
-If `status` shows `Total experiments: 0` right after `launch`, the background
-runner likely exited before queue creation. Check:
-
-- `artifacts/experiments/logs/background-runner-*.out.log`
-- `artifacts/experiments/logs/background-runner-*.err.log`
-
-Request a safe stop:
+Logs:
 
 ```bash
-./.venv/bin/python run_experiments.py stop
+tail -f artifacts/experiments/logs/iterative-runner.log
+tail -f artifacts-low-memory/experiments/logs/iterative-runner.log
+tail -f artifacts-low-memory/experiments/logs/background-runner-*.out.log
+tail -f artifacts-low-memory/experiments/logs/background-runner-*.err.log
 ```
 
-Behavior:
+## 5. Stop
 
-- the current experiment is allowed to finish
-- completed results stay saved
-- the queue stops at the next safe boundary
-
-Resume later:
+Graceful stop:
 
 ```bash
-./.venv/bin/python run_experiments.py run
+./.venv/bin/python run_experiments.py stop --config configs/experiment.low-memory.json
 ```
 
-Useful rerun options:
+Immediate kill:
 
 ```bash
-./.venv/bin/python run_experiments.py run --rerun-failed
-./.venv/bin/python run_experiments.py run --rerun-completed
+./.venv/bin/python run_experiments.py stop --config configs/experiment.low-memory.json --kill
 ```
 
-Run exactly one persisted task by id (debugging and future isolated execution):
+## 6. Reset
+
+Reset orchestration state only:
 
 ```bash
-./.venv/bin/python run_experiments.py run-task --task-id <TASK_ID>
+./.venv/bin/python run_experiments.py reset --config configs/experiment.low-memory.json
 ```
 
-Notes:
-
-- `run-task` rebuilds/syncs the persisted queue before selecting the task id.
-- If the task is already completed (including artifact reconciliation when `run_skip` is enabled), it is not re-executed.
-- Use the same path/runtime overrides as `run` (`--config`, `--artifacts-dir`, `--raw-data-dir`, and training runtime flags) when reproducing a task.
-
-Reset only the orchestration state:
-
-```bash
-./.venv/bin/python run_experiments.py reset
-```
-
-Reset state and remove saved run outputs:
+Reset and delete results:
 
 ```bash
 ./.venv/bin/python run_experiments.py reset --purge-results
+./.venv/bin/python run_experiments.py reset --config configs/experiment.low-memory.json --purge-results
 ```
 
-## 9. Generate the Final Report
+If a background runner is still alive, kill it as part of reset:
 
 ```bash
-./.venv/bin/python evaluate.py
+./.venv/bin/python run_experiments.py reset --config configs/experiment.low-memory.json --purge-results --kill-active
 ```
 
-Main outputs:
+## 7. Restart After A New Preprocess Run
 
-- `artifacts/reports/final_comprehensive_results.csv`
-- `artifacts/reports/evaluation_details/`
+```bash
+./.venv/bin/python run_experiments.py reset \
+  --config configs/experiment.low-memory.json \
+  --purge-results \
+  --kill-active
 
-## 10. Where Everything Is Saved
+./.venv/bin/python preprocess.py --config configs/experiment.low-memory.json
 
-- Processed data: `artifacts/processed/`
-- Training history: `artifacts/runs/history/`
-- Predictions: `artifacts/runs/predictions/`
-- Runner state: `artifacts/experiments/state/runner_state.json`
-- Runner summary: `artifacts/experiments/summary/experiment_runs.csv`
-- Runner log: `artifacts/experiments/logs/iterative-runner.log`
-- Structured run events: `artifacts/experiments/logs/run-events.jsonl`
-- Per-task event/memory logs: `artifacts/experiments/logs/tasks/`
-- Per-task snapshots: `artifacts/experiments/tasks/*.json`
+./.venv/bin/python run_experiments.py launch \
+  --config configs/experiment.low-memory.json \
+  --isolate-tasks \
+  --device-policy adaptive \
+  --gpu-retries 1 \
+  --cpu-retries 1 \
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1 \
+  --cpu-inter-op-threads 1 \
+  --cpu-intra-op-threads 2 \
+  --cpu-nice 10
+```
+
+## 8. Smoke Commands
+
+CPU-safe smoke:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --config configs/experiment.smoke.json \
+  --limit 2 \
+  --isolate-tasks \
+  --device-policy cpu-only \
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1
+```
+
+Adaptive smoke:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --config configs/experiment.smoke.json \
+  --limit 3 \
+  --isolate-tasks \
+  --device-policy adaptive \
+  --gpu-retries 1 \
+  --cpu-retries 1 \
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1
+```
+
+## 9. Huge Queues
+
+The runner refuses very large queues by default.
+
+- Narrow with `--models`, `--preprocessing`, and `--no-combined-preprocessing`
+- Export the queue first with `--queue-export-path`
+- Use `--allow-huge-queue` only intentionally
+
+Example:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --allow-huge-queue \
+  --queue-export-path artifacts/experiments/state/queue-export.jsonl
+```
