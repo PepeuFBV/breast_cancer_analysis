@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import gc
 import logging
-import resource
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from pipeline.utils.gpu_env import clear_gpu_memory
+
+try:
+    import resource
+except ModuleNotFoundError:  # pragma: no cover - exercised on Windows
+    resource = None
 
 
 def clear_ml_memory(*, clear_session: bool = True) -> None:
@@ -31,6 +35,9 @@ def get_process_memory_mb() -> float | None:
     except Exception:
         pass
 
+    if resource is None:
+        return None
+
     try:
         usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     except Exception:
@@ -46,6 +53,9 @@ def get_process_memory_mb() -> float | None:
 
 def get_peak_process_memory_mb() -> float | None:
     """Return peak RSS memory for the current process when available."""
+
+    if resource is None:
+        return None
 
     try:
         usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss

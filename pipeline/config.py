@@ -9,6 +9,7 @@ from pipeline.data.constants import DEFAULT_RANDOM_STATE
 from pipeline.train.models import MODEL_BUILDERS, ModelRuntimeConfig
 from pipeline.utils.paths import PROJECT_ROOT, ProjectPaths, build_project_paths
 from pipeline.utils.runtime import resolve_bool_flag
+from pipeline.utils.runtime_limits import CpuExecutionLimits, validate_cpu_execution_limits
 
 if TYPE_CHECKING:
     from pipeline.data.dataset import DatasetPreparationConfig
@@ -153,6 +154,11 @@ class ExperimentRunnerConfig:
     max_consecutive_oom: int
     max_task_attempts: int
     fail_fast_on_oom: bool
+    cpu_max_threads: int | None = None
+    cpu_opencv_threads: int | None = None
+    cpu_inter_op_threads: int | None = None
+    cpu_intra_op_threads: int | None = None
+    cpu_nice: int | None = None
 
 
 @dataclass(frozen=True)
@@ -247,6 +253,25 @@ class ExperimentConfig:
             preprocessing_grids=self.preprocess.preprocessing_grid,
         )
 
+    def build_cpu_execution_limits(
+        self,
+        *,
+        cpu_max_threads: int | None = None,
+        cpu_opencv_threads: int | None = None,
+        cpu_inter_op_threads: int | None = None,
+        cpu_intra_op_threads: int | None = None,
+        cpu_nice: int | None = None,
+    ) -> CpuExecutionLimits:
+        return validate_cpu_execution_limits(
+            CpuExecutionLimits(
+                max_threads=(self.runner.cpu_max_threads if cpu_max_threads is None else cpu_max_threads),
+                opencv_threads=(self.runner.cpu_opencv_threads if cpu_opencv_threads is None else cpu_opencv_threads),
+                inter_op_threads=(self.runner.cpu_inter_op_threads if cpu_inter_op_threads is None else cpu_inter_op_threads),
+                intra_op_threads=(self.runner.cpu_intra_op_threads if cpu_intra_op_threads is None else cpu_intra_op_threads),
+                nice=(self.runner.cpu_nice if cpu_nice is None else cpu_nice),
+            )
+        )
+
     def build_evaluation_config(
         self,
         project_paths: ProjectPaths,
@@ -299,6 +324,15 @@ def _model_runtime_from_dict(config: dict[str, Any]) -> ModelRuntimeConfig:
     )
 
 
+def _optional_positive_int(name: str, value: Any) -> int | None:
+    if value is None:
+        return None
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError(f"{name} must be > 0 when provided.")
+    return resolved
+
+
 def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     config_path = _resolve_project_relative_path(path) or DEFAULT_EXPERIMENT_CONFIG_PATH
     with config_path.open("r", encoding="utf-8") as handle:
@@ -343,6 +377,15 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     if max_task_attempts <= 0:
         raise ValueError("runner.max_task_attempts must be > 0.")
     fail_fast_on_oom = bool(raw_runner.get("fail_fast_on_oom", False))
+    cpu_limits = validate_cpu_execution_limits(
+        CpuExecutionLimits(
+            max_threads=_optional_positive_int("runner.cpu_max_threads", raw_runner.get("cpu_max_threads")),
+            opencv_threads=_optional_positive_int("runner.cpu_opencv_threads", raw_runner.get("cpu_opencv_threads")),
+            inter_op_threads=_optional_positive_int("runner.cpu_inter_op_threads", raw_runner.get("cpu_inter_op_threads")),
+            intra_op_threads=_optional_positive_int("runner.cpu_intra_op_threads", raw_runner.get("cpu_intra_op_threads")),
+            nice=(None if raw_runner.get("cpu_nice") is None else int(raw_runner.get("cpu_nice"))),
+        )
+    )
 
     return ExperimentConfig(
         source_path=config_path,
@@ -388,6 +431,11 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
             max_consecutive_oom=max_consecutive_oom,
             max_task_attempts=max_task_attempts,
             fail_fast_on_oom=fail_fast_on_oom,
+            cpu_max_threads=cpu_limits.max_threads,
+            cpu_opencv_threads=cpu_limits.opencv_threads,
+            cpu_inter_op_threads=cpu_limits.inter_op_threads,
+            cpu_intra_op_threads=cpu_limits.intra_op_threads,
+            cpu_nice=cpu_limits.nice,
         ),
         models=model_config,
         evaluate=ExperimentEvaluateConfig(

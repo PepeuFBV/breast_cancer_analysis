@@ -20,8 +20,8 @@ def _is_wsl_linux() -> bool:
 
 def _venv_root() -> Path:
     if os.environ.get("VIRTUAL_ENV"):
-        return Path(os.environ["VIRTUAL_ENV"]).expanduser().absolute()
-    return Path(sys.executable).expanduser().absolute().parents[1]
+        return Path(os.environ["VIRTUAL_ENV"]).expanduser()
+    return Path(sys.executable).expanduser().parents[1]
 
 
 def _python_site_packages_dir(venv_root: Path) -> Path:
@@ -49,7 +49,11 @@ def _prepend_env_paths(
     paths: list[Path],
 ) -> bool:
     existing = [entry for entry in environment.get(variable_name, "").split(":") if entry.strip()]
-    additions = [str(path) for path in paths if str(path) not in existing]
+    additions = []
+    for path in paths:
+        normalized_path = path.as_posix()
+        if normalized_path not in existing:
+            additions.append(normalized_path)
     if not additions:
         return False
     environment[variable_name] = ":".join([*additions, *existing])

@@ -50,7 +50,12 @@
     "gpu_recovery_cooldown_seconds": 60,
     "max_consecutive_oom": 3,
     "max_task_attempts": 4,
-    "fail_fast_on_oom": false
+    "fail_fast_on_oom": false,
+    "cpu_max_threads": 2,
+    "cpu_opencv_threads": 1,
+    "cpu_inter_op_threads": 1,
+    "cpu_intra_op_threads": 2,
+    "cpu_nice": 10
   },
   "models": {
     "custom cnn": {

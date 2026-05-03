@@ -30,11 +30,18 @@ class ExperimentConfigTest(unittest.TestCase):
         self.assertEqual(config.runner.device_policy, "adaptive")
         self.assertEqual(config.runner.gpu_retries, 1)
         self.assertEqual(config.runner.cpu_retries, 1)
+        self.assertIsNone(config.runner.cpu_max_threads)
+        self.assertIsNone(config.runner.cpu_opencv_threads)
+        self.assertIsNone(config.runner.cpu_inter_op_threads)
+        self.assertIsNone(config.runner.cpu_intra_op_threads)
+        self.assertIsNone(config.runner.cpu_nice)
 
     def test_low_memory_config_loads(self) -> None:
         config = load_experiment_config("configs/experiment.low-memory.json")
         self.assertEqual(config.runner.device_policy, "adaptive")
         self.assertTrue(config.runner.isolate_tasks)
+        self.assertEqual(config.runner.cpu_max_threads, 2)
+        self.assertEqual(config.runner.cpu_opencv_threads, 1)
         self.assertEqual(config.train.batch_size, 2)
         self.assertEqual(config.models["custom cnn"].batch_size, 1)
 
@@ -48,8 +55,8 @@ class ExperimentConfigTest(unittest.TestCase):
 
             config = load_experiment_config(config_path)
 
-            self.assertTrue(str(config.paths.artifacts_dir).endswith("tmp/artifacts"))
-            self.assertTrue(str(config.paths.history_dir).endswith("tmp/history"))
+            self.assertTrue(config.paths.artifacts_dir.as_posix().endswith("tmp/artifacts"))
+            self.assertTrue(config.paths.history_dir.as_posix().endswith("tmp/history"))
 
     def test_invalid_preprocessing_name_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -114,7 +121,7 @@ class ExperimentConfigTest(unittest.TestCase):
         config = build_evaluation_config_from_args(args)
 
         self.assertEqual(config.top_k, 5)
-        self.assertTrue(str(config.details_dir).endswith("artifacts/reports/custom-details"))
+        self.assertTrue(config.details_dir.as_posix().endswith("artifacts/reports/custom-details"))
 
 
 if __name__ == "__main__":
