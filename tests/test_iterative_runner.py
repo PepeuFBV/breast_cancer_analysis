@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 import cv2
@@ -21,10 +23,16 @@ from pipeline.experiments import (
     IterativeRunOptions,
     launch_background_runner,
 )
-from pipeline.experiments.runner import MAX_QUEUE_TASKS
+from pipeline.experiments.runner import (
+    BACKGROUND_STDERR_LOG_ENV,
+    BACKGROUND_STDOUT_LOG_ENV,
+    MAX_QUEUE_TASKS,
+    REQUESTED_DEVICE_ENV,
+)
 from pipeline.train.preprocessing import PreprocessingTask
 from pipeline.train.runner import TrainingConfig, artifact_paths_for_task
 from pipeline.utils.paths import build_project_paths
+from pipeline.utils.runtime_limits import CPU_THREAD_ENV_KEYS, CpuExecutionLimits
 
 
 class _FakeHistory:
@@ -132,6 +140,38 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return rows
 
 
+def _is_probe_runtime_command(command: object) -> bool:
+    return "probe-runtime" in " ".join(str(item) for item in command)
+
+
+def _probe_runtime_payload(env: dict[str, object]) -> dict[str, object]:
+    requested_device = str(env.get(REQUESTED_DEVICE_ENV) or ("cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"))
+    effective_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+    cpu_thread_env = {key: env.get(key) for key in (*CPU_THREAD_ENV_KEYS, "TF_NUM_INTRAOP_THREADS", "TF_NUM_INTEROP_THREADS")}
+    return {
+        "ok": True,
+        "requested_device": requested_device,
+        "effective_device": effective_device,
+        "python_executable": sys.executable,
+        "tensorflow_imported": True,
+        "tensorflow_version": "test-tf",
+        "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+        "physical_gpu_devices": [] if effective_device == "cpu" else ["/physical_device:GPU:0"],
+        "logical_gpu_devices": [] if effective_device == "cpu" else ["/device:GPU:0"],
+        "tensorflow_visible_devices": [] if effective_device == "cpu" else ["/device:GPU:0"],
+        "nvidia_smi_available": effective_device == "gpu",
+        "nvidia_smi_command": [],
+        "gpu_memory_summary": {"devices": []},
+        "effective_cpu_thread_env": cpu_thread_env,
+        "tensorflow_tiny_gpu_op": effective_device == "gpu",
+        "tensorflow_tiny_gpu_op_device": ("/device:GPU:0" if effective_device == "gpu" else None),
+        "gpu_used": effective_device == "gpu",
+        "opencv_threads": None,
+        "warnings": [],
+        "errors": [],
+    }
+
+
 class IterativeRunnerTest(unittest.TestCase):
     def test_launch_background_runner_captures_stdout_and_stderr_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -141,6 +181,7 @@ class IterativeRunnerTest(unittest.TestCase):
             captured: dict[str, object] = {}
 
             def fake_popen(*args, **kwargs):
+                captured.update(kwargs)
                 captured["stdout"] = kwargs["stdout"]
                 captured["stderr"] = kwargs["stderr"]
                 return SimpleNamespace(pid=12345)
@@ -163,6 +204,14 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertIsNot(captured["stderr"], subprocess.DEVNULL)
             self.assertEqual(Path(str(getattr(captured["stdout"], "name"))), launch.stdout_path)
             self.assertEqual(Path(str(getattr(captured["stderr"], "name"))), launch.stderr_path)
+            launch_env = cast(dict[str, str], captured["env"])
+            self.assertEqual(launch_env[BACKGROUND_STDOUT_LOG_ENV], str(launch.stdout_path))
+            self.assertEqual(launch_env[BACKGROUND_STDERR_LOG_ENV], str(launch.stderr_path))
+            if os.name == "nt":
+                self.assertNotIn("start_new_session", captured)
+                self.assertGreater(int(captured.get("creationflags", 0)), 0)
+            else:
+                self.assertTrue(captured.get("start_new_session"))
 
     def test_isolated_runner_invokes_run_task_subprocess_for_each_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -180,6 +229,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 captured_commands.append([str(item) for item in command])
@@ -230,6 +281,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 calls["count"] += 1
@@ -283,6 +336,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 calls["count"] += 1
@@ -324,6 +379,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 return SimpleNamespace(returncode=7)
@@ -367,6 +424,8 @@ class IterativeRunnerTest(unittest.TestCase):
             call_count = {"value": 0}
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 outcome = outcomes[call_count["value"]]
@@ -424,6 +483,248 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(len(first_task["attempt_history"]), 3)
             self.assertEqual(second_task["final_device"], "gpu")
 
+    def test_gpu_attempt_preserves_visible_devices_and_records_probe_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            captured_env: dict[str, str] = {}
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                captured_env.update({str(key): str(value) for key, value in kwargs.get("env", {}).items()})
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.93},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with (
+                patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,2"}, clear=False),
+                patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run),
+            ):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="gpu-only",
+                        max_task_attempts=1,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(captured_env["CUDA_VISIBLE_DEVICES"], "0,2")
+            state = runner.store.load_state()
+            attempt = state["tasks"][0]["attempt_history"][0]
+            self.assertEqual(attempt["requested_device"], "gpu")
+            self.assertEqual(attempt["effective_device"], "gpu")
+            self.assertEqual(attempt["cuda_visible_devices"], "0,2")
+            self.assertEqual(attempt["tensorflow_visible_devices"], ["/device:GPU:0"])
+            self.assertTrue(attempt["gpu_used"])
+
+    def test_cpu_attempt_sets_thread_limit_env_vars_and_attempt_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                cpu_execution_limits=CpuExecutionLimits(
+                    max_threads=2,
+                    opencv_threads=1,
+                    inter_op_threads=1,
+                    intra_op_threads=2,
+                ),
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            captured_env: dict[str, str] = {}
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                captured_env.update({str(key): str(value) for key, value in kwargs.get("env", {}).items()})
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.92},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="cpu-only",
+                        max_task_attempts=1,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(captured_env["CUDA_VISIBLE_DEVICES"], "-1")
+            self.assertEqual(captured_env["OMP_NUM_THREADS"], "2")
+            self.assertEqual(captured_env["OPENBLAS_NUM_THREADS"], "2")
+            self.assertEqual(captured_env["MKL_NUM_THREADS"], "2")
+            self.assertEqual(captured_env["NUMEXPR_NUM_THREADS"], "2")
+            self.assertEqual(captured_env["VECLIB_MAXIMUM_THREADS"], "2")
+            self.assertEqual(captured_env["TF_NUM_INTRAOP_THREADS"], "2")
+            self.assertEqual(captured_env["TF_NUM_INTEROP_THREADS"], "1")
+            state = runner.store.load_state()
+            attempt = state["tasks"][0]["attempt_history"][0]
+            self.assertEqual(attempt["requested_device"], "cpu")
+            self.assertEqual(attempt["effective_device"], "cpu")
+            self.assertEqual(attempt["effective_cpu_thread_env"]["OMP_NUM_THREADS"], "2")
+            self.assertFalse(attempt["gpu_used"])
+
+    def test_adaptive_gpu_probe_failure_falls_back_to_cpu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            task_devices: list[str] = []
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                env = kwargs.get("env", {})
+                if _is_probe_runtime_command(command):
+                    payload = _probe_runtime_payload(env)
+                    if env.get("CUDA_VISIBLE_DEVICES") != "-1":
+                        payload.update(
+                            {
+                                "ok": False,
+                                "effective_device": "cpu",
+                                "physical_gpu_devices": [],
+                                "logical_gpu_devices": [],
+                                "tensorflow_visible_devices": [],
+                                "tensorflow_tiny_gpu_op": False,
+                                "tensorflow_tiny_gpu_op_device": None,
+                                "gpu_used": False,
+                                "errors": ["No TensorFlow GPU devices are visible."],
+                            }
+                        )
+                        return SimpleNamespace(returncode=1, stdout=json.dumps(payload), stderr="")
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                observed_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+                task_devices.append(observed_device)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.91},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="adaptive",
+                        gpu_retries=0,
+                        cpu_retries=1,
+                        gpu_recovery_cooldown_seconds=0,
+                        max_task_attempts=2,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(task_devices, ["cpu"])
+            state = runner.store.load_state()
+            task = state["tasks"][0]
+            self.assertEqual(task["final_device"], "cpu")
+            self.assertEqual(len(task["attempt_history"]), 2)
+            self.assertEqual(task["attempt_history"][0]["failure_kind"], "gpu_probe_failed")
+            self.assertEqual(task["attempt_history"][1]["requested_device"], "cpu")
+            run_events = _read_jsonl(runner.store.run_events_path)
+            phases = {row.get("event") for row in run_events}
+            self.assertIn("gpu_probe_failed", phases)
+            self.assertIn("cpu_fallback_scheduled", phases)
+
+    def test_cpu_limits_are_applied_for_direct_cpu_task_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            original_opencv_threads = cv2.getNumThreads()
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                cpu_execution_limits=CpuExecutionLimits(
+                    max_threads=2,
+                    opencv_threads=1,
+                    inter_op_threads=1,
+                    intra_op_threads=2,
+                ),
+                preprocessing_tasks=[_task("none")],
+            )
+            record, _training_task = runner.build_queue()[0]
+            observed: dict[str, object] = {}
+
+            def _failing_run_training_task(*args, **kwargs):
+                observed["omp"] = os.environ.get("OMP_NUM_THREADS")
+                observed["openblas"] = os.environ.get("OPENBLAS_NUM_THREADS")
+                observed["mkl"] = os.environ.get("MKL_NUM_THREADS")
+                observed["numexpr"] = os.environ.get("NUMEXPR_NUM_THREADS")
+                observed["veclib"] = os.environ.get("VECLIB_MAXIMUM_THREADS")
+                observed["tf_intra"] = os.environ.get("TF_NUM_INTRAOP_THREADS")
+                observed["tf_inter"] = os.environ.get("TF_NUM_INTEROP_THREADS")
+                observed["opencv_threads"] = cv2.getNumThreads()
+                raise RuntimeError("synthetic cpu execution stop")
+
+            try:
+                with (
+                    patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "-1", REQUESTED_DEVICE_ENV: "cpu"}, clear=False),
+                    patch("pipeline.experiments.runner.run_training_task", side_effect=_failing_run_training_task),
+                ):
+                    result = runner.run_one_task(record["id"], task_cooldown_seconds=0)
+            finally:
+                cv2.setNumThreads(original_opencv_threads)
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(observed["omp"], "2")
+            self.assertEqual(observed["openblas"], "2")
+            self.assertEqual(observed["mkl"], "2")
+            self.assertEqual(observed["numexpr"], "2")
+            self.assertEqual(observed["veclib"], "2")
+            self.assertEqual(observed["tf_intra"], "2")
+            self.assertEqual(observed["tf_inter"], "1")
+            self.assertEqual(observed["opencv_threads"], 1)
+            run_events = _read_jsonl(runner.store.run_events_path)
+            cpu_limit_events = [row for row in run_events if row.get("event") == "cpu_limits_applied"]
+            self.assertGreaterEqual(len(cpu_limit_events), 1)
+
     def test_cpu_only_policy_never_uses_gpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -440,6 +741,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 env = kwargs.get("env", {})
@@ -482,6 +785,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 env = kwargs.get("env", {})
@@ -526,6 +831,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 env = kwargs.get("env", {})
@@ -573,6 +880,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 task_id = command[command.index("--task-id") + 1]
@@ -625,6 +934,8 @@ class IterativeRunnerTest(unittest.TestCase):
             original_run = subprocess.run
 
             def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
                 if "--task-id" not in command:
                     return original_run(command, **kwargs)
                 raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout", 0))
@@ -695,6 +1006,44 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(record["pid"], 4444)
             self.assertEqual(record["stdout_log_path"], str(stdout_path))
             self.assertEqual(record["stderr_log_path"], str(stderr_path))
+
+    def test_reset_refuses_active_run_without_kill_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            project_paths = build_project_paths(root / "raw-data", root / "artifacts")
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "run"],
+                pid=4444,
+            )
+
+            with patch("pipeline.experiments.runner._is_process_alive", return_value=True):
+                with self.assertRaises(RuntimeError) as context:
+                    store.reset(purge_results=True)
+
+            self.assertIn("reset --kill-active", str(context.exception))
+
+    def test_reset_kills_active_run_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            project_paths = build_project_paths(root / "raw-data", root / "artifacts")
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "run"],
+                pid=4444,
+            )
+
+            with (
+                patch("pipeline.experiments.runner._is_process_alive", return_value=True),
+                patch.object(store, "terminate_active_run", return_value=4444) as terminate_active_run,
+            ):
+                store.reset(purge_results=True, kill_active=True)
+
+            terminate_active_run.assert_called_once_with(force=True)
 
     def test_build_experiment_id_does_not_resolve_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

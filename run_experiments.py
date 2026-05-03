@@ -4,21 +4,24 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from pipeline.config import load_experiment_config
-from pipeline.experiments import (
-    ExperimentStateStore,
-    IterativeExperimentRunner,
-    IterativeRunOptions,
-    launch_background_runner,
-    run_one_experiment_task,
-)
 from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.paths import build_project_paths
+from pipeline.utils.runtime_limits import CpuExecutionLimits
+from pipeline.utils.runtime_probe import collect_runtime_probe, format_runtime_probe, runtime_probe_to_dict
 from train import add_training_runtime_arguments
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 ensure_tensorflow_wsl_gpu_env()
+
+
+def run_one_experiment_task(**kwargs):
+    from pipeline.experiments import run_one_experiment_task as _run_one_experiment_task
+
+    return _run_one_experiment_task(**kwargs)
 
 
 def _add_resolution_arguments(parser: argparse.ArgumentParser) -> None:
@@ -36,6 +39,7 @@ def _add_resolution_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     add_training_runtime_arguments(parser)
+    _add_cpu_limit_arguments(parser)
     parser.add_argument(
         "--isolate-tasks",
         dest="isolate_tasks",
@@ -142,9 +146,64 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_cpu_limit_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cpu-max-threads",
+        type=int,
+        default=None,
+        help="Cap BLAS/OpenMP worker threads for CPU fallback attempts.",
+    )
+    parser.add_argument(
+        "--cpu-opencv-threads",
+        type=int,
+        default=None,
+        help="Cap OpenCV worker threads for CPU fallback attempts.",
+    )
+    parser.add_argument(
+        "--cpu-inter-op-threads",
+        type=int,
+        default=None,
+        help="Set TF inter-op thread count for CPU fallback attempts.",
+    )
+    parser.add_argument(
+        "--cpu-intra-op-threads",
+        type=int,
+        default=None,
+        help="Set TF intra-op thread count for CPU fallback attempts.",
+    )
+    parser.add_argument(
+        "--cpu-nice",
+        type=int,
+        default=None,
+        help="Apply a positive Linux nice level to CPU fallback attempts when supported.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=("Control iterative, resumable execution of training experiments."))
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    probe_parser = subparsers.add_parser(
+        "probe-runtime",
+        help="Inspect TensorFlow/runtime device visibility and thread limits.",
+    )
+    probe_parser.add_argument(
+        "--config",
+        default=None,
+        help=("Path to an experiment JSON config. " "Defaults to configs/experiment.default.json."),
+    )
+    probe_parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "gpu"],
+        default="auto",
+        help="Runtime device to probe.",
+    )
+    probe_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the runtime probe as JSON.",
+    )
+    _add_cpu_limit_arguments(probe_parser)
 
     run_parser = subparsers.add_parser("run", help="Run or resume experiments.")
     _add_run_arguments(run_parser)
@@ -154,6 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run exactly one task from the persisted experiment queue.",
     )
     add_training_runtime_arguments(run_task_parser)
+    _add_cpu_limit_arguments(run_task_parser)
     run_task_parser.add_argument(
         "--task-cooldown-seconds",
         type=float,
@@ -193,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Request a graceful stop after the current experiment.",
     )
     _add_resolution_arguments(stop_parser)
+    stop_parser.add_argument(
+        "--kill",
+        action="store_true",
+        help="Immediately terminate the active runner process.",
+    )
 
     status_parser = subparsers.add_parser(
         "status",
@@ -215,6 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also remove saved training history, predictions and runner metadata.",
     )
+    reset_parser.add_argument(
+        "--kill-active",
+        action="store_true",
+        help="Immediately terminate an active runner before resetting state.",
+    )
 
     return parser
 
@@ -224,7 +294,20 @@ def _load_project_paths(args: argparse.Namespace):
     return experiment_config.resolve_project_paths(artifacts_dir=args.artifacts_dir).ensure_artifact_dirs()
 
 
-def _build_runner(args: argparse.Namespace) -> IterativeExperimentRunner:
+def _resolve_cpu_execution_limits(args: argparse.Namespace) -> CpuExecutionLimits:
+    experiment_config = load_experiment_config(getattr(args, "config", None))
+    return experiment_config.build_cpu_execution_limits(
+        cpu_max_threads=getattr(args, "cpu_max_threads", None),
+        cpu_opencv_threads=getattr(args, "cpu_opencv_threads", None),
+        cpu_inter_op_threads=getattr(args, "cpu_inter_op_threads", None),
+        cpu_intra_op_threads=getattr(args, "cpu_intra_op_threads", None),
+        cpu_nice=getattr(args, "cpu_nice", None),
+    )
+
+
+def _build_runner(args: argparse.Namespace):
+    from pipeline.experiments import IterativeExperimentRunner
+
     experiment_config = load_experiment_config(args.config)
     project_paths = experiment_config.resolve_project_paths(
         raw_data_dir=args.raw_data_dir,
@@ -252,6 +335,7 @@ def _build_runner(args: argparse.Namespace) -> IterativeExperimentRunner:
         config_path=experiment_config.source_path,
         project_paths=project_paths,
         training_config=training_config,
+        cpu_execution_limits=_resolve_cpu_execution_limits(args),
     )
 
 
@@ -334,6 +418,11 @@ def _build_run_task_forwarded_args(
     _add_optional_many("--preprocessing", args.preprocessing)
     _add_optional("--task-cooldown-seconds", task_cooldown_seconds)
     _add_optional("--max-queue-tasks", args.max_queue_tasks)
+    _add_optional("--cpu-max-threads", getattr(args, "cpu_max_threads", None))
+    _add_optional("--cpu-opencv-threads", getattr(args, "cpu_opencv_threads", None))
+    _add_optional("--cpu-inter-op-threads", getattr(args, "cpu_inter_op_threads", None))
+    _add_optional("--cpu-intra-op-threads", getattr(args, "cpu_intra_op_threads", None))
+    _add_optional("--cpu-nice", getattr(args, "cpu_nice", None))
     if bool(getattr(args, "allow_huge_queue", False)):
         forwarded.append("--allow-huge-queue")
     if args.include_combinations is not None:
@@ -352,9 +441,72 @@ def _resolve_max_queue_tasks(args: argparse.Namespace) -> int | None:
     return max_queue_tasks
 
 
+def _resolution_args_suffix(args: argparse.Namespace) -> str:
+    parts: list[str] = []
+    if getattr(args, "config", None):
+        parts.extend(["--config", str(args.config)])
+    if getattr(args, "artifacts_dir", None):
+        parts.extend(["--artifacts-dir", str(args.artifacts_dir)])
+    return "" if not parts else " " + " ".join(parts)
+
+
+def _discover_active_runner_stores(*, exclude_artifacts_dir: Path | None = None) -> list[dict[str, Any]]:
+    from pipeline.experiments import ExperimentStateStore
+
+    discovered: list[dict[str, Any]] = []
+    seen_artifacts_dirs: set[Path] = set()
+    excluded = None if exclude_artifacts_dir is None else exclude_artifacts_dir.resolve()
+    for pid_path in sorted(PROJECT_ROOT.glob("artifacts*/experiments/control/runner_pid.json")):
+        artifacts_dir = pid_path.parents[2]
+        resolved_artifacts_dir = artifacts_dir.resolve()
+        if excluded is not None and resolved_artifacts_dir == excluded:
+            continue
+        if resolved_artifacts_dir in seen_artifacts_dirs:
+            continue
+        seen_artifacts_dirs.add(resolved_artifacts_dir)
+        store = ExperimentStateStore(build_project_paths(artifacts_dir=artifacts_dir))
+        if not store.has_active_run():
+            continue
+        pid_record = store.read_pid_record() or {}
+        discovered.append(
+            {
+                "store": store,
+                "artifacts_dir": artifacts_dir,
+                "pid": pid_record.get("pid"),
+                "config_path": pid_record.get("config_path"),
+            }
+        )
+    return discovered
+
+
+def _resolve_store_for_control_command(args: argparse.Namespace):
+    from pipeline.experiments import ExperimentStateStore
+
+    project_paths = _load_project_paths(args)
+    default_store = ExperimentStateStore(project_paths)
+    if getattr(args, "config", None) is not None or getattr(args, "artifacts_dir", None) is not None:
+        return default_store, None
+    if default_store.has_active_run():
+        return default_store, None
+
+    discovered = _discover_active_runner_stores(exclude_artifacts_dir=project_paths.artifacts_dir)
+    if len(discovered) == 1:
+        match = discovered[0]
+        return (
+            match["store"],
+            "Using the only active runner found under " f"{match['artifacts_dir']} (config: {match['config_path'] or 'unknown'}).",
+        )
+    if len(discovered) > 1:
+        details = "\n".join([f" - pid={match['pid']} artifacts={match['artifacts_dir']} " f"config={match['config_path'] or 'unknown'}" for match in discovered])
+        raise RuntimeError("Multiple active runners were found. Use --config or --artifacts-dir " f"to choose one:\n{details}")
+    return default_store, None
+
+
 def _print_status_snapshot(snapshot: dict[str, object]) -> None:
     counts = snapshot["counts"]
     current_task = snapshot["current_task"]
+    if snapshot.get("selection_note"):
+        print(str(snapshot["selection_note"]))
     print(f"Overall status: {snapshot['overall_status']}")
     print(f"Total experiments: {snapshot['total']}")
     print(f"Completed: {counts['completed']}")
@@ -387,6 +539,10 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print(f"Last successful device: {snapshot['last_successful_device']}")
     if snapshot.get("oom_policy_stop"):
         print(f"OOM policy stop: {snapshot['oom_policy_stop']}")
+    if snapshot.get("config_path"):
+        print(f"Config: {snapshot['config_path']}")
+    if snapshot.get("results_root"):
+        print(f"Artifacts root: {snapshot['results_root']}")
     print(f"State file: {snapshot['state_path']}")
     print(f"Summary file: {snapshot['summary_path']}")
     print(f"History dir: {snapshot['history_dir']}")
@@ -397,17 +553,37 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print("Note: no persisted runner state exists yet.")
 
 
+def _print_runtime_probe(args: argparse.Namespace) -> int:
+    probe_result = collect_runtime_probe(
+        device=args.device,
+        cpu_execution_limits=_resolve_cpu_execution_limits(args),
+    )
+    if args.json:
+        print(json.dumps(runtime_probe_to_dict(probe_result), indent=2, sort_keys=True))
+    else:
+        print(format_runtime_probe(probe_result))
+    return 0 if probe_result.ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     resolved_argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(resolved_argv)
 
+    if args.command == "probe-runtime":
+        return _print_runtime_probe(args)
+
     if args.command == "launch":
+        from pipeline.experiments import ExperimentStateStore, launch_background_runner
+
         project_paths = _load_project_paths(args)
         store = ExperimentStateStore(project_paths)
         if store.has_active_run():
             snapshot = store.summarize()
             pid = snapshot.get("active_pid")
             print(f"Runner already active with pid={pid}.")
+            print(f"Check: python run_experiments.py status{_resolution_args_suffix(args)}")
+            print(f"Graceful stop: python run_experiments.py stop{_resolution_args_suffix(args)}")
+            print(f"Immediate stop: python run_experiments.py stop{_resolution_args_suffix(args)} --kill")
             return 1
         process = launch_background_runner(
             script_path=Path(__file__).resolve(),
@@ -415,21 +591,15 @@ def main(argv: list[str] | None = None) -> int:
             cwd=PROJECT_ROOT,
             logs_dir=project_paths.experiment_logs_dir,
         )
-        command = [sys.executable, str(Path(__file__).resolve()), "run", *resolved_argv[1:]]
-        store.write_pid_record(
-            config_path=Path(load_experiment_config(args.config).source_path),
-            command=command,
-            pid=process.process.pid,
-            stdout_log_path=process.stdout_path,
-            stderr_log_path=process.stderr_path,
-        )
         print(f"Background runner started with pid={process.process.pid}.")
         print(f"stdout: {process.stdout_path}")
         print(f"stderr: {process.stderr_path}")
-        print("Check status with: python run_experiments.py status")
+        print(f"Check status with: python run_experiments.py status{_resolution_args_suffix(args)}")
         return 0
 
     if args.command == "run":
+        from pipeline.experiments import IterativeRunOptions
+
         runner = _build_runner(args)
         try:
             (
@@ -504,6 +674,7 @@ def main(argv: list[str] | None = None) -> int:
                 task_cooldown_seconds=task_cooldown_seconds,
                 max_queue_tasks=_resolve_max_queue_tasks(args),
                 queue_export_path=args.queue_export_path,
+                cpu_execution_limits=_resolve_cpu_execution_limits(args),
             )
         except RuntimeError as error:
             print(str(error))
@@ -533,10 +704,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Task {args.task_id} failed with status={status}.")
         return 1
 
-    project_paths = _load_project_paths(args)
-    store = ExperimentStateStore(project_paths)
+    try:
+        store, selection_note = _resolve_store_for_control_command(args)
+    except RuntimeError as error:
+        print(str(error))
+        return 1
 
     if args.command == "stop":
+        if selection_note:
+            print(selection_note)
+        if getattr(args, "kill", False):
+            try:
+                if not store.has_active_run():
+                    print("No active runner process found.")
+                    return 0
+                pid = store.terminate_active_run(force=True)
+            except RuntimeError as error:
+                print(str(error))
+                return 1
+            print(f"Runner pid={pid} was terminated.")
+            return 0
+        if not store.has_active_run():
+            print("No active runner process found.")
+            return 0
         stop_path = store.request_stop()
         print("Stop requested. The runner will finish the current experiment and stop.")
         print(f"Stop flag: {stop_path}")
@@ -544,6 +734,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         snapshot = store.summarize()
+        if selection_note:
+            snapshot["selection_note"] = selection_note
         if args.json:
             print(json.dumps(snapshot, indent=2, sort_keys=True))
         else:
@@ -551,7 +743,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "reset":
-        store.reset(purge_results=args.purge_results)
+        if selection_note:
+            print(selection_note)
+        try:
+            store.reset(
+                purge_results=args.purge_results,
+                kill_active=bool(getattr(args, "kill_active", False)),
+            )
+        except PermissionError as error:
+            print("Reset failed because a file is still in use: " f"{error.filename or str(error)}")
+            return 1
+        except RuntimeError as error:
+            print(str(error))
+            return 1
         if args.purge_results:
             print("Runner state and training results were removed.")
         else:

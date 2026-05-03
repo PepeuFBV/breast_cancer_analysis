@@ -3,6 +3,10 @@ from __future__ import annotations
 import signal
 from pathlib import Path
 
+SIGINT = getattr(signal, "SIGINT", None)
+SIGTERM = getattr(signal, "SIGTERM", None)
+SIGKILL = getattr(signal, "SIGKILL", None)
+
 OOM_MARKERS = (
     "resourceexhaustederror",
     "cuda_error_out_of_memory",
@@ -46,9 +50,15 @@ def classify_task_failure(
     task_events_path: Path | None = None,
     task_log_path: Path | None = None,
 ) -> str:
+    interrupted_exit_codes = {130, 143}
+    if SIGINT is not None:
+        interrupted_exit_codes.add(-SIGINT)
+    if SIGTERM is not None:
+        interrupted_exit_codes.add(-SIGTERM)
+
     if timeout:
         return "timeout"
-    if exit_code in {-signal.SIGINT, -signal.SIGTERM, 130, 143}:
+    if exit_code in interrupted_exit_codes:
         return "interrupted"
 
     base_text = error_summary or ""
@@ -70,7 +80,11 @@ def classify_task_failure(
             return "cpu_oom"
         return "oom"
 
-    if exit_code in {-signal.SIGKILL, 137} and _contains_any(combined_text, MEMORY_PRESSURE_MARKERS):
+    killed_exit_codes = {137}
+    if SIGKILL is not None:
+        killed_exit_codes.add(-SIGKILL)
+
+    if exit_code in killed_exit_codes and _contains_any(combined_text, MEMORY_PRESSURE_MARKERS):
         if device == "gpu":
             return "gpu_oom"
         if device == "cpu":

@@ -26,6 +26,7 @@ from pipeline.train.runner import (
     artifact_paths_for_task,
     build_history_row,
     build_training_tasks,
+    iter_training_tasks,
     load_split_dataframe,
     run_training_task,
     save_run_result,
@@ -33,6 +34,7 @@ from pipeline.train.runner import (
 )
 from pipeline.utils.memory import clear_ml_memory, log_memory_snapshot
 from pipeline.utils.paths import ProjectPaths
+from pipeline.utils.runtime_limits import CpuExecutionLimits, apply_cpu_runtime_limits, current_cpu_thread_env, resolve_cpu_thread_env
 
 STATE_SCHEMA_VERSION = 2
 RUNNER_STATE_FILENAME = "runner_state.json"
@@ -45,8 +47,13 @@ STOP_REQUEST_FILENAME = "stop_requested.flag"
 BACKGROUND_RUNNER_LOG_PREFIX = "background-runner"
 TASK_STATUSES = {"pending", "running", "completed", "failed", "stopped"}
 MAX_QUEUE_TASKS = 50_000
+MATERIALIZED_QUEUE_HARD_LIMIT = 100_000
+HUGE_QUEUE_WARNING_TASKS = 25_000
 ISOLATED_TASK_CHILD_MODE_ENV = "BREAST_CANCER_ANALYSIS_ISOLATED_TASK_CHILD"
 ISOLATED_TASK_PARENT_PID_ENV = "BREAST_CANCER_ANALYSIS_ISOLATED_TASK_PARENT_PID"
+REQUESTED_DEVICE_ENV = "BREAST_CANCER_ANALYSIS_REQUESTED_DEVICE"
+BACKGROUND_STDOUT_LOG_ENV = "BREAST_CANCER_ANALYSIS_BACKGROUND_STDOUT_LOG_PATH"
+BACKGROUND_STDERR_LOG_ENV = "BREAST_CANCER_ANALYSIS_BACKGROUND_STDERR_LOG_PATH"
 DEVICE_POLICY_VALUES = {"gpu-first", "cpu-only", "gpu-only", "adaptive"}
 GPU_HEALTH_STATES = {"healthy", "cooling_down", "unhealthy"}
 
@@ -77,6 +84,10 @@ class BackgroundRunnerLaunch:
     process: subprocess.Popen[Any]
     stdout_path: Path
     stderr_path: Path
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
 def _timestamp_now() -> str:
@@ -133,10 +144,47 @@ def _is_process_alive(pid: int | None) -> bool:
     if pid is None:
         return False
     try:
-        os.kill(pid, 0)
+        resolved_pid = int(pid)
+    except Exception:
+        return False
+    if resolved_pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            process_handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, resolved_pid)
+            if not process_handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if ctypes.windll.kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)) == 0:
+                    return False
+                return exit_code.value == 259
+            finally:
+                ctypes.windll.kernel32.CloseHandle(process_handle)
+        except Exception:
+            return False
+    try:
+        os.kill(resolved_pid, 0)
     except OSError:
         return False
     return True
+
+
+def _terminate_process(pid: int, *, force: bool) -> None:
+    if pid <= 0:
+        return
+    if os.name == "nt":
+        command = ["taskkill", "/PID", str(pid), "/T"]
+        if force:
+            command.insert(1, "/F")
+        subprocess.run(command, check=False, capture_output=True, text=True)
+        return
+    try:
+        os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+    except OSError:
+        return
 
 
 def _normalize_json_value(value: Any) -> Any:
@@ -181,7 +229,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(_normalize_json_value(payload), sort_keys=True) + os.linesep)
+        handle.write(json.dumps(_normalize_json_value(payload), sort_keys=True) + "\n")
 
 
 def _load_json_file(path: Path) -> dict[str, Any] | None:
@@ -337,6 +385,37 @@ class ExperimentStateStore:
         pid = None if pid_record is None else pid_record.get("pid")
         return _is_process_alive(pid)
 
+    def terminate_active_run(
+        self,
+        *,
+        force: bool,
+        wait_seconds: float = 15.0,
+    ) -> int | None:
+        pid_record = self.read_pid_record() or {}
+        pid = pid_record.get("pid")
+        try:
+            resolved_pid = None if pid is None else int(pid)
+        except Exception:
+            resolved_pid = None
+        if resolved_pid is None:
+            self.clear_pid_record()
+            return None
+        if not _is_process_alive(resolved_pid):
+            self.clear_pid_record()
+            return resolved_pid
+
+        _terminate_process(resolved_pid, force=force)
+        deadline = time.time() + max(0.0, float(wait_seconds))
+        while time.time() < deadline:
+            if not _is_process_alive(resolved_pid):
+                self.clear_pid_record()
+                return resolved_pid
+            time.sleep(0.2)
+        if not _is_process_alive(resolved_pid):
+            self.clear_pid_record()
+            return resolved_pid
+        raise RuntimeError(f"Could not stop runner pid={resolved_pid}. " "Try closing the process manually and rerun the command.")
+
     def write_pid_record(
         self,
         *,
@@ -439,7 +518,7 @@ class ExperimentStateStore:
 
         self._reconcile_running_tasks(state)
         self._reconcile_artifacts(state)
-        self._persist_state(state)
+        self._persist_state(state, full_snapshot_sync=True)
         return state
 
     def _reconcile_running_tasks(self, state: dict[str, Any]) -> None:
@@ -478,11 +557,20 @@ class ExperimentStateStore:
                 task["error_summary"] = None
                 task["result_summary"] = _read_first_csv_row(history_path)
 
-    def _persist_state(self, state: dict[str, Any]) -> None:
+    def _persist_state(
+        self,
+        state: dict[str, Any],
+        *,
+        full_snapshot_sync: bool = False,
+        snapshot_task_ids: set[str] | None = None,
+    ) -> None:
         state["updated_at"] = _timestamp_now()
         _atomic_write_json(self.state_path, state)
         self._write_summary_csv(state)
-        self._write_task_snapshots(state)
+        if full_snapshot_sync:
+            self._write_task_snapshots(state)
+        elif snapshot_task_ids:
+            self._write_task_snapshots_for_ids(state, snapshot_task_ids)
 
     def _write_task_snapshots(self, state: dict[str, Any]) -> None:
         self.project_paths.experiment_task_dir.mkdir(parents=True, exist_ok=True)
@@ -498,6 +586,22 @@ class ExperimentStateStore:
         for snapshot_path in self.project_paths.experiment_task_dir.glob("*.json"):
             if snapshot_path.stem not in active_task_ids:
                 snapshot_path.unlink()
+
+    def _write_task_snapshots_for_ids(
+        self,
+        state: dict[str, Any],
+        task_ids: set[str],
+    ) -> None:
+        if not task_ids:
+            return
+        self.project_paths.experiment_task_dir.mkdir(parents=True, exist_ok=True)
+        for task in state["tasks"]:
+            if task["id"] not in task_ids:
+                continue
+            _atomic_write_json(
+                self.project_paths.experiment_task_dir / f"{task['id']}.json",
+                task,
+            )
 
     def _write_summary_csv(self, state: dict[str, Any]) -> None:
         rows = [self._summary_row_from_task(task) for task in state["tasks"]]
@@ -605,7 +709,7 @@ class ExperimentStateStore:
         if not task_found:
             raise KeyError(f"Task id not found in runner state: {task_id}")
 
-        self._persist_state(state)
+        self._persist_state(state, snapshot_task_ids={task_id})
         return state
 
     def append_task_attempt(self, task_id: str, attempt_record: dict[str, Any]) -> dict[str, Any]:
@@ -631,7 +735,7 @@ class ExperimentStateStore:
             break
         if not task_found:
             raise KeyError(f"Task id not found in runner state: {task_id}")
-        self._persist_state(state)
+        self._persist_state(state, snapshot_task_ids={task_id})
         return state
 
     def update_task_execution_details(
@@ -659,7 +763,7 @@ class ExperimentStateStore:
             break
         if not task_found:
             raise KeyError(f"Task id not found in runner state: {task_id}")
-        self._persist_state(state)
+        self._persist_state(state, snapshot_task_ids={task_id})
         return state
 
     def update_runtime(self, updates: dict[str, Any]) -> dict[str, Any]:
@@ -685,7 +789,7 @@ class ExperimentStateStore:
                 break
         if not task_found:
             raise KeyError(f"Task id not found in runner state: {task_id}")
-        self._persist_state(state)
+        self._persist_state(state, snapshot_task_ids={task_id})
         return state
 
     def summarize(self) -> dict[str, Any]:
@@ -697,7 +801,7 @@ class ExperimentStateStore:
         active_run = _is_process_alive(active_pid)
         if not active_run and any(task.get("status") == "running" for task in state["tasks"]):
             self._reconcile_running_tasks(state)
-            self._persist_state(state)
+            self._persist_state(state, full_snapshot_sync=True)
 
         counts = {status: 0 for status in TASK_STATUSES}
         for task in state["tasks"]:
@@ -761,7 +865,18 @@ class ExperimentStateStore:
             "oom_policy_stop": runtime.get("oom_policy_stop"),
         }
 
-    def reset(self, *, purge_results: bool = False) -> None:
+    def reset(
+        self,
+        *,
+        purge_results: bool = False,
+        kill_active: bool = False,
+    ) -> None:
+        if self.has_active_run():
+            pid_record = self.read_pid_record() or {}
+            pid = pid_record.get("pid")
+            if not kill_active:
+                raise RuntimeError(f"Runner is still active with pid={pid}. " "Use `run_experiments.py stop` for a graceful stop, or " "`run_experiments.py reset --kill-active` to stop it before reset.")
+            self.terminate_active_run(force=True)
         self.clear_stop_request()
         self.clear_pid_record()
 
@@ -784,6 +899,23 @@ class ExperimentStateStore:
         self.ensure_dirs()
 
 
+class _AppendFileHandler(logging.Handler):
+    terminator = "\n"
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self.path = path
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(message + self.terminator)
+        except Exception:
+            self.handleError(record)
+
+
 class IterativeExperimentRunner:
     def __init__(
         self,
@@ -793,17 +925,20 @@ class IterativeExperimentRunner:
         training_config: TrainingConfig,
         model_builders: dict[str, ModelBuilder] | None = None,
         preprocessing_tasks: Iterable[Any] | None = None,
+        cpu_execution_limits: CpuExecutionLimits | None = None,
     ) -> None:
         self.config_path = config_path
         self.project_paths = project_paths
         self.training_config = training_config
         self.model_builders = model_builders
         self.preprocessing_tasks = preprocessing_tasks
+        self.cpu_execution_limits = cpu_execution_limits or CpuExecutionLimits()
         self.store = ExperimentStateStore(project_paths)
         self.logger = self._build_logger()
         self._previous_signal_handlers: dict[int, Any] = {}
         self._peak_process_memory_mb: float | None = None
         self._task_cooldown_seconds: float = 2.0
+        self._cpu_limits_applied = False
 
     def _build_logger(self) -> logging.Logger:
         logger = logging.getLogger(f"iterative_experiment_runner:{self.project_paths.artifacts_dir}")
@@ -813,10 +948,21 @@ class IterativeExperimentRunner:
         logger.setLevel(logging.INFO)
         logger.propagate = False
         self.store.log_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(self.store.log_path, encoding="utf-8")
+        handler = _AppendFileHandler(self.store.log_path)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
         return logger
+
+    def _close_logger(self) -> None:
+        for handler in list(self.logger.handlers):
+            self.logger.removeHandler(handler)
+            handler.close()
+
+    def __del__(self) -> None:
+        try:
+            self._close_logger()
+        except Exception:
+            pass
 
     @staticmethod
     def _pid_matches_current_process(pid: object) -> bool:
@@ -863,7 +1009,7 @@ class IterativeExperimentRunner:
         if error_message:
             line = f"{line} error_message={error_message}"
         with task_log_path.open("a", encoding="utf-8") as handle:
-            handle.write(line + os.linesep)
+            handle.write(line + "\n")
 
     def _traceback_summary(self, error: BaseException, *, limit: int = 20) -> str:
         summary = "".join(
@@ -949,6 +1095,44 @@ class IterativeExperimentRunner:
     def build_queue(self) -> list[tuple[dict[str, Any], TrainingTask]]:
         return self.build_queue_with_options()
 
+    def _iter_queue_entries(
+        self,
+        *,
+        resolved_preprocessing_tasks: Iterable[Any] | None = None,
+    ) -> Iterable[tuple[dict[str, Any], TrainingTask]]:
+        for training_task in iter_training_tasks(
+            self.training_config,
+            model_builders=self.model_builders,
+            preprocessing_tasks=resolved_preprocessing_tasks,
+        ):
+            yield build_experiment_record(training_task, self.training_config), training_task
+
+    def _log_queue_estimate(
+        self,
+        *,
+        estimated_task_count: int,
+        preprocessing_count: int,
+        model_count: int,
+        max_queue_tasks: int | None,
+        queue_export_path: str | Path | None,
+    ) -> None:
+        message = "Estimated experiment queue size: %s task(s) " "(%s preprocessing variants x %s model(s))."
+        self.logger.info(
+            message,
+            f"{estimated_task_count:,}",
+            f"{preprocessing_count:,}",
+            f"{model_count:,}",
+        )
+        if estimated_task_count >= HUGE_QUEUE_WARNING_TASKS:
+            warning = "Huge queue estimate detected: %s task(s). " "Prefer narrowing with --models, --preprocessing, " "--no-combined-preprocessing, and use --queue-export-path " "before attempting very large runs."
+            self.logger.warning(warning, f"{estimated_task_count:,}")
+            print(warning % f"{estimated_task_count:,}")
+        if max_queue_tasks is None and queue_export_path is None and estimated_task_count > MAX_QUEUE_TASKS:
+            self.logger.warning(
+                "Huge queue opt-in is active without queue export. " "State persistence may still be expensive for %s task(s).",
+                f"{estimated_task_count:,}",
+            )
+
     def build_queue_with_options(
         self,
         *,
@@ -968,6 +1152,13 @@ class IterativeExperimentRunner:
             )
         )
         estimated_task_count = preprocessing_count * len(model_names)
+        self._log_queue_estimate(
+            estimated_task_count=estimated_task_count,
+            preprocessing_count=preprocessing_count,
+            model_count=len(model_names),
+            max_queue_tasks=max_queue_tasks,
+            queue_export_path=queue_export_path,
+        )
         if max_queue_tasks is not None and max_queue_tasks <= 0:
             raise ValueError("max_queue_tasks must be > 0 when provided.")
         if max_queue_tasks is not None and estimated_task_count > max_queue_tasks:
@@ -980,20 +1171,52 @@ class IterativeExperimentRunner:
                 "`--max-queue-tasks` / use `--allow-huge-queue`."
             )
 
-        training_tasks = build_training_tasks(
-            self.training_config,
-            model_builders=self.model_builders,
-            preprocessing_tasks=resolved_preprocessing_tasks,
-        )
-        queue_entries = [(build_experiment_record(task, self.training_config), task) for task in training_tasks]
+        if estimated_task_count > MATERIALIZED_QUEUE_HARD_LIMIT:
+            if queue_export_path is not None:
+                self._write_queue_export(
+                    Path(queue_export_path),
+                    self._iter_queue_entries(resolved_preprocessing_tasks=resolved_preprocessing_tasks),
+                    task_count=estimated_task_count,
+                )
+            export_suffix = f" A queue export was written to {queue_export_path}." if queue_export_path is not None else ""
+            raise ValueError(
+                "The requested experiment grid expands to "
+                f"{estimated_task_count:,} training tasks, which exceeds the "
+                f"in-memory runner safety limit of {MATERIALIZED_QUEUE_HARD_LIMIT:,}. "
+                "This branch does not stream persisted runner state for queues of "
+                "that size yet. Narrow the run with `--models`, `--preprocessing`, "
+                "`--no-combined-preprocessing`, or export a narrower queue first."
+                f"{export_suffix}"
+            )
+
+        if resolved_preprocessing_tasks is None:
+            queue_entries = [
+                (build_experiment_record(training_task, self.training_config), training_task)
+                for training_task in build_training_tasks(
+                    self.training_config,
+                    model_builders=self.model_builders,
+                )
+            ]
+        else:
+            queue_entries = list(
+                self._iter_queue_entries(
+                    resolved_preprocessing_tasks=resolved_preprocessing_tasks,
+                )
+            )
         if queue_export_path is not None:
-            self._write_queue_export(Path(queue_export_path), queue_entries)
+            self._write_queue_export(
+                Path(queue_export_path),
+                queue_entries,
+                task_count=len(queue_entries),
+            )
         return queue_entries
 
     def _write_queue_export(
         self,
         queue_export_path: Path,
-        queue_entries: list[tuple[dict[str, Any], TrainingTask]],
+        queue_entries: Iterable[tuple[dict[str, Any], TrainingTask]],
+        *,
+        task_count: int,
     ) -> None:
         queue_export_path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
@@ -1008,15 +1231,15 @@ class IterativeExperimentRunner:
                         "kind": "metadata",
                         "generated_at": _timestamp_now(),
                         "config_path": str(self.config_path),
-                        "task_count": len(queue_entries),
+                        "task_count": task_count,
                     },
                     sort_keys=True,
                 )
-                + os.linesep
+                + "\n"
             )
             for record, _training_task in queue_entries:
                 line_payload = {"kind": "task", **record}
-                handle.write(json.dumps(_normalize_json_value(line_payload), sort_keys=True) + os.linesep)
+                handle.write(json.dumps(_normalize_json_value(line_payload), sort_keys=True) + "\n")
             temp_path = Path(handle.name)
         temp_path.replace(queue_export_path)
 
@@ -1074,6 +1297,212 @@ class IterativeExperimentRunner:
             command = [str(entry) for entry in command_base]
         return [*command, "--task-id", task_id]
 
+    def _probe_runtime_subprocess_command(self, requested_device: str) -> list[str]:
+        command = [
+            sys.executable,
+            str(_project_root() / "run_experiments.py"),
+            "probe-runtime",
+            "--device",
+            requested_device,
+            "--json",
+        ]
+        if requested_device == "cpu":
+            command.extend(self.cpu_execution_limits.to_cli_args())
+        return command
+
+    def _resolve_device_attempt_env(
+        self,
+        *,
+        requested_device: str,
+        gpu_visible_devices: str | None,
+    ) -> dict[str, str]:
+        env = os.environ.copy()
+        env[ISOLATED_TASK_CHILD_MODE_ENV] = "1"
+        env[ISOLATED_TASK_PARENT_PID_ENV] = str(os.getpid())
+        env[REQUESTED_DEVICE_ENV] = requested_device
+        if requested_device == "cpu":
+            env["CUDA_VISIBLE_DEVICES"] = "-1"
+            env.update(resolve_cpu_thread_env(self.cpu_execution_limits))
+        else:
+            if gpu_visible_devices is None:
+                env.pop("CUDA_VISIBLE_DEVICES", None)
+            else:
+                env["CUDA_VISIBLE_DEVICES"] = gpu_visible_devices
+        return env
+
+    def _run_device_runtime_probe(
+        self,
+        *,
+        record: dict[str, Any],
+        attempt_number: int,
+        requested_device: str,
+        env: dict[str, str],
+    ) -> dict[str, Any]:
+        self._log_structured_phase(
+            phase="task:device_attempt_started",
+            event="device_attempt_started",
+            task_record=record,
+            attempt=attempt_number,
+            message=f"Starting {requested_device} device attempt for {record['id']}.",
+            extra={
+                "requested_device": requested_device,
+            },
+        )
+        self._log_structured_phase(
+            phase="task:device_env_resolved",
+            event="device_env_resolved",
+            task_record=record,
+            attempt=attempt_number,
+            extra={
+                "requested_device": requested_device,
+                "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+                "cpu_thread_env": {key: env.get(key) for key in (*resolve_cpu_thread_env(self.cpu_execution_limits),)} if requested_device == "cpu" else current_cpu_thread_env(),
+            },
+        )
+
+        if requested_device == "gpu":
+            self._log_structured_phase(
+                phase="task:gpu_probe_started",
+                event="gpu_probe_started",
+                task_record=record,
+                attempt=attempt_number,
+                message=f"Running GPU probe before task {record['id']}.",
+            )
+
+        command = self._probe_runtime_subprocess_command(requested_device)
+        try:
+            completed = subprocess.run(
+                command,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            stdout = completed.stdout.strip()
+            stderr = completed.stderr.strip()
+        except subprocess.TimeoutExpired as error:
+            stdout = (error.stdout or "").strip()
+            stderr = (error.stderr or "").strip()
+            completed = None
+
+        payload: dict[str, Any] | None = None
+        payload_error: str | None = None
+        if stdout:
+            try:
+                payload = json.loads(stdout)
+            except json.JSONDecodeError as error:
+                payload_error = f"Could not parse runtime probe JSON output: {error}"
+        elif completed is None:
+            payload_error = "Runtime probe subprocess timed out."
+
+        probe_errors: list[str] = []
+        probe_warnings: list[str] = []
+        if payload is not None:
+            probe_errors.extend(str(item) for item in payload.get("errors", []))
+            probe_warnings.extend(str(item) for item in payload.get("warnings", []))
+        if payload_error:
+            probe_errors.append(payload_error)
+        if stderr:
+            probe_warnings.append(stderr[:2_000])
+        if completed is not None and int(completed.returncode) != 0 and not probe_errors:
+            probe_errors.append(f"Runtime probe exited with code {int(completed.returncode)}.")
+
+        result = {
+            "ok": bool(payload is not None and payload.get("ok") and not probe_errors and (completed is None or int(completed.returncode) == 0)),
+            "requested_device": requested_device,
+            "effective_device": ("cpu" if requested_device == "cpu" else str((payload or {}).get("effective_device") or "cpu")),
+            "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+            "tensorflow_visible_devices": list((payload or {}).get("tensorflow_visible_devices", [])),
+            "gpu_used": bool((payload or {}).get("gpu_used", False)),
+            "effective_cpu_thread_env": dict((payload or {}).get("effective_cpu_thread_env", {})),
+            "errors": probe_errors,
+            "warnings": probe_warnings,
+            "payload": payload or {},
+            "returncode": None if completed is None else int(completed.returncode),
+        }
+
+        if requested_device == "gpu":
+            event_name = "gpu_probe_succeeded" if result["ok"] else "gpu_probe_failed"
+            self._log_structured_phase(
+                phase=f"task:{event_name}",
+                event=event_name,
+                task_record=record,
+                attempt=attempt_number,
+                message=(f"GPU probe succeeded for {record['id']}." if result["ok"] else f"GPU probe failed for {record['id']}."),
+                extra={
+                    "requested_device": requested_device,
+                    "effective_device": result["effective_device"],
+                    "cuda_visible_devices": result["cuda_visible_devices"],
+                    "tensorflow_visible_devices": result["tensorflow_visible_devices"],
+                    "gpu_used": result["gpu_used"],
+                    "probe_errors": result["errors"],
+                    "probe_warnings": result["warnings"],
+                },
+            )
+
+        return result
+
+    def _build_failed_probe_attempt_result(
+        self,
+        *,
+        record: dict[str, Any],
+        attempt_number: int,
+        probe_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        task_id = record["id"]
+        requested_device = str(probe_result.get("requested_device", "unknown"))
+        effective_device = str(probe_result.get("effective_device", requested_device))
+        failure_kind = "gpu_probe_failed" if requested_device == "gpu" else "runtime_probe_failed"
+        error_summary = "; ".join(str(item) for item in probe_result.get("errors", []))[:500]
+        self.store.update_task_status(
+            task_id,
+            status="failed",
+            error_summary=error_summary or f"{failure_kind} prevented task launch.",
+            duration_seconds=0.0,
+        )
+        self.store.append_task_attempt(
+            task_id,
+            {
+                "task_id": task_id,
+                "attempt": attempt_number,
+                "device": requested_device,
+                "requested_device": requested_device,
+                "effective_device": effective_device,
+                "cuda_visible_devices": probe_result.get("cuda_visible_devices"),
+                "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+                "gpu_used": bool(probe_result.get("gpu_used", False)),
+                "effective_cpu_thread_env": probe_result.get("effective_cpu_thread_env", {}),
+                "exit_code": probe_result.get("returncode"),
+                "failure_kind": failure_kind,
+                "started_at": _timestamp_now(),
+                "finished_at": _timestamp_now(),
+                "duration_seconds": 0.0,
+            },
+        )
+        self.store.update_task_execution_details(
+            task_id,
+            final_device=effective_device,
+            failure_kind=failure_kind,
+        )
+        return {
+            "task_id": task_id,
+            "status": "failed",
+            "duration_seconds": 0.0,
+            "exit_code": probe_result.get("returncode"),
+            "timeout": False,
+            "failure_kind": failure_kind,
+            "device": requested_device,
+            "requested_device": requested_device,
+            "effective_device": effective_device,
+            "cuda_visible_devices": probe_result.get("cuda_visible_devices"),
+            "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+            "gpu_used": bool(probe_result.get("gpu_used", False)),
+            "effective_cpu_thread_env": probe_result.get("effective_cpu_thread_env", {}),
+            "attempt": attempt_number,
+            "error_summary": error_summary or f"{failure_kind} prevented task launch.",
+        }
+
     def _execute_task_entry_isolated_subprocess(
         self,
         *,
@@ -1081,30 +1510,21 @@ class IterativeExperimentRunner:
         command_base: tuple[str, ...] | None,
         timeout_seconds: float | None,
         attempt_number: int,
-        device: str,
-        gpu_visible_devices: str | None,
+        requested_device: str,
+        env: dict[str, str],
+        probe_result: dict[str, Any],
     ) -> dict[str, Any]:
         task_id = record["id"]
         command = self._run_task_subprocess_command(task_id, command_base)
-        env = os.environ.copy()
-        env[ISOLATED_TASK_CHILD_MODE_ENV] = "1"
-        env[ISOLATED_TASK_PARENT_PID_ENV] = str(os.getpid())
-        if device == "cpu":
-            env["CUDA_VISIBLE_DEVICES"] = "-1"
-        else:
-            if gpu_visible_devices is None:
-                env.pop("CUDA_VISIBLE_DEVICES", None)
-            else:
-                env["CUDA_VISIBLE_DEVICES"] = gpu_visible_devices
         started_at = datetime.now(timezone.utc)
         self.logger.info(
             "Running isolated task %s via subprocess (attempt=%s, device=%s): %s",
             task_id,
             attempt_number,
-            device,
+            requested_device,
             " ".join(command),
         )
-        print(f"Running isolated task {task_id} (attempt={attempt_number}, device={device})")
+        print(f"Running isolated task {task_id} (attempt={attempt_number}, device={requested_device})")
         self._log_structured_phase(
             phase="task:subprocess_start",
             task_record=record,
@@ -1113,8 +1533,12 @@ class IterativeExperimentRunner:
             extra={
                 "subprocess_command": command,
                 "task_timeout_seconds": timeout_seconds,
-                "device": device,
+                "device": requested_device,
+                "requested_device": requested_device,
+                "effective_device": probe_result.get("effective_device"),
                 "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+                "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+                "gpu_used": probe_result.get("gpu_used", False),
             },
         )
 
@@ -1128,7 +1552,7 @@ class IterativeExperimentRunner:
         except subprocess.TimeoutExpired:
             duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
             failure_kind = classify_task_failure(
-                device=device,
+                device=requested_device,
                 exit_code=None,
                 timeout=True,
                 error_summary="subprocess timeout",
@@ -1146,7 +1570,13 @@ class IterativeExperimentRunner:
                 {
                     "task_id": task_id,
                     "attempt": attempt_number,
-                    "device": device,
+                    "device": requested_device,
+                    "requested_device": requested_device,
+                    "effective_device": probe_result.get("effective_device", requested_device),
+                    "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+                    "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+                    "gpu_used": probe_result.get("gpu_used", False),
+                    "effective_cpu_thread_env": probe_result.get("effective_cpu_thread_env", {}),
                     "exit_code": None,
                     "failure_kind": failure_kind,
                     "started_at": started_at.isoformat(),
@@ -1156,7 +1586,7 @@ class IterativeExperimentRunner:
             )
             self.store.update_task_execution_details(
                 task_id,
-                final_device=device,
+                final_device=str(probe_result.get("effective_device", requested_device)),
                 failure_kind=failure_kind,
             )
             self.logger.error(
@@ -1174,7 +1604,7 @@ class IterativeExperimentRunner:
                     "duration_seconds": duration_seconds,
                     "subprocess_command": command,
                     "task_timeout_seconds": timeout_seconds,
-                    "device": device,
+                    "device": requested_device,
                     "failure_kind": failure_kind,
                 },
             )
@@ -1186,7 +1616,13 @@ class IterativeExperimentRunner:
                 "exit_code": None,
                 "error_summary": error_summary,
                 "failure_kind": failure_kind,
-                "device": device,
+                "device": requested_device,
+                "requested_device": requested_device,
+                "effective_device": str(probe_result.get("effective_device", requested_device)),
+                "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+                "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+                "gpu_used": bool(probe_result.get("gpu_used", False)),
+                "effective_cpu_thread_env": probe_result.get("effective_cpu_thread_env", {}),
                 "attempt": attempt_number,
             }
 
@@ -1197,7 +1633,7 @@ class IterativeExperimentRunner:
         task_events_path, _task_memory_path, task_log_path = self._task_log_paths(task_id)
         error_summary = task_state.get("error_summary")
         failure_kind = classify_task_failure(
-            device=device,
+            device=requested_device,
             exit_code=exit_code,
             timeout=False,
             error_summary=None if error_summary is None else str(error_summary),
@@ -1234,7 +1670,13 @@ class IterativeExperimentRunner:
             {
                 "task_id": task_id,
                 "attempt": attempt_number,
-                "device": device,
+                "device": requested_device,
+                "requested_device": requested_device,
+                "effective_device": probe_result.get("effective_device", requested_device),
+                "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+                "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+                "gpu_used": probe_result.get("gpu_used", False),
+                "effective_cpu_thread_env": probe_result.get("effective_cpu_thread_env", {}),
                 "exit_code": exit_code,
                 "failure_kind": (None if task_status == "completed" else failure_kind),
                 "started_at": started_at.isoformat(),
@@ -1245,13 +1687,13 @@ class IterativeExperimentRunner:
         if task_status == "completed":
             self.store.update_task_execution_details(
                 task_id,
-                final_device=device,
+                final_device=str(probe_result.get("effective_device", requested_device)),
                 failure_kind=None,
             )
         else:
             self.store.update_task_execution_details(
                 task_id,
-                final_device=device,
+                final_device=str(probe_result.get("effective_device", requested_device)),
                 failure_kind=failure_kind,
             )
 
@@ -1272,14 +1714,19 @@ class IterativeExperimentRunner:
                 "task_status": task_status,
                 "subprocess_command": command,
                 "task_error_summary": task_state.get("error_summary"),
-                "device": device,
+                "device": requested_device,
+                "requested_device": requested_device,
+                "effective_device": probe_result.get("effective_device"),
+                "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+                "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+                "gpu_used": probe_result.get("gpu_used", False),
                 "failure_kind": (None if task_status == "completed" else failure_kind),
             },
         )
         if exit_code == 0:
-            print(f"Task {task_id} finished with status={task_status} (device={device})")
+            print(f"Task {task_id} finished with status={task_status} (device={requested_device})")
         else:
-            print(f"Task {task_id} subprocess failed with exit code {exit_code} (device={device})")
+            print(f"Task {task_id} subprocess failed with exit code {exit_code} (device={requested_device})")
         return {
             "task_id": task_id,
             "status": task_status,
@@ -1287,9 +1734,41 @@ class IterativeExperimentRunner:
             "exit_code": exit_code,
             "timeout": False,
             "failure_kind": (None if task_status == "completed" else failure_kind),
-            "device": device,
+            "device": requested_device,
+            "requested_device": requested_device,
+            "effective_device": str(probe_result.get("effective_device", requested_device)),
+            "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+            "tensorflow_visible_devices": probe_result.get("tensorflow_visible_devices", []),
+            "gpu_used": bool(probe_result.get("gpu_used", False)),
+            "effective_cpu_thread_env": probe_result.get("effective_cpu_thread_env", {}),
             "attempt": attempt_number,
         }
+
+    def _apply_cpu_limits_for_current_process(
+        self,
+        *,
+        record: dict[str, Any] | None = None,
+        attempt: int | None = None,
+    ) -> dict[str, Any] | None:
+        requested_device = os.environ.get(REQUESTED_DEVICE_ENV)
+        cpu_requested = requested_device == "cpu" or os.environ.get("CUDA_VISIBLE_DEVICES") == "-1"
+        if not cpu_requested or self._cpu_limits_applied:
+            return None
+
+        applied = apply_cpu_runtime_limits(self.cpu_execution_limits)
+        applied["requested_device"] = requested_device or "cpu"
+        applied["cuda_visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+        self._cpu_limits_applied = True
+        if record is not None:
+            self._log_structured_phase(
+                phase="task:cpu_limits_applied",
+                event="cpu_limits_applied",
+                task_record=record,
+                attempt=attempt,
+                message=f"Applied CPU runtime limits for {record['id']}.",
+                extra=applied,
+            )
+        return applied
 
     def _is_isolated_child_mode(self) -> bool:
         return os.environ.get(ISOLATED_TASK_CHILD_MODE_ENV) == "1"
@@ -1346,18 +1825,37 @@ class IterativeExperimentRunner:
 
         while total_attempts < int(options.max_task_attempts):
             total_attempts += 1
-            attempt_result = self._execute_task_entry_isolated_subprocess(
-                record=record,
-                command_base=options.run_task_command_base,
-                timeout_seconds=options.task_timeout_seconds,
-                attempt_number=total_attempts,
-                device=next_device,
+            attempt_env = self._resolve_device_attempt_env(
+                requested_device=next_device,
                 gpu_visible_devices=runtime_state.get("gpu_visible_devices"),
             )
+            probe_result = self._run_device_runtime_probe(
+                record=record,
+                attempt_number=total_attempts,
+                requested_device=next_device,
+                env=attempt_env,
+            )
+            if not probe_result.get("ok", False):
+                attempt_result = self._build_failed_probe_attempt_result(
+                    record=record,
+                    attempt_number=total_attempts,
+                    probe_result=probe_result,
+                )
+            else:
+                attempt_result = self._execute_task_entry_isolated_subprocess(
+                    record=record,
+                    command_base=options.run_task_command_base,
+                    timeout_seconds=options.task_timeout_seconds,
+                    attempt_number=total_attempts,
+                    requested_device=next_device,
+                    env=attempt_env,
+                    probe_result=probe_result,
+                )
             attempt_results.append(attempt_result)
             attempted_devices.append(next_device)
             failure_kind = attempt_result.get("failure_kind")
             task_status = str(attempt_result.get("status", "failed"))
+            effective_device = str(attempt_result.get("effective_device", next_device))
             fallback_next: str | None = None
             cooldown_seconds = 0.0
 
@@ -1401,6 +1899,7 @@ class IterativeExperimentRunner:
                     extra={
                         "task_id": task_id,
                         "device": next_device,
+                        "effective_device": effective_device,
                         "exit_code": attempt_result.get("exit_code"),
                         "failure_kind": None,
                         "fallback_next": None,
@@ -1410,10 +1909,11 @@ class IterativeExperimentRunner:
                 return {
                     **attempt_result,
                     "attempts": attempt_results,
-                    "final_device": next_device,
+                    "final_device": effective_device,
                     "failure_kind": None,
                 }
 
+            is_gpu_probe_failure = failure_kind == "gpu_probe_failed"
             is_gpu_oom = failure_kind == "gpu_oom"
             is_cpu_oom = failure_kind == "cpu_oom"
             is_any_oom = failure_kind in {"oom", "gpu_oom", "cpu_oom"}
@@ -1441,6 +1941,7 @@ class IterativeExperimentRunner:
                     extra={
                         "task_id": task_id,
                         "device": next_device,
+                        "effective_device": effective_device,
                         "exit_code": attempt_result.get("exit_code"),
                         "failure_kind": failure_kind,
                         "fallback_next": None,
@@ -1472,6 +1973,7 @@ class IterativeExperimentRunner:
                     extra={
                         "task_id": task_id,
                         "device": next_device,
+                        "effective_device": effective_device,
                         "exit_code": attempt_result.get("exit_code"),
                         "failure_kind": failure_kind,
                         "fallback_next": fallback_next,
@@ -1482,9 +1984,10 @@ class IterativeExperimentRunner:
                 next_device = "gpu"
                 continue
 
-            if next_device == "gpu" and is_any_oom and policy in {"gpu-first", "adaptive"}:
+            if next_device == "gpu" and (is_any_oom or is_gpu_probe_failure) and policy in {"gpu-first", "adaptive"}:
                 if cpu_retries_remaining >= 0 and total_attempts < int(options.max_task_attempts):
                     fallback_next = "cpu"
+                    runtime_state["preferred_device"] = "cpu"
                     runtime_state["gpu_health"] = "unhealthy"
                     cooldown_until = datetime.now(timezone.utc).timestamp() + float(options.gpu_recovery_cooldown_seconds)
                     runtime_state["gpu_recovery_cooldown_until"] = datetime.fromtimestamp(
@@ -1493,14 +1996,14 @@ class IterativeExperimentRunner:
                     ).isoformat()
                     self.store.update_task_execution_details(
                         task_id,
-                        fallback_reason="gpu_oom",
+                        fallback_reason=("gpu_probe_failed" if is_gpu_probe_failure else "gpu_oom"),
                     )
                     self._log_structured_phase(
                         phase="task:cpu_fallback_scheduled",
                         event="cpu_fallback_scheduled",
                         task_record=record,
                         attempt=total_attempts,
-                        message=f"Scheduling CPU fallback for {task_id}.",
+                        message=(f"Scheduling CPU fallback for {task_id} after GPU probe failure." if is_gpu_probe_failure else f"Scheduling CPU fallback for {task_id}."),
                     )
                     self._log_structured_phase(
                         phase="task:attempt_finished",
@@ -1510,6 +2013,7 @@ class IterativeExperimentRunner:
                         extra={
                             "task_id": task_id,
                             "device": next_device,
+                            "effective_device": effective_device,
                             "exit_code": attempt_result.get("exit_code"),
                             "failure_kind": failure_kind,
                             "fallback_next": fallback_next,
@@ -1531,6 +2035,7 @@ class IterativeExperimentRunner:
                     extra={
                         "task_id": task_id,
                         "device": next_device,
+                        "effective_device": effective_device,
                         "exit_code": attempt_result.get("exit_code"),
                         "failure_kind": failure_kind,
                         "fallback_next": fallback_next,
@@ -1549,6 +2054,7 @@ class IterativeExperimentRunner:
                 extra={
                     "task_id": task_id,
                     "device": next_device,
+                    "effective_device": effective_device,
                     "exit_code": attempt_result.get("exit_code"),
                     "failure_kind": failure_kind,
                     "fallback_next": fallback_next,
@@ -1567,7 +2073,7 @@ class IterativeExperimentRunner:
         return {
             **final_result,
             "attempts": attempt_results,
-            "final_device": final_result.get("device"),
+            "final_device": final_result.get("effective_device", final_result.get("device")),
             "failure_kind": final_failure_kind,
         }
 
@@ -1586,6 +2092,7 @@ class IterativeExperimentRunner:
         task_snapshot = next(task for task in updated_state["tasks"] if task["id"] == task_id)
         attempt = int(task_snapshot.get("attempts", 1))
         started_at = datetime.now(timezone.utc)
+        self._apply_cpu_limits_for_current_process(record=record, attempt=attempt)
 
         clear_ml_memory()
         if self._task_cooldown_seconds > 0:
@@ -1844,6 +2351,7 @@ class IterativeExperimentRunner:
             message=f"Starting single-task run for {task_id}.",
             extra={"task_id": task_id},
         )
+        self._apply_cpu_limits_for_current_process(record=record)
 
         result: dict[str, Any]
         try:
@@ -1874,6 +2382,7 @@ class IterativeExperimentRunner:
         }
 
     def run(self, options: IterativeRunOptions | None = None) -> dict[str, Any]:
+        self.logger = self._build_logger()
         resolved_options = options or IterativeRunOptions()
         self._task_cooldown_seconds = max(0.0, float(resolved_options.task_cooldown_seconds))
         if resolved_options.task_timeout_seconds is not None and resolved_options.task_timeout_seconds <= 0:
@@ -1933,7 +2442,12 @@ class IterativeExperimentRunner:
 
         self.store.clear_stop_request()
         command = [sys.executable, "run_experiments.py", "run"]
-        self.store.write_pid_record(config_path=self.config_path, command=command)
+        self.store.write_pid_record(
+            config_path=self.config_path,
+            command=command,
+            stdout_log_path=os.environ.get(BACKGROUND_STDOUT_LOG_ENV),
+            stderr_log_path=os.environ.get(BACKGROUND_STDERR_LOG_ENV),
+        )
         self._install_signal_handlers()
         self.logger.info(
             "Starting iterative run with %s runnable experiments.",
@@ -2042,6 +2556,7 @@ class IterativeExperimentRunner:
             self._log_structured_phase(phase="run:finish", message="Run finished.")
             self.store.clear_pid_record()
             self._restore_signal_handlers()
+            self._close_logger()
 
         snapshot = self.store.summarize()
         snapshot["peak_process_memory_mb"] = self._peak_process_memory_mb
@@ -2057,6 +2572,7 @@ def run_one_experiment_task(
     task_cooldown_seconds: float = 2.0,
     max_queue_tasks: int | None = MAX_QUEUE_TASKS,
     queue_export_path: str | Path | None = None,
+    cpu_execution_limits: CpuExecutionLimits | None = None,
     model_builders: dict[str, ModelBuilder] | None = None,
     preprocessing_tasks: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
@@ -2064,6 +2580,7 @@ def run_one_experiment_task(
         config_path=config_path,
         project_paths=project_paths,
         training_config=training_config,
+        cpu_execution_limits=cpu_execution_limits,
         model_builders=model_builders,
         preprocessing_tasks=preprocessing_tasks,
     )
@@ -2087,14 +2604,23 @@ def launch_background_runner(
     command = [sys.executable, str(script_path), "run", *forwarded_args]
     stdout_handle = stdout_path.open("a", encoding="utf-8")
     stderr_handle = stderr_path.open("a", encoding="utf-8")
+    env = os.environ.copy()
+    env[BACKGROUND_STDOUT_LOG_ENV] = str(stdout_path)
+    env[BACKGROUND_STDERR_LOG_ENV] = str(stderr_path)
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(cwd),
+        "env": env,
+        "stdout": stdout_handle,
+        "stderr": stderr_handle,
+    }
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if creationflags:
+            popen_kwargs["creationflags"] = creationflags
+    else:
+        popen_kwargs["start_new_session"] = True
     try:
-        process = subprocess.Popen(
-            command,
-            cwd=str(cwd),
-            start_new_session=True,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-        )
+        process = subprocess.Popen(command, **popen_kwargs)
     finally:
         stdout_handle.close()
         stderr_handle.close()

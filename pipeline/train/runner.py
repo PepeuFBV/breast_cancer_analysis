@@ -702,6 +702,21 @@ def build_training_tasks(
     model_builders: dict[str, ModelBuilder] | None = None,
     preprocessing_tasks: Iterable[PreprocessingTask] | None = None,
 ) -> list[TrainingTask]:
+    return list(
+        iter_training_tasks(
+            config,
+            model_builders=model_builders,
+            preprocessing_tasks=preprocessing_tasks,
+        )
+    )
+
+
+def iter_training_tasks(
+    config: TrainingConfig,
+    *,
+    model_builders: dict[str, ModelBuilder] | None = None,
+    preprocessing_tasks: Iterable[PreprocessingTask] | None = None,
+) -> Iterable[TrainingTask]:
     available_builders = model_builders or MODEL_BUILDERS
     model_names = config.model_names or list(available_builders.keys())
     resolved_preprocessing_tasks = (
@@ -716,18 +731,14 @@ def build_training_tasks(
         )
     )
 
-    queue: list[TrainingTask] = []
     for preprocessing_task in resolved_preprocessing_tasks:
         for model_name in model_names:
             if model_name not in available_builders:
                 raise ValueError(f"Unknown model name requested: {model_name}")
-            queue.append(
-                TrainingTask(
-                    model_name=model_name,
-                    preprocessing_task=preprocessing_task,
-                )
+            yield TrainingTask(
+                model_name=model_name,
+                preprocessing_task=preprocessing_task,
             )
-    return queue
 
 
 def run_training_task(
