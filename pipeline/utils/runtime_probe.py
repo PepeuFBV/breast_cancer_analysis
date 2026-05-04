@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.utils.memory import get_gpu_memory_info
+from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
 from pipeline.utils.runtime_limits import (
     CpuExecutionLimits,
     apply_cpu_runtime_limits,
@@ -135,6 +136,8 @@ def collect_runtime_probe(
         applied_limits = apply_cpu_runtime_limits(limits)
         opencv_threads = applied_limits.get("opencv_threads")
         warnings.extend(str(item) for item in applied_limits.get("warnings", []))
+    elif tensorflow_module is None:
+        ensure_tensorflow_wsl_gpu_env()
 
     tensorflow_imported = False
     tensorflow_version: str | None = None
@@ -148,6 +151,12 @@ def collect_runtime_probe(
         tensorflow_imported = True
         tensorflow_version = str(getattr(tf, "__version__", "unknown"))
         physical_gpu_devices = tuple(_device_name(device) for device in tf.config.list_physical_devices("GPU"))
+        if device != "cpu":
+            for gpu_device in tf.config.list_physical_devices("GPU"):
+                try:
+                    tf.config.experimental.set_memory_growth(gpu_device, True)
+                except Exception as error:
+                    warnings.append(f"Could not enable GPU memory growth: {error}")
         logical_gpu_devices = tuple(_device_name(device) for device in tf.config.list_logical_devices("GPU"))
         if device != "cpu":
             tiny_gpu_op_ok, tiny_gpu_op_device, tiny_gpu_op_error = _run_tiny_gpu_op(tf)
@@ -157,6 +166,8 @@ def collect_runtime_probe(
         errors.append(f"TensorFlow import failed: {error}")
 
     if device == "gpu":
+        if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1":
+            errors.append("CUDA_VISIBLE_DEVICES is '-1', which disables GPU visibility.")
         if not tensorflow_imported:
             pass
         elif not logical_gpu_devices:

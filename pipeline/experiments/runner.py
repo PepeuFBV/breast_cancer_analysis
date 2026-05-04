@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -77,6 +77,16 @@ class IterativeRunOptions:
     fail_fast_on_oom: bool = False
     max_queue_tasks: int | None = MAX_QUEUE_TASKS
     queue_export_path: str | None = None
+
+
+@dataclass(frozen=True)
+class ExperimentGridCounts:
+    preprocessing_count: int
+    model_count: int
+    augmentation_count: int
+    total_experiments: int
+    total_fits: int
+    folds: int
 
 
 @dataclass(frozen=True)
@@ -284,6 +294,7 @@ def build_experiment_id(task: TrainingTask, config: TrainingConfig) -> str:
         "preproc_id": task.preproc_id,
         "param_id": task.param_id,
         "param_json": json.loads(task.param_json),
+        "augmentations_per_image": task.augmentations_per_image,
         "train_split_path": _stable_path_for_experiment_id(config.train_split_path),
         "test_split_path": _stable_path_for_experiment_id(config.test_split_path),
         "folds": config.folds,
@@ -309,10 +320,12 @@ def build_experiment_record(task: TrainingTask, config: TrainingConfig) -> dict[
         "param_id": task.param_id,
         "param_display": task.param_display,
         "param_json": task.param_json,
+        "augmentations_per_image": task.augmentations_per_image,
         "parameters": {
             "model_name": task.model_name,
             "preprocessing_id": task.preproc_id,
             "preprocessing_params": json.loads(task.param_json),
+            "augmentations_per_image": task.augmentations_per_image,
             "is_combined": task.is_combined,
             "training": {
                 "folds": config.folds,
@@ -1095,6 +1108,38 @@ class IterativeExperimentRunner:
     def build_queue(self) -> list[tuple[dict[str, Any], TrainingTask]]:
         return self.build_queue_with_options()
 
+    def estimate_grid_counts(
+        self,
+        *,
+        resolved_preprocessing_tasks: Iterable[Any] | None = None,
+    ) -> ExperimentGridCounts:
+        available_builders = self.model_builders or MODEL_BUILDERS
+        model_names = self.training_config.model_names or list(available_builders.keys())
+        augmentation_values = tuple(int(value) for value in self.training_config.augmentation_values)
+        augmentation_count = len(augmentation_values)
+        if augmentation_count <= 0:
+            raise ValueError("augmentation_values cannot be empty.")
+
+        preprocessing_count = (
+            len(list(resolved_preprocessing_tasks))
+            if resolved_preprocessing_tasks is not None
+            else count_preprocessing_tasks(
+                self.training_config.preprocessing_ids,
+                include_combinations=self.training_config.include_combinations,
+                param_grids=self.training_config.preprocessing_grids,
+            )
+        )
+        total_experiments = preprocessing_count * len(model_names) * augmentation_count
+        folds = self.training_config.folds if self.training_config.folds > 0 else 1
+        return ExperimentGridCounts(
+            preprocessing_count=preprocessing_count,
+            model_count=len(model_names),
+            augmentation_count=augmentation_count,
+            total_experiments=total_experiments,
+            total_fits=total_experiments * folds,
+            folds=folds,
+        )
+
     def _iter_queue_entries(
         self,
         *,
@@ -1110,27 +1155,36 @@ class IterativeExperimentRunner:
     def _log_queue_estimate(
         self,
         *,
-        estimated_task_count: int,
-        preprocessing_count: int,
-        model_count: int,
+        counts: ExperimentGridCounts,
         max_queue_tasks: int | None,
         queue_export_path: str | Path | None,
     ) -> None:
-        message = "Estimated experiment queue size: %s task(s) " "(%s preprocessing variants x %s model(s))."
+        message = (
+            "Estimated experiment queue size: %s task(s) "
+            "(%s preprocessing variants x %s model(s) x %s augmentation value(s)). "
+            "Estimated fits: %s (folds=%s)."
+        )
         self.logger.info(
             message,
-            f"{estimated_task_count:,}",
-            f"{preprocessing_count:,}",
-            f"{model_count:,}",
+            f"{counts.total_experiments:,}",
+            f"{counts.preprocessing_count:,}",
+            f"{counts.model_count:,}",
+            f"{counts.augmentation_count:,}",
+            f"{counts.total_fits:,}",
+            f"{counts.folds:,}",
         )
-        if estimated_task_count >= HUGE_QUEUE_WARNING_TASKS:
-            warning = "Huge queue estimate detected: %s task(s). " "Prefer narrowing with --models, --preprocessing, " "--no-combined-preprocessing, and use --queue-export-path " "before attempting very large runs."
-            self.logger.warning(warning, f"{estimated_task_count:,}")
-            print(warning % f"{estimated_task_count:,}")
-        if max_queue_tasks is None and queue_export_path is None and estimated_task_count > MAX_QUEUE_TASKS:
+        if counts.total_experiments >= HUGE_QUEUE_WARNING_TASKS:
+            warning = (
+                "Huge queue estimate detected: %s task(s). "
+                "Use `run_experiments.py count` for planning, and explicitly opt in "
+                "with `--allow-huge-queue` for execution."
+            )
+            self.logger.warning(warning, f"{counts.total_experiments:,}")
+            print(warning % f"{counts.total_experiments:,}")
+        if max_queue_tasks is None and queue_export_path is None and counts.total_experiments > MAX_QUEUE_TASKS:
             self.logger.warning(
                 "Huge queue opt-in is active without queue export. " "State persistence may still be expensive for %s task(s).",
-                f"{estimated_task_count:,}",
+                f"{counts.total_experiments:,}",
             )
 
     def build_queue_with_options(
@@ -1139,53 +1193,42 @@ class IterativeExperimentRunner:
         max_queue_tasks: int | None = MAX_QUEUE_TASKS,
         queue_export_path: str | Path | None = None,
     ) -> list[tuple[dict[str, Any], TrainingTask]]:
-        available_builders = self.model_builders or MODEL_BUILDERS
-        model_names = self.training_config.model_names or list(available_builders.keys())
         resolved_preprocessing_tasks = list(self.preprocessing_tasks) if self.preprocessing_tasks is not None else None
-        preprocessing_count = (
-            len(resolved_preprocessing_tasks)
-            if resolved_preprocessing_tasks is not None
-            else count_preprocessing_tasks(
-                self.training_config.preprocessing_ids,
-                include_combinations=self.training_config.include_combinations,
-                param_grids=self.training_config.preprocessing_grids,
-            )
+        counts = self.estimate_grid_counts(
+            resolved_preprocessing_tasks=resolved_preprocessing_tasks,
         )
-        estimated_task_count = preprocessing_count * len(model_names)
         self._log_queue_estimate(
-            estimated_task_count=estimated_task_count,
-            preprocessing_count=preprocessing_count,
-            model_count=len(model_names),
+            counts=counts,
             max_queue_tasks=max_queue_tasks,
             queue_export_path=queue_export_path,
         )
         if max_queue_tasks is not None and max_queue_tasks <= 0:
             raise ValueError("max_queue_tasks must be > 0 when provided.")
-        if max_queue_tasks is not None and estimated_task_count > max_queue_tasks:
+        if max_queue_tasks is not None and counts.total_experiments > max_queue_tasks:
             raise ValueError(
                 "The requested experiment grid expands to "
-                f"{estimated_task_count:,} training tasks, which exceeds the "
-                f"safety limit of {max_queue_tasks:,}. Narrow the run with "
-                "`--models`, `--preprocessing`, `--no-combined-preprocessing`, "
-                "a smaller preprocessing grid, or explicitly increase "
-                "`--max-queue-tasks` / use `--allow-huge-queue`."
+                f"{counts.total_experiments:,} training tasks, which exceeds the "
+                f"safety limit of {max_queue_tasks:,}. "
+                f"Dimensions: preprocessing={counts.preprocessing_count:,}, "
+                f"models={counts.model_count:,}, augmentations={counts.augmentation_count:,}. "
+                "Use `--allow-huge-queue` to explicitly opt in."
             )
 
-        if estimated_task_count > MATERIALIZED_QUEUE_HARD_LIMIT:
+        if counts.total_experiments > MATERIALIZED_QUEUE_HARD_LIMIT:
             if queue_export_path is not None:
                 self._write_queue_export(
                     Path(queue_export_path),
                     self._iter_queue_entries(resolved_preprocessing_tasks=resolved_preprocessing_tasks),
-                    task_count=estimated_task_count,
+                    task_count=counts.total_experiments,
                 )
             export_suffix = f" A queue export was written to {queue_export_path}." if queue_export_path is not None else ""
             raise ValueError(
                 "The requested experiment grid expands to "
-                f"{estimated_task_count:,} training tasks, which exceeds the "
+                f"{counts.total_experiments:,} training tasks, which exceeds the "
                 f"in-memory runner safety limit of {MATERIALIZED_QUEUE_HARD_LIMIT:,}. "
                 "This branch does not stream persisted runner state for queues of "
-                "that size yet. Narrow the run with `--models`, `--preprocessing`, "
-                "`--no-combined-preprocessing`, or export a narrower queue first."
+                "that size yet. Use `run_experiments.py count` and split execution "
+                "in chunks (for example via queue export) when operating at very large scale."
                 f"{export_suffix}"
             )
 
@@ -1283,6 +1326,37 @@ class IterativeExperimentRunner:
                 return record, training_task
         return None
 
+    def _resolve_gpu_visible_devices_for_policy(self, *, device_policy: str) -> str | None:
+        if device_policy == "cpu-only":
+            return "-1"
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if visible_devices == "-1":
+            self.logger.warning(
+                "Ignoring inherited CUDA_VISIBLE_DEVICES=-1 because policy=%s requires GPU attempts.",
+                device_policy,
+            )
+            return None
+        return visible_devices
+
+    def _validate_gpu_only_policy(self, runtime_state: dict[str, Any]) -> None:
+        env = self._resolve_device_attempt_env(
+            requested_device="gpu",
+            gpu_visible_devices=runtime_state.get("gpu_visible_devices"),
+        )
+        probe_result = self._run_device_runtime_probe(
+            record=None,
+            attempt_number=0,
+            requested_device="gpu",
+            env=env,
+        )
+        if not probe_result.get("ok", False):
+            errors = [str(item) for item in probe_result.get("errors", [])]
+            details = "; ".join(errors) if errors else "unknown GPU runtime probe failure"
+            raise RuntimeError(
+                "device-policy gpu-only requires a visible and usable GPU, "
+                f"but runtime probe failed: {details}"
+            )
+
     def _task_state_by_id(self, task_id: str) -> dict[str, Any]:
         state = self.store.load_state()
         for task in state["tasks"]:
@@ -1330,20 +1404,42 @@ class IterativeExperimentRunner:
                 env["CUDA_VISIBLE_DEVICES"] = gpu_visible_devices
         return env
 
+    @staticmethod
+    def _probe_failure_kind_for_device(
+        *,
+        requested_device: str,
+        errors: list[str] | tuple[str, ...],
+    ) -> str:
+        if requested_device != "gpu":
+            return "runtime_probe_failed"
+        combined = " ".join(str(item).lower() for item in errors)
+        unavailable_markers = (
+            "no tensorflow gpu devices are visible",
+            "could not run a tiny operation on gpu",
+            "tiny tensorflow gpu op",
+            "tensorflow import failed",
+            "cuda_visible_devices",
+            "gpu is not available",
+        )
+        if any(marker in combined for marker in unavailable_markers):
+            return "gpu_unavailable"
+        return "gpu_probe_failed"
+
     def _run_device_runtime_probe(
         self,
         *,
-        record: dict[str, Any],
+        record: dict[str, Any] | None,
         attempt_number: int,
         requested_device: str,
         env: dict[str, str],
     ) -> dict[str, Any]:
+        task_id = "runtime-validation" if record is None else record.get("id")
         self._log_structured_phase(
             phase="task:device_attempt_started",
             event="device_attempt_started",
             task_record=record,
             attempt=attempt_number,
-            message=f"Starting {requested_device} device attempt for {record['id']}.",
+            message=f"Starting {requested_device} device attempt for {task_id}.",
             extra={
                 "requested_device": requested_device,
             },
@@ -1366,7 +1462,7 @@ class IterativeExperimentRunner:
                 event="gpu_probe_started",
                 task_record=record,
                 attempt=attempt_number,
-                message=f"Running GPU probe before task {record['id']}.",
+                message=f"Running GPU probe before task {task_id}.",
             )
 
         command = self._probe_runtime_subprocess_command(requested_device)
@@ -1429,7 +1525,7 @@ class IterativeExperimentRunner:
                 event=event_name,
                 task_record=record,
                 attempt=attempt_number,
-                message=(f"GPU probe succeeded for {record['id']}." if result["ok"] else f"GPU probe failed for {record['id']}."),
+                message=(f"GPU probe succeeded for {task_id}." if result["ok"] else f"GPU probe failed for {task_id}."),
                 extra={
                     "requested_device": requested_device,
                     "effective_device": result["effective_device"],
@@ -1453,8 +1549,12 @@ class IterativeExperimentRunner:
         task_id = record["id"]
         requested_device = str(probe_result.get("requested_device", "unknown"))
         effective_device = str(probe_result.get("effective_device", requested_device))
-        failure_kind = "gpu_probe_failed" if requested_device == "gpu" else "runtime_probe_failed"
-        error_summary = "; ".join(str(item) for item in probe_result.get("errors", []))[:500]
+        probe_errors = [str(item) for item in probe_result.get("errors", [])]
+        failure_kind = self._probe_failure_kind_for_device(
+            requested_device=requested_device,
+            errors=probe_errors,
+        )
+        error_summary = "; ".join(probe_errors)[:500]
         self.store.update_task_status(
             task_id,
             status="failed",
@@ -1913,7 +2013,7 @@ class IterativeExperimentRunner:
                     "failure_kind": None,
                 }
 
-            is_gpu_probe_failure = failure_kind == "gpu_probe_failed"
+            is_gpu_probe_failure = failure_kind in {"gpu_probe_failed", "gpu_unavailable"}
             is_gpu_oom = failure_kind == "gpu_oom"
             is_cpu_oom = failure_kind == "cpu_oom"
             is_any_oom = failure_kind in {"oom", "gpu_oom", "cpu_oom"}
@@ -1996,7 +2096,7 @@ class IterativeExperimentRunner:
                     ).isoformat()
                     self.store.update_task_execution_details(
                         task_id,
-                        fallback_reason=("gpu_probe_failed" if is_gpu_probe_failure else "gpu_oom"),
+                        fallback_reason=("gpu_unavailable" if is_gpu_probe_failure else "gpu_oom"),
                     )
                     self._log_structured_phase(
                         phase="task:cpu_fallback_scheduled",
@@ -2384,6 +2484,12 @@ class IterativeExperimentRunner:
     def run(self, options: IterativeRunOptions | None = None) -> dict[str, Any]:
         self.logger = self._build_logger()
         resolved_options = options or IterativeRunOptions()
+        if not resolved_options.isolate_tasks:
+            self.logger.warning(
+                "Forcing isolate_tasks=True because device-policy handling and GPU/CPU recovery "
+                "are only reliable with per-task subprocess isolation."
+            )
+            resolved_options = replace(resolved_options, isolate_tasks=True)
         self._task_cooldown_seconds = max(0.0, float(resolved_options.task_cooldown_seconds))
         if resolved_options.task_timeout_seconds is not None and resolved_options.task_timeout_seconds <= 0:
             raise ValueError("task_timeout_seconds must be > 0 when provided.")
@@ -2425,13 +2531,16 @@ class IterativeExperimentRunner:
         runtime_state.update(dict(state.get("runtime", {})))
         runtime_state["device_policy"] = resolved_options.device_policy
         runtime_state.setdefault("preferred_device", "gpu")
-        runtime_state["gpu_visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+        runtime_state["gpu_visible_devices"] = self._resolve_gpu_visible_devices_for_policy(
+            device_policy=resolved_options.device_policy,
+        )
         if resolved_options.device_policy == "cpu-only":
             runtime_state["preferred_device"] = "cpu"
             runtime_state["gpu_health"] = "unhealthy"
         elif resolved_options.device_policy == "gpu-only":
             runtime_state["preferred_device"] = "gpu"
             runtime_state["gpu_health"] = "healthy"
+            self._validate_gpu_only_policy(runtime_state)
         self.store.update_runtime(runtime_state)
 
         if not runnable_ids:
