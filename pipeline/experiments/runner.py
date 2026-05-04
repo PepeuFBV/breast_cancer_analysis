@@ -1214,7 +1214,7 @@ class IterativeExperimentRunner:
                 "Use `--allow-huge-queue` to explicitly opt in."
             )
 
-        if counts.total_experiments > MATERIALIZED_QUEUE_HARD_LIMIT:
+        if counts.total_experiments > MATERIALIZED_QUEUE_HARD_LIMIT and max_queue_tasks is not None:
             if queue_export_path is not None:
                 self._write_queue_export(
                     Path(queue_export_path),

@@ -219,6 +219,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print count output as JSON.",
     )
 
+    dry_run_parser = subparsers.add_parser(
+        "dry-run",
+        help="Alias for `count`.",
+    )
+    add_training_runtime_arguments(dry_run_parser)
+    dry_run_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print count output as JSON.",
+    )
+
     run_task_parser = subparsers.add_parser(
         "run-task",
         help="Run exactly one task from the persisted experiment queue.",
@@ -616,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "probe-runtime":
         return _print_runtime_probe(args)
 
-    if args.command == "count":
+    if args.command in {"count", "dry-run"}:
         try:
             return _print_count_result(args)
         except ValueError as error:

@@ -74,6 +74,7 @@ def add_training_runtime_arguments(
     )
     parser.add_argument(
         "--combined-preprocessing",
+        "--include-combinations",
         dest="include_combinations",
         action="store_true",
         default=None,
@@ -81,6 +82,7 @@ def add_training_runtime_arguments(
     )
     parser.add_argument(
         "--no-combined-preprocessing",
+        "--no-include-combinations",
         dest="include_combinations",
         action="store_false",
         help="Disable pairwise preprocessing combinations.",
