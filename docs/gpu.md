@@ -49,6 +49,19 @@ machines, use:
 ./.venv/bin/python scripts/check_runtime.py --device gpu
 ```
 
+Device policy behavior in `run_experiments.py run`:
+
+- `gpu-only`: requires a visible and usable GPU before launching tasks; fails fast when GPU is unavailable.
+- `gpu-first`: starts on GPU, then falls back to CPU for task-level GPU failure when retries are exhausted.
+- `adaptive`: GPU-first with CPU fallback and GPU recovery probes after cooldown.
+- `cpu-only`: forces `CUDA_VISIBLE_DEVICES=-1` and never schedules GPU attempts.
+
+Runtime probe command:
+
+```bash
+python run_experiments.py probe-runtime --device gpu
+```
+
 The required check fails when TensorFlow cannot see a GPU. That usually means
 one of these is missing or mismatched:
 

@@ -67,6 +67,12 @@ Then re-run:
 ./.venv/bin/python scripts/check_gpu.py --require-gpu
 ```
 
+And verify runner probe output:
+
+```bash
+python run_experiments.py probe-runtime --device gpu
+```
+
 Optional mode exits successfully on CPU and prints a warning. Required mode
 fails if no GPU is visible.
 
@@ -183,6 +189,30 @@ For production long runs, use adaptive per-task subprocess policy:
   --cooldown-after-oom-seconds 15 \
   --gpu-recovery-cooldown-seconds 60 \
   --max-consecutive-oom 3
+```
+
+GPU-only policy must fail when GPU is unavailable:
+
+```bash
+python run_experiments.py run --device-policy gpu-only --limit 1
+```
+
+Quick adaptive smoke:
+
+```bash
+python run_experiments.py run --device-policy adaptive --isolate-tasks --limit 10
+```
+
+Augmentation dimension smoke:
+
+```bash
+python run_experiments.py run --augmentations-per-image 1 2 3 --limit 10
+```
+
+Count large grids before running:
+
+```bash
+python run_experiments.py count --combined-preprocessing --augmentations-per-image 1 2 3
 ```
 
 How adaptive fallback behaves:

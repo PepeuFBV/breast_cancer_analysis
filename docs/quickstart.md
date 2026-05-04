@@ -20,6 +20,28 @@ Windows PowerShell equivalents:
 ./.venv/bin/python run_experiments.py probe-runtime --device cpu --json
 ```
 
+Equivalent command:
+
+```bash
+python run_experiments.py probe-runtime --device gpu
+```
+
+## 1.1 Count Experiments (Dry Run)
+
+```bash
+./.venv/bin/python run_experiments.py count
+./.venv/bin/python run_experiments.py count --augmentations-per-image 1 2 3
+./.venv/bin/python run_experiments.py count --combined-preprocessing
+./.venv/bin/python run_experiments.py count --combined-preprocessing --augmentations-per-image 1 2 3
+```
+
+Expected totals with default config:
+
+- default: `4,330` experiments / `17,320` fits
+- `--augmentations-per-image 1 2 3`: `12,990` experiments / `51,960` fits
+- `--combined-preprocessing`: `1,559,530` experiments / `6,238,120` fits
+- both flags: `4,678,590` experiments / `18,714,360` fits
+
 ## 2. Preprocess
 
 Default artifacts:
@@ -145,6 +167,12 @@ CPU-safe smoke:
   --cpu-opencv-threads 1
 ```
 
+GPU-only validation run:
+
+```bash
+python run_experiments.py run --device-policy gpu-only --limit 1
+```
+
 Adaptive smoke:
 
 ```bash
@@ -157,6 +185,18 @@ Adaptive smoke:
   --cpu-retries 1 \
   --cpu-max-threads 2 \
   --cpu-opencv-threads 1
+```
+
+Equivalent adaptive command:
+
+```bash
+python run_experiments.py run --device-policy adaptive --isolate-tasks --limit 10
+```
+
+Augmentation dimension command:
+
+```bash
+python run_experiments.py run --augmentations-per-image 1 2 3 --limit 10
 ```
 
 ## 9. Huge Queues
