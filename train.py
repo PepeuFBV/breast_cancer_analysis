@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 
-from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env
 
-ensure_tensorflow_wsl_gpu_env()
+bootstrap_tensorflow_runtime_env()
 
 
 def add_training_runtime_arguments(

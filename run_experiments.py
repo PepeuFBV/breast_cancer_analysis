@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.config import load_experiment_config
-from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env
 from pipeline.utils.paths import build_project_paths
 from pipeline.utils.runtime_limits import CpuExecutionLimits
 from pipeline.utils.runtime_probe import collect_runtime_probe, format_runtime_probe, runtime_probe_to_dict
@@ -15,7 +15,7 @@ from train import add_training_runtime_arguments
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-ensure_tensorflow_wsl_gpu_env()
+bootstrap_tensorflow_runtime_env()
 
 
 def run_one_experiment_task(**kwargs):

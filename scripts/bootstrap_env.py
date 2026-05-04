@@ -100,7 +100,10 @@ def resolve_bootstrap_plan(
 
     if platform_name != "linux":
         if gpu_mode == "required":
-            raise BootstrapError("TensorFlow GPU bootstrap is only supported on Linux/WSL2. " "Use `--gpu off` on this platform.")
+            raise BootstrapError(
+                "TensorFlow GPU bootstrap in this script is only supported on Linux/WSL2. "
+                "For native Windows TensorFlow 2.10 GPU, use `powershell -File scripts/bootstrap_windows_gpu.ps1`."
+            )
         return BootstrapPlan(
             tensorflow_requirement="tensorflow",
             require_gpu_check=False,

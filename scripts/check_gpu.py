@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env
 from pipeline.utils.runtime_device import check_runtime_device
 
 
@@ -48,7 +48,7 @@ def check_tensorflow_gpu(
     device = "cpu" if cpu_only else "gpu" if require_gpu else "auto"
     resolved_tensorflow = tensorflow_module
     if resolved_tensorflow is None:
-        ensure_tensorflow_wsl_gpu_env()
+        bootstrap_tensorflow_runtime_env()
         try:
             resolved_tensorflow = importlib.import_module("tensorflow")
         except Exception as error:

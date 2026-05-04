@@ -78,6 +78,30 @@ fails if no GPU is visible.
 
 For WSL2-specific GPU setup, see [`wsl_gpu_setup.md`](wsl_gpu_setup.md).
 
+### Native Windows 11 + TensorFlow
+
+Native Windows CUDA GPU requires TensorFlow `2.10.x` only.
+
+If `python run_experiments.py probe-runtime --device gpu` reports an
+unsupported stack with TensorFlow `2.11+`, downgrade using:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
+.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+```
+
+Checklist for TensorFlow 2.10 native Windows path:
+
+- Python `3.10.x`
+- TensorFlow `2.10.x`
+- CUDA Toolkit `11.2`
+- cuDNN `8.1` (`cudnn64_8.dll`)
+- CUDA bin directories present in `%PATH%`
+
+If the checker reports missing CUDA/cuDNN DLLs, fix those first and rerun
+`scripts/check_windows_gpu.py` before any `gpu-only` run.
+
 ## TensorFlow Is Missing or Fails to Import
 
 Run:

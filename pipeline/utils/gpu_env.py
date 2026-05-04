@@ -6,6 +6,7 @@ from pathlib import Path
 
 _GPU_ENV_BOOTSTRAPPED = "BREAST_CANCER_ANALYSIS_GPU_ENV_BOOTSTRAPPED"
 _GPU_MEMORY_CONFIGURED = False
+WINDOWS_NATIVE_TF_GPU_MAX_VERSION = (2, 10)
 
 
 def _is_wsl_linux() -> bool:
@@ -16,6 +17,14 @@ def _is_wsl_linux() -> bool:
     except OSError:
         return False
     return "microsoft" in version or "wsl" in version
+
+
+def is_native_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def should_bootstrap_wsl_tensorflow_env() -> bool:
+    return _is_wsl_linux()
 
 
 def _venv_root() -> Path:
@@ -134,7 +143,7 @@ def clear_gpu_memory() -> None:
 def ensure_tensorflow_wsl_gpu_env() -> None:
     """Re-exec the current process with the CUDA loader paths expected by WSL2."""
 
-    if not _is_wsl_linux():
+    if not should_bootstrap_wsl_tensorflow_env():
         return
     if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1":
         return
@@ -160,3 +169,9 @@ def ensure_tensorflow_wsl_gpu_env() -> None:
 
     updated_env[_GPU_ENV_BOOTSTRAPPED] = "1"
     os.execvpe(sys.executable, [sys.executable, *sys.argv], updated_env)
+
+
+def bootstrap_tensorflow_runtime_env() -> None:
+    """Bootstrap TensorFlow runtime env only when WSL-specific setup is required."""
+    if should_bootstrap_wsl_tensorflow_env():
+        ensure_tensorflow_wsl_gpu_env()

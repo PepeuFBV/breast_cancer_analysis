@@ -9,6 +9,7 @@ from pipeline.utils.gpu_env import (
     _nvidia_lib_dirs,
     _prepend_env_paths,
     _venv_root,
+    bootstrap_tensorflow_runtime_env,
     ensure_tensorflow_wsl_gpu_env,
 )
 
@@ -92,6 +93,12 @@ class GpuEnvHelperTest(unittest.TestCase):
                 environment["BREAST_CANCER_ANALYSIS_GPU_ENV_BOOTSTRAPPED"],
                 "1",
             )
+
+    def test_bootstrap_tensorflow_runtime_env_skips_non_wsl(self) -> None:
+        with patch("pipeline.utils.gpu_env.should_bootstrap_wsl_tensorflow_env", return_value=False):
+            with patch("pipeline.utils.gpu_env.ensure_tensorflow_wsl_gpu_env") as ensure_wsl:
+                bootstrap_tensorflow_runtime_env()
+        ensure_wsl.assert_not_called()
 
 
 if __name__ == "__main__":

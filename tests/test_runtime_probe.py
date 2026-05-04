@@ -22,9 +22,9 @@ class _FakeTensorFlowConfig:
         return self._logical_gpus if device_type == "GPU" else []
 
 
-def _fake_tensorflow(*, physical_gpus=None, logical_gpus=None):
+def _fake_tensorflow(*, physical_gpus=None, logical_gpus=None, version: str = "test-tf"):
     return SimpleNamespace(
-        __version__="test-tf",
+        __version__=version,
         config=_FakeTensorFlowConfig(physical_gpus=physical_gpus, logical_gpus=logical_gpus),
         constant=lambda value, dtype=None: SimpleNamespace(device="/device:CPU:0", numpy=lambda: value),
         float32="float32",
@@ -61,3 +61,16 @@ def test_collect_runtime_probe_handles_missing_tensorflow_gracefully(monkeypatch
     assert not result.ok
     assert result.tensorflow_imported is False
     assert any("TensorFlow import failed" in error for error in result.errors)
+
+
+def test_collect_runtime_probe_windows_tf211_reports_unsupported_native_gpu_stack(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.utils.runtime_probe._nvidia_smi_command", lambda: None)
+    monkeypatch.setattr("pipeline.utils.runtime_probe.is_native_windows", lambda: True)
+
+    result = collect_runtime_probe(
+        device="gpu",
+        tensorflow_module=_fake_tensorflow(version="2.11.0"),
+    )
+
+    assert not result.ok
+    assert any("Unsupported native Windows GPU stack" in error for error in result.errors)

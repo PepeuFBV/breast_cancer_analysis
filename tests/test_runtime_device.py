@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -30,9 +31,9 @@ class _FakeTensorFlowConfig:
         return self._logical_gpus if device_type == "GPU" else []
 
 
-def _fake_tensorflow(*, physical_gpus=None, logical_gpus=None, cuda: bool = True):
+def _fake_tensorflow(*, physical_gpus=None, logical_gpus=None, cuda: bool = True, version: str = "test-tf"):
     return SimpleNamespace(
-        __version__="test-tf",
+        __version__=version,
         config=_FakeTensorFlowConfig(physical_gpus, logical_gpus),
         test=SimpleNamespace(is_built_with_cuda=lambda: cuda),
     )
@@ -75,6 +76,8 @@ def test_check_runtime_device_cpu_mode_stays_on_cpu(monkeypatch) -> None:
     assert result.ok
     assert result.selected_device == "cpu"
     assert result.requested_device == "cpu"
+    assert result.logical_gpus == ()
+    assert os.environ.get("CUDA_VISIBLE_DEVICES") == "-1"
 
 
 def test_check_runtime_script_emits_json(capsys, monkeypatch) -> None:
@@ -101,3 +104,30 @@ def test_check_runtime_script_emits_json(capsys, monkeypatch) -> None:
     assert exit_code == 0
     assert payload["selected_device"] == "cpu"
     assert payload["warnings"] == ["CPU fallback"]
+
+
+@pytest.mark.gpu
+def test_check_runtime_device_windows_tf211_reports_unsupported_gpu_stack(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.utils.runtime_device.is_native_windows", lambda: True)
+    result = check_runtime_device(
+        device="gpu",
+        require_gpu=True,
+        tensorflow_module=_fake_tensorflow(physical_gpus=[], logical_gpus=[], version="2.11.0"),
+    )
+
+    assert not result.ok
+    assert any("Unsupported native Windows GPU stack" in error for error in result.errors)
+
+
+@pytest.mark.gpu
+def test_check_runtime_device_windows_tf210_no_gpu_has_cuda_cudnn_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.utils.runtime_device.is_native_windows", lambda: True)
+    result = check_runtime_device(
+        device="gpu",
+        require_gpu=True,
+        tensorflow_module=_fake_tensorflow(physical_gpus=[], logical_gpus=[], version="2.10.1"),
+    )
+
+    assert not result.ok
+    assert any("CUDA 11.2" in error for error in result.errors)
+    assert any("cuDNN 8.1" in error for error in result.errors)
