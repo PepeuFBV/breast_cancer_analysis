@@ -51,6 +51,16 @@ def add_training_runtime_arguments(
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--loss", default=None)
     parser.add_argument(
+        "--augmentations-per-image",
+        nargs="+",
+        type=int,
+        default=None,
+        help=(
+            "One or more augmentation counts to evaluate as an experiment dimension. "
+            "Examples: `--augmentations-per-image 3` or `--augmentations-per-image 1 2 3`."
+        ),
+    )
+    parser.add_argument(
         "--models",
         nargs="*",
         default=None,
@@ -121,6 +131,7 @@ def build_training_config_from_args(args: argparse.Namespace):
         model_names=args.models,
         preprocessing_ids=args.preprocessing,
         include_combinations=args.include_combinations,
+        augmentations_per_image=args.augmentations_per_image,
         run_skip=args.run_skip,
     )
 

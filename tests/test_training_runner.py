@@ -92,6 +92,34 @@ class TrainingRunnerTest(unittest.TestCase):
             ],
         )
 
+    def test_build_training_tasks_expands_augmentation_dimension(self) -> None:
+        task = PreprocessingTask(
+            preproc_id="none",
+            params={},
+            param_display="default",
+            param_id="default",
+            param_json="{}",
+            is_combined=False,
+            apply=lambda image: image,
+        )
+        config = TrainingConfig(
+            train_split_path=Path("train.csv"),
+            test_split_path=Path("test.csv"),
+            history_dir=Path("history"),
+            predictions_dir=Path("predictions"),
+            model_names=["custom cnn"],
+            include_combinations=False,
+            augmentation_values=(1, 2, 3),
+        )
+
+        tasks = build_training_tasks(
+            config,
+            model_builders={"custom cnn": lambda *args, **kwargs: _FakeModel(0.8)},
+            preprocessing_tasks=[task],
+        )
+
+        self.assertEqual([task_entry.augmentations_per_image for task_entry in tasks], [1, 2, 3])
+
     def test_cross_validation_persists_best_fold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -153,8 +181,8 @@ class TrainingRunnerTest(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].fold, 2)
-            history_path = root / "history" / "none" / "custom cnn" / "history_default.csv"
-            predictions_path = root / "predictions" / "none" / "custom cnn" / "default.csv"
+            history_path = root / "history" / "none" / "custom cnn" / "history_default__aug1.csv"
+            predictions_path = root / "predictions" / "none" / "custom cnn" / "default__aug1.csv"
             self.assertTrue(history_path.exists())
             self.assertTrue(predictions_path.exists())
 
@@ -250,8 +278,8 @@ class TrainingRunnerTest(unittest.TestCase):
             self.assertEqual(captures["fit_validation_shape"], (8, 8, 3))
             self.assertEqual(captures["fit_validation_count"], 3)
 
-            history_path = root / "history" / "none" / "resnet" / "history_default.csv"
-            predictions_path = root / "predictions" / "none" / "resnet" / "default.csv"
+            history_path = root / "history" / "none" / "resnet" / "history_default__aug1.csv"
+            predictions_path = root / "predictions" / "none" / "resnet" / "default__aug1.csv"
             history_df = pd.read_csv(history_path)
             predictions_df = pd.read_csv(predictions_path)
             self.assertEqual(history_df.iloc[0]["selection_strategy"], "holdout_validation")

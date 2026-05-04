@@ -521,6 +521,42 @@ def test_run_command_allow_huge_queue_disables_limit(
     capsys.readouterr()
 
 
+def test_count_command_reports_expected_grid_sizes(capsys) -> None:
+    module = _import_run_experiments_module()
+
+    default_payload = module._count_payload(module.build_parser().parse_args(["count"]))
+    aug_payload = module._count_payload(
+        module.build_parser().parse_args(
+            ["count", "--augmentations-per-image", "1", "2", "3"]
+        )
+    )
+    comb_payload = module._count_payload(
+        module.build_parser().parse_args(
+            ["count", "--combined-preprocessing"]
+        )
+    )
+    both_payload = module._count_payload(
+        module.build_parser().parse_args(
+            ["count", "--combined-preprocessing", "--augmentations-per-image", "1", "2", "3"]
+        )
+    )
+
+    assert default_payload["total_experiments"] == 4_330
+    assert default_payload["total_fits"] == 17_320
+    assert aug_payload["total_experiments"] == 12_990
+    assert aug_payload["total_fits"] == 51_960
+    assert comb_payload["total_experiments"] == 1_559_530
+    assert comb_payload["total_fits"] == 6_238_120
+    assert both_payload["total_experiments"] == 4_678_590
+    assert both_payload["total_fits"] == 18_714_360
+
+    exit_code = module.main(["count"])
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Total experiments: 4,330" in output
+    assert "Total fits: 17,320" in output
+
+
 def test_status_auto_discovers_single_active_runner_without_config(
     capsys,
     monkeypatch,

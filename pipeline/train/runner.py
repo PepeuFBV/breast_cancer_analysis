@@ -56,12 +56,14 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     model_runtime: dict[str, ModelRuntimeConfig] | None = None
     preprocessing_grids: dict[str, dict[str, list[Any]]] | None = None
+    augmentation_values: tuple[int, ...] = (1,)
 
 
 @dataclass(frozen=True)
 class TrainingTask:
     model_name: str
     preprocessing_task: PreprocessingTask
+    augmentations_per_image: int = 1
 
     @property
     def preproc_id(self) -> str:
@@ -89,7 +91,10 @@ class TrainingTask:
 
     @property
     def label(self) -> str:
-        return f"{self.preproc_id} [{self.model_name} - {self.param_display}]"
+        return (
+            f"{self.preproc_id} [{self.model_name} - {self.param_display} - "
+            f"aug={self.augmentations_per_image}]"
+        )
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,7 @@ class TrainingRunResult:
     train_samples: int
     validation_samples: int
     test_samples: int
+    augmentations_per_image: int = 1
     summary_metrics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -439,9 +445,11 @@ def _artifact_paths(
     preproc_id: str,
     model_name: str,
     param_id: str,
+    augmentations_per_image: int,
 ) -> tuple[Path, Path]:
-    history_path = history_dir / preproc_id / model_name / f"history_{param_id}.csv"
-    predictions_path = predictions_dir / preproc_id / model_name / f"{param_id}.csv"
+    suffix = f"{param_id}__aug{augmentations_per_image}"
+    history_path = history_dir / preproc_id / model_name / f"history_{suffix}.csv"
+    predictions_path = predictions_dir / preproc_id / model_name / f"{suffix}.csv"
     return history_path, predictions_path
 
 
@@ -452,6 +460,7 @@ def artifact_paths_for_task(config: TrainingConfig, task: TrainingTask) -> tuple
         task.preproc_id,
         task.model_name,
         task.param_id,
+        task.augmentations_per_image,
     )
 
 
@@ -461,8 +470,16 @@ def check_if_model_exists(
     preproc_id: str,
     model_name: str,
     param_id: str,
+    augmentations_per_image: int,
 ) -> bool:
-    history_path, predictions_path = _artifact_paths(history_dir, predictions_dir, preproc_id, model_name, param_id)
+    history_path, predictions_path = _artifact_paths(
+        history_dir,
+        predictions_dir,
+        preproc_id,
+        model_name,
+        param_id,
+        augmentations_per_image,
+    )
     return history_path.exists() and predictions_path.exists()
 
 
@@ -473,6 +490,7 @@ def task_has_existing_artifacts(config: TrainingConfig, task: TrainingTask) -> b
         task.preproc_id,
         task.model_name,
         task.param_id,
+        task.augmentations_per_image,
     )
 
 
@@ -495,6 +513,7 @@ def build_history_row(result: TrainingRunResult, config: TrainingConfig) -> dict
         "train_samples": result.train_samples,
         "validation_samples": result.validation_samples,
         "test_samples": result.test_samples,
+        "augmentations_per_image": result.augmentations_per_image,
         "random_state": config.random_state,
         **_metrics_at_best_epoch(result),
         **result.summary_metrics,
@@ -508,6 +527,7 @@ def save_run_result(result: TrainingRunResult, config: TrainingConfig) -> tuple[
         result.preproc_id,
         result.model_name,
         result.param_id,
+        result.augmentations_per_image,
     )
     history_path.parent.mkdir(parents=True, exist_ok=True)
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
@@ -535,22 +555,51 @@ def _build_validation_split(train_df: pd.DataFrame, config: TrainingConfig) -> D
     )
 
 
+def _filter_train_dataframe_for_augmentations(
+    train_df: pd.DataFrame,
+    *,
+    augmentations_per_image: int,
+) -> pd.DataFrame:
+    if augmentations_per_image < 0:
+        raise ValueError(
+            "augmentations_per_image must be >= 0, "
+            f"got {augmentations_per_image}."
+        )
+    if "is_augmented" not in train_df.columns or "augmentation_index" not in train_df.columns:
+        return train_df
+
+    augmented_mask = train_df["is_augmented"].astype(bool)
+    augmentation_index = pd.to_numeric(train_df["augmentation_index"], errors="coerce").fillna(-1).astype(int)
+    keep_mask = (~augmented_mask) | (augmentation_index < augmentations_per_image)
+    filtered = train_df.loc[keep_mask].reset_index(drop=True)
+    if filtered.empty:
+        raise ValueError(
+            "Filtered training split is empty after applying "
+            f"augmentations_per_image={augmentations_per_image}."
+        )
+    return filtered
+
+
 def _run_fixed_split(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    task: PreprocessingTask,
+    task: TrainingTask,
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
     phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
-    validation_split = _build_validation_split(train_df, config)
+    filtered_train_df = _filter_train_dataframe_for_augmentations(
+        train_df,
+        augmentations_per_image=task.augmentations_per_image,
+    )
+    validation_split = _build_validation_split(filtered_train_df, config)
     model_runtime = (config.model_runtime or {}).get(model_name)
     best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
         validation_split.train_df,
         validation_split.test_df,
         test_df,
-        task,
+        task.preprocessing_task,
         model_name,
         model_fn,
         num_classes=config.num_classes,
@@ -577,6 +626,7 @@ def _run_fixed_split(
         train_samples=len(validation_split.train_df),
         validation_samples=len(validation_split.test_df),
         test_samples=len(test_df),
+        augmentations_per_image=task.augmentations_per_image,
         summary_metrics={"validation_split_strategy": validation_split.strategy},
     )
 
@@ -607,13 +657,17 @@ def _build_cv_indices(
 def _run_cross_validation(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    task: PreprocessingTask,
+    task: TrainingTask,
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
     phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
-    split_iterator, cv_strategy = _build_cv_indices(train_df, config)
+    filtered_train_df = _filter_train_dataframe_for_augmentations(
+        train_df,
+        augmentations_per_image=task.augmentations_per_image,
+    )
+    split_iterator, cv_strategy = _build_cv_indices(filtered_train_df, config)
 
     best_result: TrainingRunResult | None = None
     fold_scores: list[float] = []
@@ -629,14 +683,14 @@ def _run_cross_validation(
         history_dict: dict[str, list[float]] | None = None
         predictions_df: pd.DataFrame | None = None
         try:
-            fit_df = train_df.iloc[fit_idx].reset_index(drop=True)
-            validation_df = train_df.iloc[validation_idx].reset_index(drop=True)
+            fit_df = filtered_train_df.iloc[fit_idx].reset_index(drop=True)
+            validation_df = filtered_train_df.iloc[validation_idx].reset_index(drop=True)
             fold_seed = config.random_state + fold_index
             best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
                 fit_df,
                 validation_df,
                 test_df,
-                task,
+                task.preprocessing_task,
                 model_name,
                 model_fn,
                 num_classes=config.num_classes,
@@ -666,6 +720,7 @@ def _run_cross_validation(
                 train_samples=len(fit_df),
                 validation_samples=len(validation_df),
                 test_samples=len(test_df),
+                augmentations_per_image=task.augmentations_per_image,
             )
             if best_result is None or current.best_val_acc > best_result.best_val_acc:
                 best_result = current
@@ -731,14 +786,22 @@ def iter_training_tasks(
         )
     )
 
-    for preprocessing_task in resolved_preprocessing_tasks:
-        for model_name in model_names:
-            if model_name not in available_builders:
-                raise ValueError(f"Unknown model name requested: {model_name}")
-            yield TrainingTask(
-                model_name=model_name,
-                preprocessing_task=preprocessing_task,
+    augmentation_values = tuple(int(value) for value in config.augmentation_values)
+    for augmentation_value in augmentation_values:
+        if augmentation_value < 0:
+            raise ValueError(
+                "augmentation_values must contain integers >= 0, "
+                f"got {augmentation_values!r}."
             )
+        for preprocessing_task in resolved_preprocessing_tasks:
+            for model_name in model_names:
+                if model_name not in available_builders:
+                    raise ValueError(f"Unknown model name requested: {model_name}")
+                yield TrainingTask(
+                    model_name=model_name,
+                    preprocessing_task=preprocessing_task,
+                    augmentations_per_image=augmentation_value,
+                )
 
 
 def run_training_task(
@@ -762,7 +825,7 @@ def run_training_task(
         return _run_fixed_split(
             resolved_train_df,
             resolved_test_df,
-            task.preprocessing_task,
+            task,
             task.model_name,
             model_fn,
             config,
@@ -771,7 +834,7 @@ def run_training_task(
     return _run_cross_validation(
         resolved_train_df,
         resolved_test_df,
-        task.preprocessing_task,
+        task,
         task.model_name,
         model_fn,
         config,

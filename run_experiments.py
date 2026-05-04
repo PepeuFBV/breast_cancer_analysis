@@ -208,6 +208,17 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="Run or resume experiments.")
     _add_run_arguments(run_parser)
 
+    count_parser = subparsers.add_parser(
+        "count",
+        help="Dry run: print queue dimensions, total experiments, and total fits.",
+    )
+    add_training_runtime_arguments(count_parser)
+    count_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print count output as JSON.",
+    )
+
     run_task_parser = subparsers.add_parser(
         "run-task",
         help="Run exactly one task from the persisted experiment queue.",
@@ -329,6 +340,7 @@ def _build_runner(args: argparse.Namespace):
         model_names=args.models,
         preprocessing_ids=args.preprocessing,
         include_combinations=args.include_combinations,
+        augmentations_per_image=args.augmentations_per_image,
         run_skip=args.run_skip,
     )
     return IterativeExperimentRunner(
@@ -416,6 +428,10 @@ def _build_run_task_forwarded_args(
     _add_optional("--loss", args.loss)
     _add_optional_many("--models", args.models)
     _add_optional_many("--preprocessing", args.preprocessing)
+    _add_optional_many(
+        "--augmentations-per-image",
+        (None if args.augmentations_per_image is None else [str(value) for value in args.augmentations_per_image]),
+    )
     _add_optional("--task-cooldown-seconds", task_cooldown_seconds)
     _add_optional("--max-queue-tasks", args.max_queue_tasks)
     _add_optional("--cpu-max-threads", getattr(args, "cpu_max_threads", None))
@@ -565,12 +581,47 @@ def _print_runtime_probe(args: argparse.Namespace) -> int:
     return 0 if probe_result.ok else 1
 
 
+def _count_payload(args: argparse.Namespace) -> dict[str, int]:
+    runner = _build_runner(args)
+    counts = runner.estimate_grid_counts()
+    return {
+        "preprocessing_count": int(counts.preprocessing_count),
+        "model_count": int(counts.model_count),
+        "augmentation_count": int(counts.augmentation_count),
+        "total_experiments": int(counts.total_experiments),
+        "folds": int(counts.folds),
+        "total_fits": int(counts.total_fits),
+    }
+
+
+def _print_count_result(args: argparse.Namespace) -> int:
+    payload = _count_payload(args)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print("Experiment count (dry run):")
+    print(f"Preprocessing variants: {payload['preprocessing_count']:,}")
+    print(f"Models: {payload['model_count']:,}")
+    print(f"Augmentation values: {payload['augmentation_count']:,}")
+    print(f"Total experiments: {payload['total_experiments']:,}")
+    print(f"Folds: {payload['folds']:,}")
+    print(f"Total fits: {payload['total_fits']:,}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     resolved_argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(resolved_argv)
 
     if args.command == "probe-runtime":
         return _print_runtime_probe(args)
+
+    if args.command == "count":
+        try:
+            return _print_count_result(args)
+        except ValueError as error:
+            print(str(error))
+            return 1
 
     if args.command == "launch":
         from pipeline.experiments import ExperimentStateStore, launch_background_runner

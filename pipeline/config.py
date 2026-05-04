@@ -55,6 +55,22 @@ def _normalize_image_size(values: list[int] | tuple[int, int]) -> tuple[int, int
     return int(width), int(height)
 
 
+def _normalize_augmentation_values(value: Any) -> tuple[int, ...]:
+    if isinstance(value, list):
+        if not value:
+            raise ValueError("preprocess.augmentations_per_image list cannot be empty.")
+        normalized = tuple(int(item) for item in value)
+    else:
+        normalized = (int(value),)
+    invalid = [item for item in normalized if item < 0]
+    if invalid:
+        raise ValueError(
+            "preprocess.augmentations_per_image values must be >= 0, "
+            f"got {invalid}."
+        )
+    return normalized
+
+
 def _validate_model_names(model_names: list[str] | None, configured_models: dict[str, ModelRuntimeConfig]) -> None:
     available_models = set(MODEL_BUILDERS)
     requested_models = set(model_names or [])
@@ -114,7 +130,7 @@ class ExperimentPathsConfig:
 @dataclass(frozen=True)
 class ExperimentPreprocessConfig:
     image_size: tuple[int, int]
-    augmentations_per_image: int
+    augmentations_per_image: tuple[int, ...]
     samples_per_class: int
     test_size: float
     random_state: int
@@ -193,12 +209,13 @@ class ExperimentConfig:
     ) -> DatasetPreparationConfig:
         from pipeline.data.dataset import DatasetPreparationConfig
 
+        default_augmentation = self.preprocess.augmentations_per_image[0]
         return DatasetPreparationConfig(
             raw_data_dir=project_paths.raw_data_dir,
             images_output_dir=project_paths.processed_images_dir,
             splits_output_dir=project_paths.processed_splits_dir,
             resize_dim=image_size or self.preprocess.image_size,
-            augmentations_per_image=(self.preprocess.augmentations_per_image if augmentations_per_image is None else augmentations_per_image),
+            augmentations_per_image=(default_augmentation if augmentations_per_image is None else augmentations_per_image),
             samples_per_class=(self.preprocess.samples_per_class if samples_per_class is None else samples_per_class),
             test_size=self.preprocess.test_size if test_size is None else test_size,
             random_state=(self.preprocess.random_state if random_state is None else random_state),
@@ -222,9 +239,15 @@ class ExperimentConfig:
         model_names: list[str] | None = None,
         preprocessing_ids: list[str] | None = None,
         include_combinations: bool | None = None,
+        augmentations_per_image: int | list[int] | None = None,
         run_skip: bool | None = None,
     ) -> TrainingConfig:
         from pipeline.train.runner import TrainingConfig
+
+        if augmentations_per_image is None:
+            augmentation_values = self.preprocess.augmentations_per_image
+        else:
+            augmentation_values = _normalize_augmentation_values(augmentations_per_image)
 
         return TrainingConfig(
             train_split_path=_resolve_configured_path(train_split, self.paths.train_split, project_paths.train_split_path),
@@ -251,6 +274,7 @@ class ExperimentConfig:
             random_state=(self.train.random_state if random_state is None else random_state),
             model_runtime=self.models,
             preprocessing_grids=self.preprocess.preprocessing_grid,
+            augmentation_values=augmentation_values,
         )
 
     def build_cpu_execution_limits(
@@ -400,7 +424,7 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
         ),
         preprocess=ExperimentPreprocessConfig(
             image_size=_normalize_image_size(raw_config["preprocess"]["image_size"]),
-            augmentations_per_image=int(raw_config["preprocess"]["augmentations_per_image"]),
+            augmentations_per_image=_normalize_augmentation_values(raw_config["preprocess"]["augmentations_per_image"]),
             samples_per_class=int(raw_config["preprocess"]["samples_per_class"]),
             test_size=float(raw_config["preprocess"]["test_size"]),
             random_state=int(raw_config["preprocess"].get("random_state", DEFAULT_RANDOM_STATE)),
