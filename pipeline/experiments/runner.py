@@ -2002,7 +2002,8 @@ class IterativeExperimentRunner:
                     runtime_state["gpu_health"] = "healthy"
                     runtime_state["gpu_recovery_cooldown_until"] = None
                 else:
-                    if "gpu" in attempted_devices:
+                    used_gpu_in_this_task = "gpu" in attempted_devices
+                    if used_gpu_in_this_task:
                         runtime_state["cpu_fallback_successes"] = int(runtime_state.get("cpu_fallback_successes", 0)) + 1
                         self._log_structured_phase(
                             phase="task:cpu_fallback_succeeded",
@@ -2014,10 +2015,16 @@ class IterativeExperimentRunner:
                     if policy == "adaptive":
                         runtime_state["preferred_device"] = "cpu"
                         runtime_state["gpu_health"] = "cooling_down"
-                        runtime_state["gpu_recovery_cooldown_until"] = datetime.fromtimestamp(
-                            datetime.now(timezone.utc).timestamp() + float(options.gpu_recovery_cooldown_seconds),
-                            tz=timezone.utc,
-                        ).isoformat()
+                        if used_gpu_in_this_task:
+                            runtime_state["gpu_recovery_cooldown_until"] = datetime.fromtimestamp(
+                                datetime.now(timezone.utc).timestamp() + float(options.gpu_recovery_cooldown_seconds),
+                                tz=timezone.utc,
+                            ).isoformat()
+                        elif runtime_state.get("gpu_recovery_cooldown_until") is None:
+                            runtime_state["gpu_recovery_cooldown_until"] = datetime.fromtimestamp(
+                                datetime.now(timezone.utc).timestamp() + float(options.gpu_recovery_cooldown_seconds),
+                                tz=timezone.utc,
+                            ).isoformat()
                 self._log_structured_phase(
                     phase="task:attempt_finished",
                     event="task_attempt_finished",

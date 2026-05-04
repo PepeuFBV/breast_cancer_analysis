@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -671,6 +672,76 @@ class IterativeRunnerTest(unittest.TestCase):
             phases = {row.get("event") for row in run_events}
             self.assertIn("gpu_probe_failed", phases)
             self.assertIn("cpu_fallback_scheduled", phases)
+
+    def test_adaptive_cooldown_is_not_extended_by_cpu_success_without_gpu_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[
+                    _task("none"),
+                    _task("none", {"variant": "second"}),
+                    _task("none", {"variant": "third"}),
+                ],
+            )
+            gpu_probe_calls = {"count": 0}
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                env = kwargs.get("env", {})
+                if _is_probe_runtime_command(command):
+                    payload = _probe_runtime_payload(env)
+                    if env.get("CUDA_VISIBLE_DEVICES") != "-1":
+                        gpu_probe_calls["count"] += 1
+                        payload.update(
+                            {
+                                "ok": False,
+                                "effective_device": "cpu",
+                                "physical_gpu_devices": [],
+                                "logical_gpu_devices": [],
+                                "tensorflow_visible_devices": [],
+                                "tensorflow_tiny_gpu_op": False,
+                                "tensorflow_tiny_gpu_op_device": None,
+                                "gpu_used": False,
+                                "errors": ["No TensorFlow GPU devices are visible."],
+                            }
+                        )
+                        return SimpleNamespace(returncode=1, stdout=json.dumps(payload), stderr="")
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                if env.get("CUDA_VISIBLE_DEVICES") == "-1":
+                    time.sleep(0.65)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.91},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="adaptive",
+                        gpu_retries=0,
+                        cpu_retries=0,
+                        cooldown_after_oom_seconds=0,
+                        gpu_recovery_cooldown_seconds=1,
+                        max_task_attempts=2,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 3)
+            self.assertEqual(gpu_probe_calls["count"], 2)
 
     def test_cpu_limits_are_applied_for_direct_cpu_task_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
