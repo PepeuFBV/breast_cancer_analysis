@@ -805,6 +805,20 @@ class ExperimentStateStore:
         self._persist_state(state, snapshot_task_ids={task_id})
         return state
 
+    def set_expected_queue_totals(self, *, total_experiments: int) -> dict[str, Any]:
+        state = self.load_state()
+        resolved_total = max(0, int(total_experiments))
+        state["expected_total_experiments"] = resolved_total
+        state["expected_counts"] = {
+            "pending": resolved_total,
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "stopped": 0,
+        }
+        self._persist_state(state)
+        return state
+
     def summarize(self) -> dict[str, Any]:
         state = self.load_state()
         pid_record = self.read_pid_record()
@@ -828,6 +842,16 @@ class ExperimentStateStore:
                 break
 
         total = len(state["tasks"])
+        expected_total = state.get("expected_total_experiments")
+        expected_counts = state.get("expected_counts")
+        if (
+            total == 0
+            and isinstance(expected_total, int)
+            and expected_total > 0
+            and isinstance(expected_counts, dict)
+        ):
+            total = int(expected_total)
+            counts = {status: int(expected_counts.get(status, 0)) for status in TASK_STATUSES}
         stop_requested = self.stop_requested()
         if active_run and stop_requested:
             overall_status = "stopping"
@@ -876,6 +900,9 @@ class ExperimentStateStore:
             "consecutive_final_oom_failures": runtime.get("consecutive_final_oom_failures"),
             "last_successful_device": runtime.get("last_successful_device"),
             "oom_policy_stop": runtime.get("oom_policy_stop"),
+            "isolate_tasks": runtime.get("isolate_tasks"),
+            "allow_huge_queue": runtime.get("allow_huge_queue"),
+            "max_queue_tasks": runtime.get("max_queue_tasks"),
         }
 
     def reset(
@@ -2516,6 +2543,19 @@ class IterativeExperimentRunner:
             if not self._pid_matches_current_process(pid):
                 raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
+        estimated_counts = self.estimate_grid_counts()
+        self.store.set_expected_queue_totals(
+            total_experiments=estimated_counts.total_experiments,
+        )
+        self.store.clear_stop_request()
+        command = [sys.executable, "run_experiments.py", "run"]
+        self.store.write_pid_record(
+            config_path=self.config_path,
+            command=command,
+            stdout_log_path=os.environ.get(BACKGROUND_STDOUT_LOG_ENV),
+            stderr_log_path=os.environ.get(BACKGROUND_STDERR_LOG_ENV),
+        )
+
         queue_entries, state = self._build_queue_and_sync_state(
             max_queue_tasks=resolved_options.max_queue_tasks,
             queue_export_path=resolved_options.queue_export_path,
@@ -2534,6 +2574,9 @@ class IterativeExperimentRunner:
         runtime_state["gpu_visible_devices"] = self._resolve_gpu_visible_devices_for_policy(
             device_policy=resolved_options.device_policy,
         )
+        runtime_state["isolate_tasks"] = bool(resolved_options.isolate_tasks)
+        runtime_state["allow_huge_queue"] = resolved_options.max_queue_tasks is None
+        runtime_state["max_queue_tasks"] = resolved_options.max_queue_tasks
         if resolved_options.device_policy == "cpu-only":
             runtime_state["preferred_device"] = "cpu"
             runtime_state["gpu_health"] = "unhealthy"
@@ -2550,7 +2593,6 @@ class IterativeExperimentRunner:
             return snapshot
 
         self.store.clear_stop_request()
-        command = [sys.executable, "run_experiments.py", "run"]
         self.store.write_pid_record(
             config_path=self.config_path,
             command=command,

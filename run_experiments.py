@@ -550,6 +550,12 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print("Current task: " f"{current_task['preproc_id']} [{current_task['model_name']} - " f"{current_task['param_display']}]")
     if snapshot.get("device_policy") is not None:
         print(f"Device policy: {snapshot['device_policy']}")
+    if snapshot.get("isolate_tasks") is not None:
+        print(f"Isolate tasks: {snapshot['isolate_tasks']}")
+    if snapshot.get("allow_huge_queue") is not None:
+        print(f"Allow huge queue: {snapshot['allow_huge_queue']}")
+    if snapshot.get("max_queue_tasks") is not None:
+        print(f"Max queue tasks: {snapshot['max_queue_tasks']}")
     if snapshot.get("preferred_device") is not None:
         print(f"Current preferred device: {snapshot['preferred_device']}")
     if snapshot.get("gpu_health") is not None:
