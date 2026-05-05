@@ -10,6 +10,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from pipeline.config import load_experiment_config
 from pipeline.data.validation import inspect_dataset_layout
 from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env

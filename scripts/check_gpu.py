@@ -3,8 +3,14 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env
 from pipeline.utils.runtime_device import check_runtime_device

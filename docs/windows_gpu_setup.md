@@ -37,6 +37,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -Ve
    - `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\bin`
    - `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2\libnvvp`
 
+The runtime now auto-prepends the TensorFlow 2.10-compatible CUDA 11.2
+directories from the standard install location before importing TensorFlow.
+This avoids the common slow fallback path where the machine-wide `%PATH%`
+points at a newer CUDA release such as `v11.8`, which TensorFlow 2.10 cannot
+use on native Windows.
+
 ## 4. Validate Runtime
 
 ```powershell
