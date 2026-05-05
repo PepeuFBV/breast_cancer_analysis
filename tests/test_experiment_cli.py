@@ -327,6 +327,55 @@ def test_run_task_command_uses_runner_cooldown_from_config(
     assert captured["cooldown"] == 3.5
 
 
+def test_run_task_command_parses_and_forwards_task_record_json(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    fake_runner = SimpleNamespace(
+        config_path=Path("configs/experiment.default.json"),
+        project_paths=SimpleNamespace(),
+        training_config=SimpleNamespace(),
+    )
+    captured = {"task_record": None}
+
+    monkeypatch.setattr(module, "_build_runner", lambda args: fake_runner)
+    monkeypatch.setattr(
+        module,
+        "load_experiment_config",
+        lambda _path: SimpleNamespace(
+            source_path=Path("configs/experiment.default.json"),
+            build_cpu_execution_limits=lambda **kwargs: CpuExecutionLimits(),
+            runner=SimpleNamespace(
+                isolate_tasks=False,
+                task_cooldown_seconds=0.0,
+                task_timeout_seconds=None,
+            ),
+        ),
+    )
+
+    def _fake_run_one_experiment_task(**kwargs):
+        captured["task_record"] = kwargs["task_record"]
+        return {"task_id": kwargs["task_id"], "status": "completed"}
+
+    monkeypatch.setattr(module, "run_one_experiment_task", _fake_run_one_experiment_task)
+
+    exit_code = module.main(
+        [
+            "run-task",
+            "--task-id",
+            "exp-json",
+            "--task-record-json",
+            "{\"id\":\"exp-json\",\"model_name\":\"custom cnn\"}",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Task exp-json completed successfully." in output
+    assert captured["task_record"] == {"id": "exp-json", "model_name": "custom cnn"}
+
+
 def test_run_task_command_forwards_cpu_limits(
     capsys,
     monkeypatch,
@@ -440,6 +489,60 @@ def test_probe_runtime_command_emits_json(
     assert exit_code == 0
     assert '"requested_device": "cpu"' in output
     assert '"effective_cpu_thread_env"' in output
+
+
+def test_launch_command_prints_preflight_summary(
+    capsys,
+    monkeypatch,
+) -> None:
+    import pipeline.experiments as experiments_module
+
+    module = _import_run_experiments_module()
+
+    class _FakeStore:
+        def __init__(self, _project_paths):
+            pass
+
+        def has_active_run(self) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        module,
+        "_load_project_paths",
+        lambda args: SimpleNamespace(experiment_logs_dir=Path("/tmp/logs")),
+    )
+    monkeypatch.setattr(
+        module,
+        "_resolve_launch_preflight",
+        lambda args: {
+            "counts": SimpleNamespace(total_experiments=1_559_530, total_fits=6_238_120),
+            "isolate_tasks": True,
+            "device_policy": "adaptive",
+            "stream_queue_mode": True,
+            "max_queue_tasks": None,
+            "startup_estimate": "about 10-45 seconds",
+        },
+    )
+    monkeypatch.setattr(experiments_module, "ExperimentStateStore", _FakeStore)
+    monkeypatch.setattr(
+        experiments_module,
+        "launch_background_runner",
+        lambda **kwargs: SimpleNamespace(
+            process=SimpleNamespace(pid=99),
+            stdout_path=Path("/tmp/background.out.log"),
+            stderr_path=Path("/tmp/background.err.log"),
+        ),
+    )
+
+    exit_code = module.main(["launch", "--allow-huge-queue"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Launch preflight:" in output
+    assert "Queue mode: streamed" in output
+    assert "Estimated startup overhead: about 10-45 seconds (heuristic)" in output
+    assert "Warning: huge queue detected; the runner will stream task discovery instead of materializing full state." in output
+    assert "Background runner started with pid=99." in output
 
 
 def test_quickstart_contains_common_operations_commands() -> None:

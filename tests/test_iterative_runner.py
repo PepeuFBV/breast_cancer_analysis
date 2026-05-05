@@ -27,11 +27,14 @@ from pipeline.experiments import (
 from pipeline.experiments.runner import (
     BACKGROUND_STDERR_LOG_ENV,
     BACKGROUND_STDOUT_LOG_ENV,
+    MATERIALIZED_QUEUE_HARD_LIMIT,
     MAX_QUEUE_TASKS,
     REQUESTED_DEVICE_ENV,
+    ExperimentGridCounts,
+    build_experiment_record,
 )
 from pipeline.train.preprocessing import PreprocessingTask
-from pipeline.train.runner import TrainingConfig, artifact_paths_for_task
+from pipeline.train.runner import TrainingConfig, TrainingTask, artifact_paths_for_task
 from pipeline.utils.paths import build_project_paths
 from pipeline.utils.runtime_limits import CPU_THREAD_ENV_KEYS, CpuExecutionLimits
 
@@ -1428,6 +1431,72 @@ class IterativeRunnerTest(unittest.TestCase):
                 queue = runner.build_queue_with_options(max_queue_tasks=MAX_QUEUE_TASKS + 10)
 
             self.assertEqual(queue, [])
+
+    def test_run_streams_huge_queue_without_materializing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+            )
+            record = build_experiment_record(
+                TrainingTask(
+                    model_name="custom cnn",
+                    preprocessing_task=_task("none"),
+                    augmentations_per_image=1,
+                ),
+                config,
+            )
+
+            def _fake_streamed_task_run(*, record, options, runtime_state):
+                runner.store.register_task_record(record, config_path=runner.config_path)
+                runner.store.update_task_status(
+                    record["id"],
+                    status="completed",
+                    result_summary={"status": "ok"},
+                    duration_seconds=0.1,
+                )
+                return {"status": "completed"}
+
+            with (
+                patch.object(
+                    runner,
+                    "estimate_grid_counts",
+                    return_value=ExperimentGridCounts(
+                        preprocessing_count=1,
+                        model_count=1,
+                        augmentation_count=1,
+                        total_experiments=MATERIALIZED_QUEUE_HARD_LIMIT + 1,
+                        total_fits=MATERIALIZED_QUEUE_HARD_LIMIT + 1,
+                        folds=1,
+                    ),
+                ),
+                patch.object(
+                    runner,
+                    "_build_queue_and_sync_state",
+                    side_effect=AssertionError("streamed run should not materialize the queue"),
+                ),
+                patch.object(runner, "_iter_queue_entries", return_value=iter([(record, None)])),
+                patch.object(
+                    runner,
+                    "_run_task_with_isolated_device_policy",
+                    side_effect=_fake_streamed_task_run,
+                ),
+            ):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        max_queue_tasks=None,
+                        limit=1,
+                    )
+                )
+
+            self.assertTrue(snapshot["stream_queue_mode"])
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(snapshot["counts"]["pending"], MATERIALIZED_QUEUE_HARD_LIMIT)
 
     def test_build_queue_can_export_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

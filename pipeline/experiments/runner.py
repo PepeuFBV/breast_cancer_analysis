@@ -19,7 +19,7 @@ from typing import Any, Iterable
 
 from pipeline.experiments.failures import classify_task_failure
 from pipeline.train.models import MODEL_BUILDERS, ModelBuilder
-from pipeline.train.preprocessing import count_preprocessing_tasks
+from pipeline.train.preprocessing import build_preprocessing_task, count_preprocessing_tasks
 from pipeline.train.runner import (
     TrainingConfig,
     TrainingTask,
@@ -56,6 +56,7 @@ BACKGROUND_STDOUT_LOG_ENV = "BREAST_CANCER_ANALYSIS_BACKGROUND_STDOUT_LOG_PATH"
 BACKGROUND_STDERR_LOG_ENV = "BREAST_CANCER_ANALYSIS_BACKGROUND_STDERR_LOG_PATH"
 DEVICE_POLICY_VALUES = {"gpu-first", "cpu-only", "gpu-only", "adaptive"}
 GPU_HEALTH_STATES = {"healthy", "cooling_down", "unhealthy"}
+STREAMING_QUEUE_TASK_THRESHOLD = MATERIALIZED_QUEUE_HARD_LIMIT
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ class IterativeRunOptions:
     rerun_completed: bool = False
     limit: int | None = None
     isolate_tasks: bool = False
-    task_cooldown_seconds: float = 2.0
+    task_cooldown_seconds: float = 0.0
     task_timeout_seconds: float | None = None
     run_task_command_base: tuple[str, ...] | None = None
     device_policy: str = "adaptive"
@@ -129,6 +130,7 @@ def _default_runner_runtime() -> dict[str, Any]:
         "last_successful_device": None,
         "gpu_recovery_cooldown_until": None,
         "oom_policy_stop": None,
+        "stream_queue_mode": False,
     }
 
 
@@ -359,6 +361,22 @@ def build_experiment_record(task: TrainingTask, config: TrainingConfig) -> dict[
     }
 
 
+def build_training_task_from_record(
+    record: dict[str, Any],
+    config: TrainingConfig,
+) -> TrainingTask:
+    preprocessing_task = build_preprocessing_task(
+        str(record["preproc_id"]),
+        json.loads(str(record["param_json"])),
+        param_grids=config.preprocessing_grids,
+    )
+    return TrainingTask(
+        model_name=str(record["model_name"]),
+        preprocessing_task=preprocessing_task,
+        augmentations_per_image=int(record.get("augmentations_per_image", 1)),
+    )
+
+
 class ExperimentStateStore:
     def __init__(self, project_paths: ProjectPaths) -> None:
         self.project_paths = project_paths
@@ -534,6 +552,46 @@ class ExperimentStateStore:
         self._persist_state(state, full_snapshot_sync=True)
         return state
 
+    def register_task_record(
+        self,
+        record: dict[str, Any],
+        *,
+        config_path: Path,
+    ) -> dict[str, Any]:
+        state = self.load_state(config_path=config_path)
+        existing = next((task for task in state["tasks"] if task.get("id") == record["id"]), None)
+        now = _timestamp_now()
+        if existing is None:
+            task_payload = {
+                **record,
+                "created_at": now,
+                "updated_at": now,
+            }
+            state["tasks"].append(_apply_task_defaults(task_payload))
+        else:
+            existing.update(
+                {
+                    **record,
+                    "created_at": existing.get("created_at", now),
+                    "updated_at": now,
+                    "started_at": existing.get("started_at"),
+                    "finished_at": existing.get("finished_at"),
+                    "last_duration_seconds": existing.get("last_duration_seconds"),
+                    "attempts": int(existing.get("attempts", 0)),
+                    "attempt_history": list(existing.get("attempt_history", [])),
+                    "gpu_attempts": int(existing.get("gpu_attempts", 0)),
+                    "cpu_attempts": int(existing.get("cpu_attempts", 0)),
+                    "final_device": existing.get("final_device"),
+                    "failure_kind": existing.get("failure_kind"),
+                    "fallback_reason": existing.get("fallback_reason"),
+                    "error_summary": existing.get("error_summary"),
+                    "result_summary": dict(existing.get("result_summary", {})),
+                }
+            )
+            _apply_task_defaults(existing)
+        self._persist_state(state, snapshot_task_ids={str(record["id"])})
+        return state
+
     def _reconcile_running_tasks(self, state: dict[str, Any]) -> None:
         now = _timestamp_now()
         for task in state["tasks"]:
@@ -579,7 +637,9 @@ class ExperimentStateStore:
     ) -> None:
         state["updated_at"] = _timestamp_now()
         _atomic_write_json(self.state_path, state)
-        self._write_summary_csv(state)
+        stream_queue_mode = bool(dict(state.get("runtime", {})).get("stream_queue_mode"))
+        if not stream_queue_mode:
+            self._write_summary_csv(state)
         if full_snapshot_sync:
             self._write_task_snapshots(state)
         elif snapshot_task_ids:
@@ -633,6 +693,47 @@ class ExperimentStateStore:
             writer.writerows(rows)
             temp_path = Path(handle.name)
         temp_path.replace(self.summary_path)
+
+    def append_summary_row(self, task: dict[str, Any]) -> None:
+        row = self._summary_row_from_task(task)
+        self.summary_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.summary_path.exists():
+            with self.summary_path.open("w", encoding="utf-8", newline="") as handle:
+                fieldnames = sorted(row.keys())
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow(row)
+            return
+
+        with self.summary_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            existing_fieldnames = list(reader.fieldnames or [])
+            existing_rows = None
+            missing_keys = [key for key in row.keys() if key not in existing_fieldnames]
+            if missing_keys:
+                existing_rows = list(reader)
+
+        if missing_keys:
+            fieldnames = sorted({*existing_fieldnames, *row.keys()})
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=self.summary_path.parent,
+                delete=False,
+                encoding="utf-8",
+                newline="",
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                for existing_row in existing_rows or []:
+                    writer.writerow(existing_row)
+                writer.writerow(row)
+                temp_path = Path(handle.name)
+            temp_path.replace(self.summary_path)
+            return
+
+        with self.summary_path.open("a", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=existing_fieldnames)
+            writer.writerow(row)
 
     def _summary_row_from_task(self, task: dict[str, Any]) -> dict[str, Any]:
         row = {
@@ -694,6 +795,8 @@ class ExperimentStateStore:
             raise ValueError(f"Unsupported task status: {status}")
 
         state = self.load_state()
+        stream_queue_mode = bool(dict(state.get("runtime", {})).get("stream_queue_mode"))
+        expected_counts = state.get("expected_counts")
         now = _timestamp_now()
         task_found = False
         for task in state["tasks"]:
@@ -701,6 +804,7 @@ class ExperimentStateStore:
                 continue
 
             task_found = True
+            previous_status = str(task.get("status", "pending"))
             task["status"] = status
             task["updated_at"] = now
             task["error_summary"] = error_summary
@@ -717,11 +821,19 @@ class ExperimentStateStore:
                 if result_summary is not None:
                     task["result_summary"] = _normalize_json_value(result_summary)
                 state["current_task_id"] = None
+
+            if stream_queue_mode and isinstance(expected_counts, dict) and previous_status != status:
+                if previous_status in TASK_STATUSES:
+                    expected_counts[previous_status] = max(0, int(expected_counts.get(previous_status, 0)) - 1)
+                expected_counts[status] = int(expected_counts.get(status, 0)) + 1
             break
 
         if not task_found:
             raise KeyError(f"Task id not found in runner state: {task_id}")
 
+        if stream_queue_mode and status in {"completed", "failed", "stopped"}:
+            state["expected_counts"] = expected_counts
+            self.append_summary_row(next(task for task in state["tasks"] if task["id"] == task_id))
         self._persist_state(state, snapshot_task_ids={task_id})
         return state
 
@@ -841,11 +953,14 @@ class ExperimentStateStore:
                 current_task = task
                 break
 
+        runtime = dict(_default_runner_runtime())
+        runtime.update(dict(state.get("runtime", {})))
         total = len(state["tasks"])
         expected_total = state.get("expected_total_experiments")
         expected_counts = state.get("expected_counts")
+        stream_queue_mode = bool(runtime.get("stream_queue_mode"))
         if (
-            total == 0
+            (total == 0 or stream_queue_mode)
             and isinstance(expected_total, int)
             and expected_total > 0
             and isinstance(expected_counts, dict)
@@ -871,9 +986,6 @@ class ExperimentStateStore:
             overall_status = "completed"
         else:
             overall_status = "idle"
-        runtime = dict(_default_runner_runtime())
-        runtime.update(dict(state.get("runtime", {})))
-
         return {
             "overall_status": overall_status,
             "counts": counts,
@@ -903,6 +1015,7 @@ class ExperimentStateStore:
             "isolate_tasks": runtime.get("isolate_tasks"),
             "allow_huge_queue": runtime.get("allow_huge_queue"),
             "max_queue_tasks": runtime.get("max_queue_tasks"),
+            "stream_queue_mode": runtime.get("stream_queue_mode"),
         }
 
     def reset(
@@ -977,7 +1090,7 @@ class IterativeExperimentRunner:
         self.logger = self._build_logger()
         self._previous_signal_handlers: dict[int, Any] = {}
         self._peak_process_memory_mb: float | None = None
-        self._task_cooldown_seconds: float = 2.0
+        self._task_cooldown_seconds: float = 0.0
         self._cpu_limits_applied = False
 
     def _build_logger(self) -> logging.Logger:
@@ -1391,12 +1504,92 @@ class IterativeExperimentRunner:
                 return task
         raise KeyError(f"Task id not found in runner state: {task_id}")
 
-    def _run_task_subprocess_command(self, task_id: str, command_base: tuple[str, ...] | None) -> list[str]:
+    def _default_run_task_command_base(
+        self,
+        *,
+        task_cooldown_seconds: float,
+        max_queue_tasks: int | None,
+        queue_export_path: str | None,
+    ) -> tuple[str, ...]:
+        command: list[str] = [
+            sys.executable,
+            str(_project_root() / "run_experiments.py"),
+            "run-task",
+            "--config",
+            str(self.config_path),
+            "--raw-data-dir",
+            str(self.project_paths.raw_data_dir),
+            "--artifacts-dir",
+            str(self.project_paths.artifacts_dir),
+            "--train-split",
+            str(self.training_config.train_split_path),
+            "--test-split",
+            str(self.training_config.test_split_path),
+            "--history-dir",
+            str(self.training_config.history_dir),
+            "--predictions-dir",
+            str(self.training_config.predictions_dir),
+            "--folds",
+            str(self.training_config.folds),
+            "--validation-size",
+            str(self.training_config.validation_size),
+            "--random-state",
+            str(self.training_config.random_state),
+            "--batch-size",
+            str(self.training_config.batch_size),
+            "--epochs",
+            str(self.training_config.epochs),
+            "--learning-rate",
+            str(self.training_config.learning_rate),
+            "--loss",
+            str(self.training_config.loss),
+            "--task-cooldown-seconds",
+            str(task_cooldown_seconds),
+        ]
+        if self.training_config.model_names:
+            command.append("--models")
+            command.extend(str(name) for name in self.training_config.model_names)
+        if self.training_config.preprocessing_ids:
+            command.append("--preprocessing")
+            command.extend(str(name) for name in self.training_config.preprocessing_ids)
+        if self.training_config.augmentation_values:
+            command.append("--augmentations-per-image")
+            command.extend(str(value) for value in self.training_config.augmentation_values)
+        command.append(
+            "--combined-preprocessing"
+            if self.training_config.include_combinations
+            else "--no-combined-preprocessing"
+        )
+        command.append("--run-skip" if self.training_config.run_skip else "--no-run-skip")
+        command.extend(self.cpu_execution_limits.to_cli_args())
+        if max_queue_tasks is None:
+            command.append("--allow-huge-queue")
+        else:
+            command.extend(["--max-queue-tasks", str(max_queue_tasks)])
+        if queue_export_path:
+            command.extend(["--queue-export-path", str(queue_export_path)])
+        return tuple(command)
+
+    def _run_task_subprocess_command(
+        self,
+        task_id: str,
+        command_base: tuple[str, ...] | None,
+        *,
+        task_record: dict[str, Any] | None = None,
+    ) -> list[str]:
         if command_base is None:
             command = [sys.executable, "run_experiments.py", "run-task"]
         else:
             command = [str(entry) for entry in command_base]
-        return [*command, "--task-id", task_id]
+        resolved = [*command, "--task-id", task_id]
+        if task_record is not None:
+            resolved.extend(
+                [
+                    "--task-record-json",
+                    json.dumps(_normalize_json_value(task_record), sort_keys=True, separators=(",", ":")),
+                ]
+            )
+        return resolved
 
     def _probe_runtime_subprocess_command(self, requested_device: str) -> list[str]:
         command = [
@@ -1640,9 +1833,10 @@ class IterativeExperimentRunner:
         requested_device: str,
         env: dict[str, str],
         probe_result: dict[str, Any],
+        task_record: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         task_id = record["id"]
-        command = self._run_task_subprocess_command(task_id, command_base)
+        command = self._run_task_subprocess_command(task_id, command_base, task_record=task_record)
         started_at = datetime.now(timezone.utc)
         self.logger.info(
             "Running isolated task %s via subprocess (attempt=%s, device=%s): %s",
@@ -1926,12 +2120,22 @@ class IterativeExperimentRunner:
     ) -> dict[str, Any]:
         task_id = record["id"]
         policy = options.device_policy
+        run_task_command_base = (
+            options.run_task_command_base
+            if options.run_task_command_base is not None
+            else self._default_run_task_command_base(
+                task_cooldown_seconds=self._task_cooldown_seconds,
+                max_queue_tasks=options.max_queue_tasks,
+                queue_export_path=options.queue_export_path,
+            )
+        )
         attempt_results: list[dict[str, Any]] = []
         attempted_devices: list[str] = []
         gpu_retries_remaining = int(options.gpu_retries)
         cpu_retries_remaining = int(options.cpu_retries)
         total_attempts = 0
         next_device = "cpu" if policy == "cpu-only" else str(runtime_state.get("preferred_device", "gpu"))
+        self.store.register_task_record(record, config_path=self.config_path)
 
         if policy == "gpu-only":
             next_device = "gpu"
@@ -1971,12 +2175,13 @@ class IterativeExperimentRunner:
             else:
                 attempt_result = self._execute_task_entry_isolated_subprocess(
                     record=record,
-                    command_base=options.run_task_command_base,
+                    command_base=run_task_command_base,
                     timeout_seconds=options.task_timeout_seconds,
                     attempt_number=total_attempts,
                     requested_device=next_device,
                     env=attempt_env,
                     probe_result=probe_result,
+                    task_record=record,
                 )
             attempt_results.append(attempt_result)
             attempted_devices.append(next_device)
@@ -2418,9 +2623,10 @@ class IterativeExperimentRunner:
         self,
         task_id: str,
         *,
-        task_cooldown_seconds: float = 2.0,
+        task_cooldown_seconds: float = 0.0,
         max_queue_tasks: int | None = MAX_QUEUE_TASKS,
         queue_export_path: str | Path | None = None,
+        task_record: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._task_cooldown_seconds = max(0.0, float(task_cooldown_seconds))
         if max_queue_tasks is not None and max_queue_tasks <= 0:
@@ -2437,14 +2643,21 @@ class IterativeExperimentRunner:
             if pid is not None and not (isolated_child_mode and parent_matches):
                 raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
-        queue_entries, state = self._build_queue_and_sync_state(
-            max_queue_tasks=max_queue_tasks,
-            queue_export_path=queue_export_path,
-        )
-        selected = self._find_task_in_queue(queue_entries, task_id)
-        if selected is None:
-            raise ValueError(f"Task id '{task_id}' was not found in the experiment queue for config '{self.config_path}'.")
-        record, training_task = selected
+        if task_record is None:
+            queue_entries, state = self._build_queue_and_sync_state(
+                max_queue_tasks=max_queue_tasks,
+                queue_export_path=queue_export_path,
+            )
+            selected = self._find_task_in_queue(queue_entries, task_id)
+            if selected is None:
+                raise ValueError(f"Task id '{task_id}' was not found in the experiment queue for config '{self.config_path}'.")
+            record, training_task = selected
+        else:
+            record = _apply_task_defaults(dict(task_record))
+            if str(record.get("id")) != task_id:
+                raise ValueError(f"Task id mismatch: expected '{task_id}', received '{record.get('id')}'.")
+            training_task = build_training_task_from_record(record, self.training_config)
+            state = self.store.register_task_record(record, config_path=self.config_path)
         state_task = next(task for task in state["tasks"] if task["id"] == task_id)
         resolved_status = str(state_task.get("status", "pending"))
 
@@ -2518,7 +2731,16 @@ class IterativeExperimentRunner:
     def run(self, options: IterativeRunOptions | None = None) -> dict[str, Any]:
         self.logger = self._build_logger()
         resolved_options = options or IterativeRunOptions()
-        if not resolved_options.isolate_tasks:
+        has_process_local_components = (
+            self.model_builders is not None or self.preprocessing_tasks is not None
+        )
+        if resolved_options.isolate_tasks and has_process_local_components:
+            self.logger.warning(
+                "Disabling isolate_tasks because custom model_builders/preprocessing_tasks "
+                "are only available in the current process."
+            )
+            resolved_options = replace(resolved_options, isolate_tasks=False)
+        elif not resolved_options.isolate_tasks and not has_process_local_components:
             self.logger.warning(
                 "Forcing isolate_tasks=True because device-policy handling and GPU/CPU recovery "
                 "are only reliable with per-task subprocess isolation."
@@ -2551,6 +2773,16 @@ class IterativeExperimentRunner:
                 raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
         estimated_counts = self.estimate_grid_counts()
+        use_stream_queue_mode = (
+            resolved_options.max_queue_tasks is None
+            and estimated_counts.total_experiments > STREAMING_QUEUE_TASK_THRESHOLD
+            and not has_process_local_components
+        )
+        if use_stream_queue_mode and (resolved_options.rerun_failed or resolved_options.rerun_completed):
+            raise ValueError(
+                "rerun_failed/rerun_completed are not supported with streamed huge-queue execution. "
+                "Use a targeted rerun instead."
+            )
         self.store.set_expected_queue_totals(
             total_experiments=estimated_counts.total_experiments,
         )
@@ -2563,17 +2795,22 @@ class IterativeExperimentRunner:
             stderr_log_path=os.environ.get(BACKGROUND_STDERR_LOG_ENV),
         )
 
-        queue_entries, state = self._build_queue_and_sync_state(
-            max_queue_tasks=resolved_options.max_queue_tasks,
-            queue_export_path=resolved_options.queue_export_path,
-        )
-        runnable_ids = self.store.select_runnable_task_ids(
-            state,
-            rerun_failed=resolved_options.rerun_failed,
-            rerun_completed=resolved_options.rerun_completed,
-        )
-        if resolved_options.limit is not None:
-            runnable_ids = runnable_ids[: resolved_options.limit]
+        queue_entries: list[tuple[dict[str, Any], TrainingTask]] = []
+        runnable_ids: list[str] = []
+        if use_stream_queue_mode:
+            state = self.store.load_state(config_path=self.config_path)
+        else:
+            queue_entries, state = self._build_queue_and_sync_state(
+                max_queue_tasks=resolved_options.max_queue_tasks,
+                queue_export_path=resolved_options.queue_export_path,
+            )
+            runnable_ids = self.store.select_runnable_task_ids(
+                state,
+                rerun_failed=resolved_options.rerun_failed,
+                rerun_completed=resolved_options.rerun_completed,
+            )
+            if resolved_options.limit is not None:
+                runnable_ids = runnable_ids[: resolved_options.limit]
         runtime_state = dict(_default_runner_runtime())
         runtime_state.update(dict(state.get("runtime", {})))
         runtime_state["device_policy"] = resolved_options.device_policy
@@ -2584,6 +2821,7 @@ class IterativeExperimentRunner:
         runtime_state["isolate_tasks"] = bool(resolved_options.isolate_tasks)
         runtime_state["allow_huge_queue"] = resolved_options.max_queue_tasks is None
         runtime_state["max_queue_tasks"] = resolved_options.max_queue_tasks
+        runtime_state["stream_queue_mode"] = use_stream_queue_mode
         if resolved_options.device_policy == "cpu-only":
             runtime_state["preferred_device"] = "cpu"
             runtime_state["gpu_health"] = "unhealthy"
@@ -2593,7 +2831,7 @@ class IterativeExperimentRunner:
             self._validate_gpu_only_policy(runtime_state)
         self.store.update_runtime(runtime_state)
 
-        if not runnable_ids:
+        if not use_stream_queue_mode and not runnable_ids:
             self.logger.info("No pending experiments to run.")
             snapshot = self.store.summarize()
             snapshot["peak_process_memory_mb"] = self._peak_process_memory_mb
@@ -2607,15 +2845,21 @@ class IterativeExperimentRunner:
             stderr_log_path=os.environ.get(BACKGROUND_STDERR_LOG_ENV),
         )
         self._install_signal_handlers()
+        planned_runnable_count = estimated_counts.total_experiments if use_stream_queue_mode else len(runnable_ids)
         self.logger.info(
-            "Starting iterative run with %s runnable experiments.",
-            len(runnable_ids),
+            "Starting iterative run with %s runnable experiments (stream_queue_mode=%s).",
+            planned_runnable_count,
+            use_stream_queue_mode,
         )
         self._log_structured_phase(
             phase="run:start",
-            message=f"Starting run with {len(runnable_ids)} runnable tasks.",
+            message=(
+                f"Starting run with {planned_runnable_count} runnable tasks "
+                f"(stream_queue_mode={use_stream_queue_mode})."
+            ),
             extra={
-                "runnable_count": len(runnable_ids),
+                "runnable_count": planned_runnable_count,
+                "stream_queue_mode": use_stream_queue_mode,
                 "isolate_tasks": resolved_options.isolate_tasks,
                 "task_cooldown_seconds": self._task_cooldown_seconds,
                 "task_timeout_seconds": resolved_options.task_timeout_seconds,
@@ -2635,10 +2879,14 @@ class IterativeExperimentRunner:
         try:
             runnable_set = set(runnable_ids)
             if resolved_options.isolate_tasks:
-                for record, _training_task in queue_entries:
+                queue_iterable = self._iter_queue_entries() if use_stream_queue_mode else queue_entries
+                streamed_started = 0
+                for record, _training_task in queue_iterable:
                     task_id = record["id"]
-                    if task_id not in runnable_set:
+                    if not use_stream_queue_mode and task_id not in runnable_set:
                         continue
+                    if use_stream_queue_mode and resolved_options.limit is not None and streamed_started >= resolved_options.limit:
+                        break
                     if self.store.stop_requested():
                         self.logger.info(
                             "Stop requested before starting %s. Ending current run.",
@@ -2651,6 +2899,8 @@ class IterativeExperimentRunner:
                         options=resolved_options,
                         runtime_state=runtime_state,
                     )
+                    if use_stream_queue_mode:
+                        streamed_started += 1
                     self.store.update_runtime(runtime_state)
                     if str(task_result.get("status", "failed")) != "completed":
                         final_failure_kind = str(task_result.get("failure_kind") or "")
@@ -2686,10 +2936,14 @@ class IterativeExperimentRunner:
             else:
                 train_df = load_split_dataframe(self.training_config.train_split_path)
                 test_df = load_split_dataframe(self.training_config.test_split_path)
-                for record, training_task in queue_entries:
+                queue_iterable = self._iter_queue_entries() if use_stream_queue_mode else queue_entries
+                streamed_started = 0
+                for record, training_task in queue_iterable:
                     task_id = record["id"]
-                    if task_id not in runnable_set:
+                    if not use_stream_queue_mode and task_id not in runnable_set:
                         continue
+                    if use_stream_queue_mode and resolved_options.limit is not None and streamed_started >= resolved_options.limit:
+                        break
                     if self.store.stop_requested():
                         self.logger.info(
                             "Stop requested before starting %s. Ending current run.",
@@ -2697,12 +2951,16 @@ class IterativeExperimentRunner:
                         )
                         break
 
+                    if use_stream_queue_mode:
+                        self.store.register_task_record(record, config_path=self.config_path)
                     self._execute_task_entry(
                         record=record,
                         training_task=training_task,
                         train_df=train_df,
                         test_df=test_df,
                     )
+                    if use_stream_queue_mode:
+                        streamed_started += 1
 
                     if self.store.stop_requested():
                         self.logger.info(
@@ -2727,9 +2985,10 @@ def run_one_experiment_task(
     config_path: Path,
     project_paths: ProjectPaths,
     training_config: TrainingConfig,
-    task_cooldown_seconds: float = 2.0,
+    task_cooldown_seconds: float = 0.0,
     max_queue_tasks: int | None = MAX_QUEUE_TASKS,
     queue_export_path: str | Path | None = None,
+    task_record: dict[str, Any] | None = None,
     cpu_execution_limits: CpuExecutionLimits | None = None,
     model_builders: dict[str, ModelBuilder] | None = None,
     preprocessing_tasks: Iterable[Any] | None = None,
@@ -2747,6 +3006,7 @@ def run_one_experiment_task(
         task_cooldown_seconds=task_cooldown_seconds,
         max_queue_tasks=max_queue_tasks,
         queue_export_path=queue_export_path,
+        task_record=task_record,
     )
 
 

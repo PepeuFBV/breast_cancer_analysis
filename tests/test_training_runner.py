@@ -13,6 +13,7 @@ from pipeline.train.preprocessing import PreprocessingTask
 from pipeline.train.runner import (
     TrainingConfig,
     build_training_tasks,
+    iter_training_tasks,
     run_training_pipeline,
 )
 
@@ -119,6 +120,42 @@ class TrainingRunnerTest(unittest.TestCase):
         )
 
         self.assertEqual([task_entry.augmentations_per_image for task_entry in tasks], [1, 2, 3])
+
+    def test_iter_training_tasks_streams_preprocessing_iterable(self) -> None:
+        task = PreprocessingTask(
+            preproc_id="none",
+            params={},
+            param_display="default",
+            param_id="default",
+            param_json="{}",
+            is_combined=False,
+            apply=lambda image: image,
+        )
+        config = TrainingConfig(
+            train_split_path=Path("train.csv"),
+            test_split_path=Path("test.csv"),
+            history_dir=Path("history"),
+            predictions_dir=Path("predictions"),
+            model_names=["custom cnn"],
+            include_combinations=False,
+            augmentation_values=(1, 2),
+        )
+
+        def _preprocessing_stream():
+            yield task
+            raise AssertionError("iterator should not be fully consumed before first task is yielded")
+
+        iterator = iter_training_tasks(
+            config,
+            model_builders={"custom cnn": lambda *args, **kwargs: _FakeModel(0.8)},
+            preprocessing_tasks=_preprocessing_stream(),
+        )
+
+        first_task = next(iter(iterator))
+
+        self.assertEqual(first_task.preproc_id, "none")
+        self.assertEqual(first_task.model_name, "custom cnn")
+        self.assertEqual(first_task.augmentations_per_image, 1)
 
     def test_cross_validation_persists_best_fold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

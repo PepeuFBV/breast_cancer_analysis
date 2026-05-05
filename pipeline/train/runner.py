@@ -675,7 +675,6 @@ def _run_cross_validation(
     model_runtime = (config.model_runtime or {}).get(model_name)
     for fold_index, (fit_idx, validation_idx) in enumerate(split_iterator, start=1):
         clear_ml_memory()
-        time.sleep(1)
 
         fit_df: pd.DataFrame | None = None
         validation_df: pd.DataFrame | None = None
@@ -775,14 +774,12 @@ def iter_training_tasks(
     available_builders = model_builders or MODEL_BUILDERS
     model_names = config.model_names or list(available_builders.keys())
     resolved_preprocessing_tasks = (
-        list(preprocessing_tasks)
+        preprocessing_tasks
         if preprocessing_tasks is not None
-        else list(
-            iter_preprocessing_tasks(
-                config.preprocessing_ids,
-                include_combinations=config.include_combinations,
-                param_grids=config.preprocessing_grids,
-            )
+        else iter_preprocessing_tasks(
+            config.preprocessing_ids,
+            include_combinations=config.include_combinations,
+            param_grids=config.preprocessing_grids,
         )
     )
 
@@ -793,7 +790,9 @@ def iter_training_tasks(
                 "augmentation_values must contain integers >= 0, "
                 f"got {augmentation_values!r}."
             )
-        for preprocessing_task in resolved_preprocessing_tasks:
+
+    for preprocessing_task in resolved_preprocessing_tasks:
+        for augmentation_value in augmentation_values:
             for model_name in model_names:
                 if model_name not in available_builders:
                     raise ValueError(f"Unknown model name requested: {model_name}")

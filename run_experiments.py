@@ -57,7 +57,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         "--task-cooldown-seconds",
         type=float,
         default=None,
-        help="Cooldown before each task execution. Defaults to config runner.task_cooldown_seconds (2).",
+        help="Cooldown before each task execution. Defaults to config runner.task_cooldown_seconds (0).",
     )
     parser.add_argument(
         "--task-timeout-seconds",
@@ -240,12 +240,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--task-cooldown-seconds",
         type=float,
         default=None,
-        help="Cooldown before executing the task. Defaults to config runner.task_cooldown_seconds (2).",
+        help="Cooldown before executing the task. Defaults to config runner.task_cooldown_seconds (0).",
     )
     run_task_parser.add_argument(
         "--task-id",
         required=True,
         help="Persisted experiment task id (example: exp-xxxxxxxxxxxxxxxx).",
+    )
+    run_task_parser.add_argument(
+        "--task-record-json",
+        default=None,
+        help="Serialized task record used by isolated child workers to avoid rebuilding the full queue.",
     )
     run_task_parser.add_argument(
         "--max-queue-tasks",
@@ -556,6 +561,8 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print(f"Allow huge queue: {snapshot['allow_huge_queue']}")
     if snapshot.get("max_queue_tasks") is not None:
         print(f"Max queue tasks: {snapshot['max_queue_tasks']}")
+    if snapshot.get("stream_queue_mode") is not None:
+        print(f"Stream queue mode: {snapshot['stream_queue_mode']}")
     if snapshot.get("preferred_device") is not None:
         print(f"Current preferred device: {snapshot['preferred_device']}")
     if snapshot.get("gpu_health") is not None:
@@ -626,6 +633,85 @@ def _print_count_result(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_launch_startup_estimate(*, total_experiments: int, stream_queue_mode: bool) -> str:
+    if stream_queue_mode:
+        if total_experiments >= 1_000_000:
+            return "about 10-45 seconds"
+        if total_experiments >= 250_000:
+            return "about 10-30 seconds"
+        return "about 5-20 seconds"
+    if total_experiments >= 75_000:
+        return "about 1-5 minutes"
+    if total_experiments >= 25_000:
+        return "about 20-90 seconds"
+    return "about 5-20 seconds"
+
+
+def _resolve_launch_preflight(args: argparse.Namespace) -> dict[str, Any]:
+    from pipeline.experiments.runner import STREAMING_QUEUE_TASK_THRESHOLD
+
+    runner = _build_runner(args)
+    counts = runner.estimate_grid_counts()
+    (
+        isolate_tasks,
+        _task_cooldown_seconds,
+        _task_timeout_seconds,
+        device_policy,
+        _gpu_retries,
+        _cpu_retries,
+        _cooldown_after_oom_seconds,
+        _gpu_recovery_cooldown_seconds,
+        _max_consecutive_oom,
+        _max_task_attempts,
+        _fail_fast_on_oom,
+    ) = _resolve_runner_cli_options(args)
+    has_process_local_components = (
+        runner.model_builders is not None or runner.preprocessing_tasks is not None
+    )
+    max_queue_tasks = _resolve_max_queue_tasks(args)
+    stream_queue_mode = (
+        max_queue_tasks is None
+        and counts.total_experiments > STREAMING_QUEUE_TASK_THRESHOLD
+        and not has_process_local_components
+    )
+    if stream_queue_mode and (args.rerun_failed or args.rerun_completed):
+        raise ValueError(
+            "rerun_failed/rerun_completed are not supported with streamed huge-queue execution. "
+            "Use a targeted rerun instead."
+        )
+    return {
+        "counts": counts,
+        "isolate_tasks": isolate_tasks,
+        "device_policy": device_policy,
+        "stream_queue_mode": stream_queue_mode,
+        "max_queue_tasks": max_queue_tasks,
+        "startup_estimate": _format_launch_startup_estimate(
+            total_experiments=int(counts.total_experiments),
+            stream_queue_mode=stream_queue_mode,
+        ),
+    }
+
+
+def _print_launch_preflight(preflight: dict[str, Any]) -> None:
+    counts = preflight["counts"]
+    queue_mode = "streamed" if preflight["stream_queue_mode"] else "materialized"
+    print("Launch preflight:")
+    print(f"Queue mode: {queue_mode}")
+    print(f"Estimated startup overhead: {preflight['startup_estimate']} (heuristic)")
+    print(f"Total experiments: {int(counts.total_experiments):,}")
+    print(f"Total fits: {int(counts.total_fits):,}")
+    print(f"Device policy: {preflight['device_policy']}")
+    print(f"Isolate tasks: {preflight['isolate_tasks']}")
+    if preflight["max_queue_tasks"] is None:
+        print("Max queue tasks: unlimited")
+    else:
+        print(f"Max queue tasks: {int(preflight['max_queue_tasks']):,}")
+    if preflight["stream_queue_mode"]:
+        print("Warning: huge queue detected; the runner will stream task discovery instead of materializing full state.")
+    elif int(counts.total_experiments) >= 25_000:
+        print("Warning: large materialized queue; first task may be delayed while state is written.")
+
+
 def main(argv: list[str] | None = None) -> int:
     resolved_argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(resolved_argv)
@@ -653,6 +739,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Graceful stop: python run_experiments.py stop{_resolution_args_suffix(args)}")
             print(f"Immediate stop: python run_experiments.py stop{_resolution_args_suffix(args)} --kill")
             return 1
+        try:
+            preflight = _resolve_launch_preflight(args)
+        except ValueError as error:
+            print(str(error))
+            return 1
+        _print_launch_preflight(preflight)
         process = launch_background_runner(
             script_path=Path(__file__).resolve(),
             forwarded_args=resolved_argv[1:],
@@ -742,6 +834,7 @@ def main(argv: list[str] | None = None) -> int:
                 task_cooldown_seconds=task_cooldown_seconds,
                 max_queue_tasks=_resolve_max_queue_tasks(args),
                 queue_export_path=args.queue_export_path,
+                task_record=(None if args.task_record_json is None else json.loads(args.task_record_json)),
                 cpu_execution_limits=_resolve_cpu_execution_limits(args),
             )
         except RuntimeError as error:
