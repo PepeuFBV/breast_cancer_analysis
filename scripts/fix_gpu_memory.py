@@ -91,14 +91,14 @@ def suggest_fixes(gpu_info: dict, oom_info: dict) -> list[str]:
         if oom_info["models_with_oom"]:
             suggestions.append(f"  Models with OOM: {', '.join(oom_info['models_with_oom'])}")
         suggestions.append("  The pipeline now includes automatic retry with memory cleanup")
-        suggestions.append("  Rerun failed experiments: ./.venv/bin/python run_experiments.py run --rerun-failed")
+        suggestions.append("  Rerun failed experiments: ./.venv/bin/python run_experiments.py launch --rerun-failed")
 
     if gpu_info["usage_percent"] > 80:
         suggestions.append(f"GPU memory is {gpu_info['usage_percent']:.1f}% full")
         suggestions.append("  Stop the runner and restart to clear memory:")
         suggestions.append("    ./.venv/bin/python run_experiments.py stop")
         suggestions.append("    Wait for current experiment to finish, then:")
-        suggestions.append("    ./.venv/bin/python run_experiments.py run")
+        suggestions.append("    ./.venv/bin/python run_experiments.py launch")
 
     return suggestions
 
@@ -163,7 +163,7 @@ def apply_fix(fix_type: str) -> int:
 
     elif fix_type == "rerun-failed":
         result = subprocess.run(
-            [str(VENV_PYTHON), "run_experiments.py", "run", "--rerun-failed"],
+            [str(VENV_PYTHON), "run_experiments.py", "launch", "--rerun-failed"],
             cwd=PROJECT_ROOT,
         )
         return result.returncode
@@ -172,7 +172,7 @@ def apply_fix(fix_type: str) -> int:
         print("Stopping runner...")
         subprocess.run([str(VENV_PYTHON), "run_experiments.py", "stop"], cwd=PROJECT_ROOT)
         print("\nWait for the current experiment to finish, then run:")
-        print("  ./.venv/bin/python run_experiments.py run")
+        print("  ./.venv/bin/python run_experiments.py launch")
         return 0
 
     else:
