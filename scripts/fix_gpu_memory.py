@@ -91,7 +91,7 @@ def suggest_fixes(gpu_info: dict, oom_info: dict) -> list[str]:
         if oom_info["models_with_oom"]:
             suggestions.append(f"  Models with OOM: {', '.join(oom_info['models_with_oom'])}")
         suggestions.append("  The pipeline now includes automatic retry with memory cleanup")
-        suggestions.append("  Rerun failed experiments: ./.venv/bin/python run_experiments.py launch --rerun-failed")
+        suggestions.append("  Rerun failed experiments: ./.venv/bin/python run_experiments.py launch --_launch-worker --rerun-failed")
 
     if gpu_info["usage_percent"] > 80:
         suggestions.append(f"GPU memory is {gpu_info['usage_percent']:.1f}% full")
@@ -163,7 +163,7 @@ def apply_fix(fix_type: str) -> int:
 
     elif fix_type == "rerun-failed":
         result = subprocess.run(
-            [str(VENV_PYTHON), "run_experiments.py", "launch", "--rerun-failed"],
+            [str(VENV_PYTHON), "run_experiments.py", "launch", "--_launch-worker", "--rerun-failed"],
             cwd=PROJECT_ROOT,
         )
         return result.returncode

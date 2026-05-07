@@ -604,11 +604,7 @@ class ExperimentStateStore:
             self._reconcile_running_tasks(stale_state)
             self._persist_state(stale_state, full_snapshot_sync=True)
         self.clear_pid_record()
-        reason = (
-            f"Recovered from stale runner pid={stale_pid}; marked {running_before} running task(s) as stopped."
-            if running_before > 0
-            else f"Recovered from stale runner pid={stale_pid}; no running tasks required reconciliation."
-        )
+        reason = f"Recovered from stale runner pid={stale_pid}; marked {running_before} running task(s) as stopped." if running_before > 0 else f"Recovered from stale runner pid={stale_pid}; no running tasks required reconciliation."
         self.record_recovery_event(reason=reason)
         return {
             "stale_pid": stale_pid,
@@ -2890,14 +2886,7 @@ class IterativeExperimentRunner:
         self.store.set_expected_queue_totals(
             total_experiments=estimated_counts.total_experiments,
         )
-        self.store.mark_launch_requested()
         command = [sys.executable, "run_experiments.py", "launch", "--_launch-worker"]
-        self.store.write_pid_record(
-            config_path=self.config_path,
-            command=command,
-            stdout_log_path=os.environ.get(BACKGROUND_STDOUT_LOG_ENV),
-            stderr_log_path=os.environ.get(BACKGROUND_STDERR_LOG_ENV),
-        )
 
         queue_entries: list[tuple[dict[str, Any], TrainingTask]] = []
         runnable_ids: list[str] = []
@@ -2936,6 +2925,7 @@ class IterativeExperimentRunner:
         self.store.update_runtime(runtime_state)
 
         if not use_stream_queue_mode and not runnable_ids:
+            self.store.mark_launch_requested()
             self.logger.info("No pending experiments to run.")
             snapshot = self.store.summarize()
             snapshot["peak_process_memory_mb"] = self._peak_process_memory_mb
