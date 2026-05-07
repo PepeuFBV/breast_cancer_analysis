@@ -5,6 +5,7 @@ on:
 
 jobs:
     checks:
+        name: Overall CI Checks
         runs-on: ubuntu-latest
 
         steps:
