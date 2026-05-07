@@ -14,9 +14,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.config import load_experiment_config
-from pipeline.data.validation import inspect_dataset_layout
-from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env
+from pipeline.config import load_experiment_config  # noqa: E402
+from pipeline.data.validation import inspect_dataset_layout  # noqa: E402
+from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env  # noqa: E402
 
 MIN_PYTHON = (3, 10)
 MAX_PYTHON_EXCLUSIVE = (3, 13)

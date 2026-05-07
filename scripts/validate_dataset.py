@@ -9,8 +9,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.config import load_experiment_config
-from pipeline.data.validation import (
+from pipeline.config import load_experiment_config  # noqa: E402
+from pipeline.data.validation import (  # noqa: E402
     format_dataset_layout_report,
     inspect_dataset_layout,
 )

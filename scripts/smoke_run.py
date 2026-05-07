@@ -14,10 +14,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.config import load_experiment_config
-from pipeline.evaluate.reporting import generate_final_report
-from pipeline.experiments import IterativeExperimentRunner, IterativeRunOptions
-from pipeline.train.preprocessing import PreprocessingTask
+from pipeline.config import load_experiment_config  # noqa: E402
+from pipeline.evaluate.reporting import generate_final_report  # noqa: E402
+from pipeline.experiments import (  # noqa: E402
+    IterativeExperimentRunner,
+    IterativeRunOptions,
+)
+from pipeline.train.preprocessing import PreprocessingTask  # noqa: E402
 
 
 class _SmokeHistory:
