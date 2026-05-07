@@ -9,8 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline.utils.gpu_env import (
+    WINDOWS_NATIVE_TF_GPU_MAX_VERSION,
+    bootstrap_tensorflow_runtime_env,
+    is_native_windows,
+)
 from pipeline.utils.memory import get_gpu_memory_info
-from pipeline.utils.gpu_env import WINDOWS_NATIVE_TF_GPU_MAX_VERSION, bootstrap_tensorflow_runtime_env, is_native_windows
 from pipeline.utils.runtime_limits import (
     CpuExecutionLimits,
     apply_cpu_runtime_limits,
@@ -179,20 +183,12 @@ def collect_runtime_probe(
 
     on_native_windows = is_native_windows()
     tensorflow_major_minor = _parse_major_minor(tensorflow_version)
-    windows_gpu_supported_tf = (
-        tensorflow_major_minor is not None and tensorflow_major_minor <= WINDOWS_NATIVE_TF_GPU_MAX_VERSION
-    )
+    windows_gpu_supported_tf = tensorflow_major_minor is not None and tensorflow_major_minor <= WINDOWS_NATIVE_TF_GPU_MAX_VERSION
     if on_native_windows and device != "cpu" and tensorflow_imported:
         if tensorflow_major_minor is None:
-            warnings.append(
-                "Could not parse TensorFlow version. Native Windows CUDA GPU requires TensorFlow 2.10.x."
-            )
+            warnings.append("Could not parse TensorFlow version. Native Windows CUDA GPU requires TensorFlow 2.10.x.")
         elif not windows_gpu_supported_tf:
-            stack_error = (
-                "Unsupported native Windows GPU stack detected: TensorFlow "
-                f"{tensorflow_version}. Native CUDA GPU on Windows requires TensorFlow 2.10.x "
-                "(Python 3.10 + CUDA 11.2 + cuDNN 8.1)."
-            )
+            stack_error = "Unsupported native Windows GPU stack detected: TensorFlow " f"{tensorflow_version}. Native CUDA GPU on Windows requires TensorFlow 2.10.x " "(Python 3.10 + CUDA 11.2 + cuDNN 8.1)."
             if device == "gpu":
                 errors.append(stack_error)
             else:
@@ -205,10 +201,7 @@ def collect_runtime_probe(
             pass
         elif not logical_gpu_devices:
             if on_native_windows and windows_gpu_supported_tf:
-                errors.append(
-                    "No TensorFlow GPU devices are visible on native Windows with TensorFlow 2.10.x. "
-                    "Check CUDA 11.2, cuDNN 8.1, PATH entries for CUDA bin/libnvvp, and reboot after driver/toolkit install."
-                )
+                errors.append("No TensorFlow GPU devices are visible on native Windows with TensorFlow 2.10.x. " "Check CUDA 11.2, cuDNN 8.1, PATH entries for CUDA bin/libnvvp, and reboot after driver/toolkit install.")
             else:
                 errors.append("No TensorFlow GPU devices are visible.")
         elif not tiny_gpu_op_ok:
