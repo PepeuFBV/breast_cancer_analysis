@@ -366,7 +366,7 @@ def test_run_task_command_parses_and_forwards_task_record_json(
             "--task-id",
             "exp-json",
             "--task-record-json",
-            "{\"id\":\"exp-json\",\"model_name\":\"custom cnn\"}",
+            '{"id":"exp-json","model_name":"custom cnn"}',
         ]
     )
 
@@ -628,21 +628,9 @@ def test_count_command_reports_expected_grid_sizes(capsys) -> None:
     module = _import_run_experiments_module()
 
     default_payload = module._count_payload(module.build_parser().parse_args(["count"]))
-    aug_payload = module._count_payload(
-        module.build_parser().parse_args(
-            ["count", "--augmentations-per-image", "1", "2", "3"]
-        )
-    )
-    comb_payload = module._count_payload(
-        module.build_parser().parse_args(
-            ["count", "--combined-preprocessing"]
-        )
-    )
-    both_payload = module._count_payload(
-        module.build_parser().parse_args(
-            ["count", "--combined-preprocessing", "--augmentations-per-image", "1", "2", "3"]
-        )
-    )
+    aug_payload = module._count_payload(module.build_parser().parse_args(["count", "--augmentations-per-image", "1", "2", "3"]))
+    comb_payload = module._count_payload(module.build_parser().parse_args(["count", "--combined-preprocessing"]))
+    both_payload = module._count_payload(module.build_parser().parse_args(["count", "--combined-preprocessing", "--augmentations-per-image", "1", "2", "3"]))
 
     assert default_payload["total_experiments"] == 4_330
     assert default_payload["total_fits"] == 17_320

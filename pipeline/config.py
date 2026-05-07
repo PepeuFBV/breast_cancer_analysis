@@ -64,10 +64,7 @@ def _normalize_augmentation_values(value: Any) -> tuple[int, ...]:
         normalized = (int(value),)
     invalid = [item for item in normalized if item < 0]
     if invalid:
-        raise ValueError(
-            "preprocess.augmentations_per_image values must be >= 0, "
-            f"got {invalid}."
-        )
+        raise ValueError("preprocess.augmentations_per_image values must be >= 0, " f"got {invalid}.")
     return normalized
 
 

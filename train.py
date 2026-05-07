@@ -55,10 +55,7 @@ def add_training_runtime_arguments(
         nargs="+",
         type=int,
         default=None,
-        help=(
-            "One or more augmentation counts to evaluate as an experiment dimension. "
-            "Examples: `--augmentations-per-image 3` or `--augmentations-per-image 1 2 3`."
-        ),
+        help=("One or more augmentation counts to evaluate as an experiment dimension. " "Examples: `--augmentations-per-image 3` or `--augmentations-per-image 1 2 3`."),
     )
     parser.add_argument(
         "--models",

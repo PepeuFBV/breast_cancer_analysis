@@ -665,20 +665,11 @@ def _resolve_launch_preflight(args: argparse.Namespace) -> dict[str, Any]:
         _max_task_attempts,
         _fail_fast_on_oom,
     ) = _resolve_runner_cli_options(args)
-    has_process_local_components = (
-        runner.model_builders is not None or runner.preprocessing_tasks is not None
-    )
+    has_process_local_components = runner.model_builders is not None or runner.preprocessing_tasks is not None
     max_queue_tasks = _resolve_max_queue_tasks(args)
-    stream_queue_mode = (
-        max_queue_tasks is None
-        and counts.total_experiments > STREAMING_QUEUE_TASK_THRESHOLD
-        and not has_process_local_components
-    )
+    stream_queue_mode = max_queue_tasks is None and counts.total_experiments > STREAMING_QUEUE_TASK_THRESHOLD and not has_process_local_components
     if stream_queue_mode and (args.rerun_failed or args.rerun_completed):
-        raise ValueError(
-            "rerun_failed/rerun_completed are not supported with streamed huge-queue execution. "
-            "Use a targeted rerun instead."
-        )
+        raise ValueError("rerun_failed/rerun_completed are not supported with streamed huge-queue execution. " "Use a targeted rerun instead.")
     return {
         "counts": counts,
         "isolate_tasks": isolate_tasks,

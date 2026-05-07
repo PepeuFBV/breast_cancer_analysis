@@ -139,11 +139,7 @@ class GpuEnvHelperTest(unittest.TestCase):
                                         os.environ["BREAST_CANCER_ANALYSIS_WINDOWS_GPU_ENV_BOOTSTRAPPED"],
                                         "1",
                                     )
-                                    self.assertTrue(
-                                        os.environ["PATH"].startswith(
-                                            str(bin_dir) + os.pathsep + str(libnvvp_dir)
-                                        )
-                                    )
+                                    self.assertTrue(os.environ["PATH"].startswith(str(bin_dir) + os.pathsep + str(libnvvp_dir)))
                                     self.assertEqual(os.environ["CUDA_PATH"], str(cuda_root))
                                     self.assertEqual(os.environ["CUDA_PATH_V11_2"], str(cuda_root))
 

@@ -85,10 +85,7 @@ def run_windows_gpu_check() -> WindowsGpuCheckResult:
         errors.append("This checker is for native Windows only (sys.platform must be 'win32').")
 
     if sys.version_info[:2] != REQUIRED_PYTHON:
-        errors.append(
-            "Python must be 3.10.x for native Windows TensorFlow GPU stack. "
-            f"Found: {sys.version.split()[0]}"
-        )
+        errors.append("Python must be 3.10.x for native Windows TensorFlow GPU stack. " f"Found: {sys.version.split()[0]}")
 
     nvidia_smi = shutil.which("nvidia-smi")
     details["nvidia_smi_path"] = nvidia_smi
@@ -110,16 +107,12 @@ def run_windows_gpu_check() -> WindowsGpuCheckResult:
         if code != 0:
             warnings.append(f"nvcc --version exited with code {code}.")
         if REQUIRED_CUDA_VERSION_HINT not in nvcc_text:
-            warnings.append(
-                "nvcc output does not mention CUDA 11.2. TensorFlow 2.10 native Windows GPU expects CUDA 11.2."
-            )
+            warnings.append("nvcc output does not mention CUDA 11.2. TensorFlow 2.10 native Windows GPU expects CUDA 11.2.")
     else:
         details["nvcc_version_output"] = ""
         warnings.append("nvcc is not available in PATH; CUDA toolkit version cannot be confirmed via nvcc.")
 
-    cuda_path_entries = [
-        entry for entry in _path_entries() if "cuda" in entry.lower() or "nvidia gpu computing toolkit" in entry.lower()
-    ]
+    cuda_path_entries = [entry for entry in _path_entries() if "cuda" in entry.lower() or "nvidia gpu computing toolkit" in entry.lower()]
     details["cuda_path_entries"] = cuda_path_entries
     if not cuda_path_entries:
         errors.append("No CUDA-related directories found in PATH.")
@@ -133,19 +126,13 @@ def run_windows_gpu_check() -> WindowsGpuCheckResult:
     details["cudnn_find_library"] = cudnn_library
     details["cudnn_dll_path"] = cudnn_dll_path
     if not cudnn_library and not cudnn_dll_path:
-        errors.append(
-            "cuDNN 8.1 DLL was not found. Expected to find cudnn64_8.dll in PATH/CUDA directories."
-        )
+        errors.append("cuDNN 8.1 DLL was not found. Expected to find cudnn64_8.dll in PATH/CUDA directories.")
 
     required_cuda_dll_locations = {dll_name: _find_dll(dll_name) for dll_name in REQUIRED_CUDA_DLLS}
     details["required_cuda_dlls"] = required_cuda_dll_locations
     missing_cuda_dlls = [name for name, location in required_cuda_dll_locations.items() if location is None]
     if missing_cuda_dlls:
-        errors.append(
-            "Required CUDA runtime DLLs are missing from PATH: "
-            + ", ".join(missing_cuda_dlls)
-            + ". Install CUDA 11.2 and ensure CUDA bin directory is in PATH."
-        )
+        errors.append("Required CUDA runtime DLLs are missing from PATH: " + ", ".join(missing_cuda_dlls) + ". Install CUDA 11.2 and ensure CUDA bin directory is in PATH.")
 
     try:
         import tensorflow as tf
@@ -165,14 +152,9 @@ def run_windows_gpu_check() -> WindowsGpuCheckResult:
         if tf_major_minor is None:
             errors.append(f"Could not parse TensorFlow version: {tf_version}")
         elif tf_major_minor > (2, 10):
-            errors.append(
-                "TensorFlow version is unsupported for native Windows GPU. "
-                f"Found {tf_version}; expected 2.10.x."
-            )
+            errors.append("TensorFlow version is unsupported for native Windows GPU. " f"Found {tf_version}; expected 2.10.x.")
         elif not tf_version.startswith(WINDOWS_TF_VERSION_PREFIX):
-            warnings.append(
-                f"TensorFlow is {tf_version}; expected 2.10.x for the native Windows GPU path."
-            )
+            warnings.append(f"TensorFlow is {tf_version}; expected 2.10.x for the native Windows GPU path.")
 
         if not details["tensorflow_built_with_cuda"]:
             errors.append("TensorFlow is not built with CUDA (tf.test.is_built_with_cuda() is False).")

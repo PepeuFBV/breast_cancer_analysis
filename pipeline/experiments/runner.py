@@ -959,12 +959,7 @@ class ExperimentStateStore:
         expected_total = state.get("expected_total_experiments")
         expected_counts = state.get("expected_counts")
         stream_queue_mode = bool(runtime.get("stream_queue_mode"))
-        if (
-            (total == 0 or stream_queue_mode)
-            and isinstance(expected_total, int)
-            and expected_total > 0
-            and isinstance(expected_counts, dict)
-        ):
+        if (total == 0 or stream_queue_mode) and isinstance(expected_total, int) and expected_total > 0 and isinstance(expected_counts, dict):
             total = int(expected_total)
             counts = {status: int(expected_counts.get(status, 0)) for status in TASK_STATUSES}
         stop_requested = self.stop_requested()
@@ -1299,11 +1294,7 @@ class IterativeExperimentRunner:
         max_queue_tasks: int | None,
         queue_export_path: str | Path | None,
     ) -> None:
-        message = (
-            "Estimated experiment queue size: %s task(s) "
-            "(%s preprocessing variants x %s model(s) x %s augmentation value(s)). "
-            "Estimated fits: %s (folds=%s)."
-        )
+        message = "Estimated experiment queue size: %s task(s) " "(%s preprocessing variants x %s model(s) x %s augmentation value(s)). " "Estimated fits: %s (folds=%s)."
         self.logger.info(
             message,
             f"{counts.total_experiments:,}",
@@ -1314,11 +1305,7 @@ class IterativeExperimentRunner:
             f"{counts.folds:,}",
         )
         if counts.total_experiments >= HUGE_QUEUE_WARNING_TASKS:
-            warning = (
-                "Huge queue estimate detected: %s task(s). "
-                "Use `run_experiments.py count` for planning, and explicitly opt in "
-                "with `--allow-huge-queue` for execution."
-            )
+            warning = "Huge queue estimate detected: %s task(s). " "Use `run_experiments.py count` for planning, and explicitly opt in " "with `--allow-huge-queue` for execution."
             self.logger.warning(warning, f"{counts.total_experiments:,}")
             print(warning % f"{counts.total_experiments:,}")
         if max_queue_tasks is None and queue_export_path is None and counts.total_experiments > MAX_QUEUE_TASKS:
@@ -1492,10 +1479,7 @@ class IterativeExperimentRunner:
         if not probe_result.get("ok", False):
             errors = [str(item) for item in probe_result.get("errors", [])]
             details = "; ".join(errors) if errors else "unknown GPU runtime probe failure"
-            raise RuntimeError(
-                "device-policy gpu-only requires a visible and usable GPU, "
-                f"but runtime probe failed: {details}"
-            )
+            raise RuntimeError("device-policy gpu-only requires a visible and usable GPU, " f"but runtime probe failed: {details}")
 
     def _task_state_by_id(self, task_id: str) -> dict[str, Any]:
         state = self.store.load_state()
@@ -1555,11 +1539,7 @@ class IterativeExperimentRunner:
         if self.training_config.augmentation_values:
             command.append("--augmentations-per-image")
             command.extend(str(value) for value in self.training_config.augmentation_values)
-        command.append(
-            "--combined-preprocessing"
-            if self.training_config.include_combinations
-            else "--no-combined-preprocessing"
-        )
+        command.append("--combined-preprocessing" if self.training_config.include_combinations else "--no-combined-preprocessing")
         command.append("--run-skip" if self.training_config.run_skip else "--no-run-skip")
         command.extend(self.cpu_execution_limits.to_cli_args())
         if max_queue_tasks is None:
@@ -2731,20 +2711,12 @@ class IterativeExperimentRunner:
     def run(self, options: IterativeRunOptions | None = None) -> dict[str, Any]:
         self.logger = self._build_logger()
         resolved_options = options or IterativeRunOptions()
-        has_process_local_components = (
-            self.model_builders is not None or self.preprocessing_tasks is not None
-        )
+        has_process_local_components = self.model_builders is not None or self.preprocessing_tasks is not None
         if resolved_options.isolate_tasks and has_process_local_components:
-            self.logger.warning(
-                "Disabling isolate_tasks because custom model_builders/preprocessing_tasks "
-                "are only available in the current process."
-            )
+            self.logger.warning("Disabling isolate_tasks because custom model_builders/preprocessing_tasks " "are only available in the current process.")
             resolved_options = replace(resolved_options, isolate_tasks=False)
         elif not resolved_options.isolate_tasks and not has_process_local_components:
-            self.logger.warning(
-                "Forcing isolate_tasks=True because device-policy handling and GPU/CPU recovery "
-                "are only reliable with per-task subprocess isolation."
-            )
+            self.logger.warning("Forcing isolate_tasks=True because device-policy handling and GPU/CPU recovery " "are only reliable with per-task subprocess isolation.")
             resolved_options = replace(resolved_options, isolate_tasks=True)
         self._task_cooldown_seconds = max(0.0, float(resolved_options.task_cooldown_seconds))
         if resolved_options.task_timeout_seconds is not None and resolved_options.task_timeout_seconds <= 0:
@@ -2773,16 +2745,9 @@ class IterativeExperimentRunner:
                 raise RuntimeError(f"Another experiment runner is already active with pid={pid}.")
 
         estimated_counts = self.estimate_grid_counts()
-        use_stream_queue_mode = (
-            resolved_options.max_queue_tasks is None
-            and estimated_counts.total_experiments > STREAMING_QUEUE_TASK_THRESHOLD
-            and not has_process_local_components
-        )
+        use_stream_queue_mode = resolved_options.max_queue_tasks is None and estimated_counts.total_experiments > STREAMING_QUEUE_TASK_THRESHOLD and not has_process_local_components
         if use_stream_queue_mode and (resolved_options.rerun_failed or resolved_options.rerun_completed):
-            raise ValueError(
-                "rerun_failed/rerun_completed are not supported with streamed huge-queue execution. "
-                "Use a targeted rerun instead."
-            )
+            raise ValueError("rerun_failed/rerun_completed are not supported with streamed huge-queue execution. " "Use a targeted rerun instead.")
         self.store.set_expected_queue_totals(
             total_experiments=estimated_counts.total_experiments,
         )
@@ -2853,10 +2818,7 @@ class IterativeExperimentRunner:
         )
         self._log_structured_phase(
             phase="run:start",
-            message=(
-                f"Starting run with {planned_runnable_count} runnable tasks "
-                f"(stream_queue_mode={use_stream_queue_mode})."
-            ),
+            message=(f"Starting run with {planned_runnable_count} runnable tasks " f"(stream_queue_mode={use_stream_queue_mode})."),
             extra={
                 "runnable_count": planned_runnable_count,
                 "stream_queue_mode": use_stream_queue_mode,
