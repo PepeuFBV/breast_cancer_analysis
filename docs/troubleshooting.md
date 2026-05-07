@@ -164,7 +164,7 @@ rg '"phase":"(task:start|after_cleanup|task:failed)"' \
 Failed tasks are not rerun by default:
 
 ```bash
-python run_experiments.py run --rerun-failed
+python run_experiments.py launch --rerun-failed
 ```
 
 Reset only orchestration state:
@@ -205,7 +205,7 @@ Use the long-run validator before retrying the full queue:
 For production long runs, use adaptive per-task subprocess policy:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
+./.venv/bin/python run_experiments.py launch \
   --isolate-tasks \
   --device-policy adaptive \
   --gpu-retries 1 \
@@ -218,19 +218,19 @@ For production long runs, use adaptive per-task subprocess policy:
 GPU-only policy must fail when GPU is unavailable:
 
 ```bash
-python run_experiments.py run --device-policy gpu-only --limit 1
+python run_experiments.py launch --device-policy gpu-only --limit 1
 ```
 
 Quick adaptive smoke:
 
 ```bash
-python run_experiments.py run --device-policy adaptive --isolate-tasks --limit 10
+python run_experiments.py launch --device-policy adaptive --isolate-tasks --limit 10
 ```
 
 Augmentation dimension smoke:
 
 ```bash
-python run_experiments.py run --augmentations-per-image 1 2 3 --limit 10
+python run_experiments.py launch --augmentations-per-image 1 2 3 --limit 10
 ```
 
 Count large grids before running:

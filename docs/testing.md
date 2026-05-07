@@ -60,7 +60,7 @@ the default validation path for long-run stability beyond 8 or 9 combinations.
 After `python preprocess.py`, you can run one real training task:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
+./.venv/bin/python run_experiments.py launch \
   --models "custom cnn" \
   --preprocessing none \
   --no-combined-preprocessing \

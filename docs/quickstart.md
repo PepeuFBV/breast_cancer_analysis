@@ -170,7 +170,7 @@ If a background runner is still alive, kill it as part of reset:
 CPU-safe smoke:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
+./.venv/bin/python run_experiments.py launch \
   --config configs/experiment.smoke.json \
   --limit 2 \
   --isolate-tasks \
@@ -182,13 +182,13 @@ CPU-safe smoke:
 GPU-only validation run:
 
 ```bash
-python run_experiments.py run --device-policy gpu-only --limit 1
+python run_experiments.py launch --device-policy gpu-only --limit 1
 ```
 
 Adaptive smoke:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
+./.venv/bin/python run_experiments.py launch \
   --config configs/experiment.smoke.json \
   --limit 3 \
   --isolate-tasks \
@@ -202,13 +202,13 @@ Adaptive smoke:
 Equivalent adaptive command:
 
 ```bash
-python run_experiments.py run --device-policy adaptive --isolate-tasks --limit 10
+python run_experiments.py launch --device-policy adaptive --isolate-tasks --limit 10
 ```
 
 Augmentation dimension command:
 
 ```bash
-python run_experiments.py run --augmentations-per-image 1 2 3 --limit 10
+python run_experiments.py launch --augmentations-per-image 1 2 3 --limit 10
 ```
 
 GPU probe command:
@@ -228,7 +228,7 @@ The runner refuses very large queues by default.
 Example:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
+./.venv/bin/python run_experiments.py launch \
   --allow-huge-queue \
   --queue-export-path artifacts/experiments/state/queue-export.jsonl
 ```
