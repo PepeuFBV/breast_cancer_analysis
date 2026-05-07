@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 import pytest
 
-from scripts import check_environment, check_gpu, smoke_run, validate_dataset
+from scripts import (
+    check_environment,
+    check_gpu,
+    smoke_run,
+    validate_dataset,
+    validate_long_runner,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -35,7 +41,7 @@ class _FakeTensorFlowConfig:
 
 def _fake_tensorflow(*, physical_gpus=None, logical_gpus=None, cuda: bool = True):
     return SimpleNamespace(
-        __version__="test-tf",
+        __version__="2.10.1",
         config=_FakeTensorFlowConfig(physical_gpus, logical_gpus),
         test=SimpleNamespace(is_built_with_cuda=lambda: cuda),
     )
@@ -43,9 +49,7 @@ def _fake_tensorflow(*, physical_gpus=None, logical_gpus=None, cuda: bool = True
 
 @pytest.mark.gpu
 def test_gpu_optional_warns_without_visible_devices() -> None:
-    result = check_gpu.check_tensorflow_gpu(
-        tensorflow_module=_fake_tensorflow(physical_gpus=[])
-    )
+    result = check_gpu.check_tensorflow_gpu(tensorflow_module=_fake_tensorflow(physical_gpus=[]))
 
     assert result.ok
     assert result.mode == "optional"
@@ -117,7 +121,7 @@ def test_environment_check_reports_missing_dataset(tmp_path, monkeypatch) -> Non
     assert (tmp_path / "artifacts").exists()
 
 
-def test_environment_check_bootstraps_wsl_gpu_env_before_tensorflow_import(
+def test_environment_check_bootstraps_runtime_env_before_tensorflow_import(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -133,7 +137,7 @@ def test_environment_check_bootstraps_wsl_gpu_env_before_tensorflow_import(
     bootstrap_calls: list[str] = []
     monkeypatch.setattr(
         check_environment,
-        "ensure_tensorflow_wsl_gpu_env",
+        "bootstrap_tensorflow_runtime_env",
         lambda: bootstrap_calls.append("called"),
     )
     monkeypatch.setattr(
@@ -182,3 +186,7 @@ def test_smoke_run_uses_synthetic_data_and_writes_report(tmp_path) -> None:
     assert snapshot["counts"]["failed"] == 0
     assert records == 2
     assert report_path.exists()
+
+
+def test_validate_long_runner_smoke_config_exists() -> None:
+    assert validate_long_runner.DEFAULT_CONFIG_PATH == "configs/experiment.smoke.json"

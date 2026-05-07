@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -8,13 +9,8 @@ from pipeline.experiments import ExperimentStateStore, launch_background_runner
 
 try:
     import streamlit as st
-except (
-    ImportError
-) as error:  # pragma: no cover - executed only when streamlit is missing
-    raise SystemExit(
-        "Streamlit is required for the dashboard. "
-        "Install dependencies with `python -m pip install -r requirements.txt`."
-    ) from error
+except ImportError as error:  # pragma: no cover - executed only when streamlit is missing
+    raise SystemExit("Streamlit is required for the dashboard. " "Install dependencies with `python -m pip install -r requirements.txt`.") from error
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -22,9 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 def _load_store(config_path: str, artifacts_dir: str) -> ExperimentStateStore:
     experiment_config = load_experiment_config(config_path or None)
-    project_paths = experiment_config.resolve_project_paths(
-        artifacts_dir=(artifacts_dir or None)
-    ).ensure_artifact_dirs()
+    project_paths = experiment_config.resolve_project_paths(artifacts_dir=(artifacts_dir or None)).ensure_artifact_dirs()
     return ExperimentStateStore(project_paths)
 
 
@@ -125,10 +119,7 @@ def main() -> None:
         rerun_failed = st.checkbox(
             "Rerun failed",
             value=False,
-            help=(
-                "Failed tasks stay paused by default until you explicitly "
-                "ask to rerun them."
-            ),
+            help=("Failed tasks stay paused by default until you explicitly " "ask to rerun them."),
         )
         rerun_completed = st.checkbox(
             "Rerun completed",
@@ -164,9 +155,7 @@ def main() -> None:
     action_col, stop_col, refresh_col = st.columns([1.2, 1.0, 0.9])
     if action_col.button("Run", use_container_width=True, type="primary"):
         if store.has_active_run():
-            st.warning(
-                "A runner process is already active for this artifacts directory."
-            )
+            st.warning("A runner process is already active for this artifacts directory.")
         else:
             launch_args = _build_launch_args(
                 config_path=config_path,
@@ -179,16 +168,23 @@ def main() -> None:
                 script_path=PROJECT_ROOT / "run_experiments.py",
                 forwarded_args=launch_args,
                 cwd=PROJECT_ROOT,
+                logs_dir=store.project_paths.experiment_logs_dir,
             )
-            st.success(f"Runner started in background with pid={process.pid}.")
+            config_source = load_experiment_config(config_path or None).source_path
+            command = [sys.executable, str(PROJECT_ROOT / "run_experiments.py"), "run", *launch_args]
+            store.write_pid_record(
+                config_path=config_source,
+                command=command,
+                pid=process.process.pid,
+                stdout_log_path=process.stdout_path,
+                stderr_log_path=process.stderr_path,
+            )
+            st.success(f"Runner started in background with pid={process.process.pid}.")
             st.rerun()
 
     if stop_col.button("Stop", use_container_width=True):
         stop_path = store.request_stop(reason="dashboard")
-        st.info(
-            "Stop requested. The runner will finish the current experiment "
-            "before stopping."
-        )
+        st.info("Stop requested. The runner will finish the current experiment " "before stopping.")
         st.caption(f"Stop flag: {stop_path}")
         st.rerun()
 
@@ -217,9 +213,7 @@ def main() -> None:
             st.write("No experiment is actively running right now.")
 
         if status["stop_requested"]:
-            st.warning(
-                "A graceful stop has been requested and is waiting for a safe point."
-            )
+            st.warning("A graceful stop has been requested and is waiting for a safe point.")
 
     with paths_col:
         st.subheader("Saved Outputs")

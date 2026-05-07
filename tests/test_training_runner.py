@@ -13,6 +13,7 @@ from pipeline.train.preprocessing import PreprocessingTask
 from pipeline.train.runner import (
     TrainingConfig,
     build_training_tasks,
+    iter_training_tasks,
     run_training_pipeline,
 )
 
@@ -32,12 +33,8 @@ class _FakeModel:
 
     def fit(self, *args, **kwargs):
         self.captures["fit_batch_size"] = kwargs.get("batch_size")
-        self.captures["fit_validation_shape"] = tuple(
-            kwargs["validation_data"][0].shape[1:]
-        )
-        self.captures["fit_validation_count"] = int(
-            kwargs["validation_data"][0].shape[0]
-        )
+        self.captures["fit_validation_shape"] = tuple(kwargs["validation_data"][0].shape[1:])
+        self.captures["fit_validation_count"] = int(kwargs["validation_data"][0].shape[0])
         return _FakeHistory(self.value)
 
     def predict(self, model_inputs, batch_size=8, verbose=0):
@@ -96,6 +93,70 @@ class TrainingRunnerTest(unittest.TestCase):
             ],
         )
 
+    def test_build_training_tasks_expands_augmentation_dimension(self) -> None:
+        task = PreprocessingTask(
+            preproc_id="none",
+            params={},
+            param_display="default",
+            param_id="default",
+            param_json="{}",
+            is_combined=False,
+            apply=lambda image: image,
+        )
+        config = TrainingConfig(
+            train_split_path=Path("train.csv"),
+            test_split_path=Path("test.csv"),
+            history_dir=Path("history"),
+            predictions_dir=Path("predictions"),
+            model_names=["custom cnn"],
+            include_combinations=False,
+            augmentation_values=(1, 2, 3),
+        )
+
+        tasks = build_training_tasks(
+            config,
+            model_builders={"custom cnn": lambda *args, **kwargs: _FakeModel(0.8)},
+            preprocessing_tasks=[task],
+        )
+
+        self.assertEqual([task_entry.augmentations_per_image for task_entry in tasks], [1, 2, 3])
+
+    def test_iter_training_tasks_streams_preprocessing_iterable(self) -> None:
+        task = PreprocessingTask(
+            preproc_id="none",
+            params={},
+            param_display="default",
+            param_id="default",
+            param_json="{}",
+            is_combined=False,
+            apply=lambda image: image,
+        )
+        config = TrainingConfig(
+            train_split_path=Path("train.csv"),
+            test_split_path=Path("test.csv"),
+            history_dir=Path("history"),
+            predictions_dir=Path("predictions"),
+            model_names=["custom cnn"],
+            include_combinations=False,
+            augmentation_values=(1, 2),
+        )
+
+        def _preprocessing_stream():
+            yield task
+            raise AssertionError("iterator should not be fully consumed before first task is yielded")
+
+        iterator = iter_training_tasks(
+            config,
+            model_builders={"custom cnn": lambda *args, **kwargs: _FakeModel(0.8)},
+            preprocessing_tasks=_preprocessing_stream(),
+        )
+
+        first_task = next(iter(iterator))
+
+        self.assertEqual(first_task.preproc_id, "none")
+        self.assertEqual(first_task.model_name, "custom cnn")
+        self.assertEqual(first_task.augmentations_per_image, 1)
+
     def test_cross_validation_persists_best_fold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -110,9 +171,7 @@ class TrainingRunnerTest(unittest.TestCase):
                 image_paths.append(str(image_path))
                 labels.append("1" if index in {0, 1, 4, 5} else "2")
 
-            train_df = pd.DataFrame(
-                {"image_path": image_paths[:4], "label": labels[:4]}
-            )
+            train_df = pd.DataFrame({"image_path": image_paths[:4], "label": labels[:4]})
             test_df = pd.DataFrame({"image_path": image_paths[4:], "label": labels[4:]})
             train_path = root / "train.csv"
             test_path = root / "test.csv"
@@ -159,21 +218,15 @@ class TrainingRunnerTest(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].fold, 2)
-            history_path = (
-                root / "history" / "none" / "custom cnn" / "history_default.csv"
-            )
-            predictions_path = (
-                root / "predictions" / "none" / "custom cnn" / "default.csv"
-            )
+            history_path = root / "history" / "none" / "custom cnn" / "history_default__aug1.csv"
+            predictions_path = root / "predictions" / "none" / "custom cnn" / "default__aug1.csv"
             self.assertTrue(history_path.exists())
             self.assertTrue(predictions_path.exists())
 
             history_df = pd.read_csv(history_path)
             self.assertEqual(int(history_df.iloc[0]["fold"]), 2)
             self.assertAlmostEqual(float(history_df.iloc[0]["best_val_acc"]), 0.94)
-            self.assertEqual(
-                history_df.iloc[0]["selection_strategy"], "cross_validation"
-            )
+            self.assertEqual(history_df.iloc[0]["selection_strategy"], "cross_validation")
             self.assertIn("cv_mean_val_acc", history_df.columns)
 
             predictions_df = pd.read_csv(predictions_path)
@@ -193,9 +246,7 @@ class TrainingRunnerTest(unittest.TestCase):
                 image_paths.append(str(image_path))
                 labels.append("1" if index < 4 else "2")
 
-            train_df = pd.DataFrame(
-                {"image_path": image_paths[:6], "label": labels[:6]}
-            )
+            train_df = pd.DataFrame({"image_path": image_paths[:6], "label": labels[:6]})
             test_df = pd.DataFrame({"image_path": image_paths[6:], "label": labels[6:]})
             train_path = root / "train.csv"
             test_path = root / "test.csv"
@@ -264,13 +315,11 @@ class TrainingRunnerTest(unittest.TestCase):
             self.assertEqual(captures["fit_validation_shape"], (8, 8, 3))
             self.assertEqual(captures["fit_validation_count"], 3)
 
-            history_path = root / "history" / "none" / "resnet" / "history_default.csv"
-            predictions_path = root / "predictions" / "none" / "resnet" / "default.csv"
+            history_path = root / "history" / "none" / "resnet" / "history_default__aug1.csv"
+            predictions_path = root / "predictions" / "none" / "resnet" / "default__aug1.csv"
             history_df = pd.read_csv(history_path)
             predictions_df = pd.read_csv(predictions_path)
-            self.assertEqual(
-                history_df.iloc[0]["selection_strategy"], "holdout_validation"
-            )
+            self.assertEqual(history_df.iloc[0]["selection_strategy"], "holdout_validation")
             self.assertEqual(len(predictions_df), len(test_df))
 
 

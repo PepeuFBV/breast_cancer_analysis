@@ -325,6 +325,19 @@
     "run_skip": true,
     "random_state": 42
   },
+  "runner": {
+    "isolate_tasks": false,
+    "task_cooldown_seconds": 0,
+    "task_timeout_seconds": null,
+    "device_policy": "adaptive",
+    "gpu_retries": 1,
+    "cpu_retries": 1,
+    "cooldown_after_oom_seconds": 15,
+    "gpu_recovery_cooldown_seconds": 60,
+    "max_consecutive_oom": 3,
+    "max_task_attempts": 4,
+    "fail_fast_on_oom": false
+  },
   "models": {
     "custom cnn": {
       "input_channels": 1,

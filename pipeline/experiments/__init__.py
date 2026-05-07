@@ -7,6 +7,7 @@ from pipeline.experiments.runner import (
     build_experiment_id,
     build_experiment_record,
     launch_background_runner,
+    run_one_experiment_task,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "build_experiment_id",
     "build_experiment_record",
     "launch_background_runner",
+    "run_one_experiment_task",
 ]

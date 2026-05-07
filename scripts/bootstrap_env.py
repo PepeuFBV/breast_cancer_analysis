@@ -31,9 +31,7 @@ class BootstrapPlan:
 def _command_environment() -> dict[str, str]:
     environment = dict(os.environ)
     if WSL_DRIVER_DIR.exists():
-        path_entries = [
-            entry for entry in environment.get("PATH", "").split(":") if entry
-        ]
+        path_entries = [entry for entry in environment.get("PATH", "").split(":") if entry]
         driver_dir = str(WSL_DRIVER_DIR)
         if driver_dir not in path_entries:
             environment["PATH"] = ":".join([driver_dir, *path_entries])
@@ -55,9 +53,7 @@ def _ensure_virtualenv(venv_dir: Path, python_executable: str) -> Path:
 
     _run([python_executable, "-m", "venv", str(venv_dir)])
     if not venv_python.exists():
-        raise BootstrapError(
-            f"Virtualenv creation succeeded but {venv_python} is missing."
-        )
+        raise BootstrapError(f"Virtualenv creation succeeded but {venv_python} is missing.")
     return venv_python
 
 
@@ -104,10 +100,7 @@ def resolve_bootstrap_plan(
 
     if platform_name != "linux":
         if gpu_mode == "required":
-            raise BootstrapError(
-                "TensorFlow GPU bootstrap is only supported on Linux/WSL2. "
-                "Use `--gpu off` on this platform."
-            )
+            raise BootstrapError("TensorFlow GPU bootstrap in this script is only supported on Linux/WSL2. " "For native Windows TensorFlow 2.10 GPU, use `powershell -File scripts/bootstrap_windows_gpu.ps1`.")
         return BootstrapPlan(
             tensorflow_requirement="tensorflow",
             require_gpu_check=False,
@@ -122,10 +115,7 @@ def resolve_bootstrap_plan(
         )
 
     if gpu_mode == "required":
-        raise BootstrapError(
-            "No NVIDIA GPU driver is visible from this Linux environment. "
-            "On WSL2, confirm `/usr/lib/wsl/lib/nvidia-smi` works first."
-        )
+        raise BootstrapError("No NVIDIA GPU driver is visible from this Linux environment. " "On WSL2, confirm `/usr/lib/wsl/lib/nvidia-smi` works first.")
 
     return BootstrapPlan(
         tensorflow_requirement="tensorflow",
@@ -249,7 +239,7 @@ def run_validation_checks(
     gpu_check = [str(venv_python), str(PROJECT_ROOT / "scripts" / "check_gpu.py")]
     if require_gpu:
         gpu_check.append("--require-gpu")
-    
+
     result = subprocess.run(
         gpu_check,
         check=False,
@@ -260,12 +250,7 @@ def run_validation_checks(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Create or repair the project virtualenv and install runtime "
-            "dependencies."
-        )
-    )
+    parser = argparse.ArgumentParser(description=("Create or repair the project virtualenv and install runtime " "dependencies."))
     parser.add_argument(
         "--python",
         default=sys.executable,
@@ -314,11 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     venv_dir = Path(args.venv_dir).expanduser().resolve()
     raw_data_dir = Path(args.raw_data_dir).expanduser().resolve()
-    artifacts_dir = (
-        Path(args.artifacts_dir).expanduser().resolve()
-        if args.artifacts_dir is not None
-        else None
-    )
+    artifacts_dir = Path(args.artifacts_dir).expanduser().resolve() if args.artifacts_dir is not None else None
 
     try:
         plan = resolve_bootstrap_plan(args.gpu)
@@ -328,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
             tensorflow_requirement=plan.tensorflow_requirement,
             install_dev=args.dev,
         )
-        
+
         gpu_check_passed = True
         if not args.skip_checks:
             gpu_check_passed = run_validation_checks(
@@ -343,8 +324,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except subprocess.CalledProcessError as error:
         print(
-            f"Bootstrap command failed with exit code {error.returncode}: "
-            f"{' '.join(error.cmd)}",
+            f"Bootstrap command failed with exit code {error.returncode}: " f"{' '.join(error.cmd)}",
             file=sys.stderr,
         )
         return error.returncode or 1
@@ -363,10 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("GPU validation: optional (GPU not available, will use CPU)")
             if plan.tensorflow_requirement == "tensorflow[and-cuda]":
-                print(
-                    "Note: tensorflow[and-cuda] is installed but GPU is not accessible.\n"
-                    "      The pipeline will run on CPU. For GPU support, see docs/wsl_gpu_setup.md"
-                )
+                print("Note: tensorflow[and-cuda] is installed but GPU is not accessible.\n" "      The pipeline will run on CPU. For GPU support, see docs/wsl_gpu_setup.md")
     return 0
 
 

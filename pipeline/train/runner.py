@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import gc
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import cv2
 import numpy as np
@@ -15,9 +14,26 @@ from pipeline.data.constants import DEFAULT_RANDOM_STATE, LABEL_MAPPING
 from pipeline.data.dataset import DatasetSplitResult, split_dataset
 from pipeline.train.models import MODEL_BUILDERS, ModelBuilder, ModelRuntimeConfig
 from pipeline.train.preprocessing import PreprocessingTask, iter_preprocessing_tasks
-from pipeline.utils.gpu_env import clear_gpu_memory, configure_gpu_memory_growth
+from pipeline.utils.gpu_env import configure_gpu_memory_growth
+from pipeline.utils.memory import clear_ml_memory
 from pipeline.utils.reproducibility import enforce_reproducibility
 from pipeline.utils.runtime import format_duration
+
+PhaseObserver = Callable[[str, dict[str, Any] | None], None]
+
+
+def _emit_phase(
+    phase_observer: PhaseObserver | None,
+    phase: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    if phase_observer is None:
+        return
+    try:
+        phase_observer(phase, details)
+    except Exception:
+        # Observability callbacks must not affect training behavior.
+        return
 
 
 @dataclass(frozen=True)
@@ -40,12 +56,14 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     model_runtime: dict[str, ModelRuntimeConfig] | None = None
     preprocessing_grids: dict[str, dict[str, list[Any]]] | None = None
+    augmentation_values: tuple[int, ...] = (1,)
 
 
 @dataclass(frozen=True)
 class TrainingTask:
     model_name: str
     preprocessing_task: PreprocessingTask
+    augmentations_per_image: int = 1
 
     @property
     def preproc_id(self) -> str:
@@ -73,7 +91,7 @@ class TrainingTask:
 
     @property
     def label(self) -> str:
-        return f"{self.preproc_id} [{self.model_name} - {self.param_display}]"
+        return f"{self.preproc_id} [{self.model_name} - {self.param_display} - " f"aug={self.augmentations_per_image}]"
 
 
 @dataclass(frozen=True)
@@ -92,6 +110,7 @@ class TrainingRunResult:
     train_samples: int
     validation_samples: int
     test_samples: int
+    augmentations_per_image: int = 1
     summary_metrics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -101,16 +120,12 @@ def load_split_dataframe(path: Path) -> pd.DataFrame:
     mapped_labels = raw_labels.map(LABEL_MAPPING)
     if mapped_labels.isna().any():
         invalid_rows = raw_labels[mapped_labels.isna()]
-        raise ValueError(
-            f"Invalid labels found in split {path}: {sorted(invalid_rows.unique())}"
-        )
+        raise ValueError(f"Invalid labels found in split {path}: {sorted(invalid_rows.unique())}")
     dataframe["label"] = mapped_labels.astype(int)
     return dataframe
 
 
-def preprocess_images(
-    dataframe: pd.DataFrame, preproc_fn
-) -> tuple[np.ndarray, np.ndarray]:
+def preprocess_images(dataframe: pd.DataFrame, preproc_fn) -> tuple[np.ndarray, np.ndarray]:
     images: list[np.ndarray] = []
     labels: list[int] = []
     for _, row in dataframe.iterrows():
@@ -145,10 +160,7 @@ def _prepare_model_inputs(
         images = np.repeat(images, 3, axis=-1)
         return images, tuple(images.shape[1:]), effective_batch_size
 
-    raise ValueError(
-        "Unsupported input_channels="
-        f"{runtime.input_channels} configured for model '{model_name}'."
-    )
+    raise ValueError("Unsupported input_channels=" f"{runtime.input_channels} configured for model '{model_name}'.")
 
 
 def _one_hot_encode(labels: np.ndarray, num_classes: int) -> np.ndarray:
@@ -161,7 +173,7 @@ def _is_resource_exhausted_error(error: Exception) -> bool:
 
 
 def _clear_keras_session() -> None:
-    clear_gpu_memory()
+    clear_ml_memory()
 
 
 def _build_fit_callbacks() -> list[object]:
@@ -212,6 +224,8 @@ def _predict_dataframe(
         prediction_df[column] = evaluation_df[column].values
     for index in range(probabilities.shape[1]):
         prediction_df[f"prob_class_{index}"] = probabilities[:, index]
+    probabilities = None
+    predictions = None
     return prediction_df
 
 
@@ -231,24 +245,27 @@ def run_model_with_preprocessing(
     random_state: int,
     model_runtime: ModelRuntimeConfig | None = None,
     max_retries: int = 3,
+    phase_observer: PhaseObserver | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     """Run model training with automatic retry on OOM errors.
-    
+
     Args:
         max_retries: Number of times to retry on OOM errors with memory cleanup.
     """
     configure_gpu_memory_growth()
-    
+
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         if attempt > 0:
-            # Aggressive cleanup between retries
-            clear_gpu_memory()
-            gc.collect()
-            # Longer wait for memory to be fully released
+            clear_ml_memory()
             time.sleep(3 + attempt)  # Increasing delay: 4s, 5s, 6s
-        
+
         try:
+            _emit_phase(
+                phase_observer,
+                "before_preprocess_train",
+                {"train_attempt": attempt + 1},
+            )
             return _run_model_with_preprocessing_impl(
                 train_df,
                 validation_df,
@@ -263,6 +280,7 @@ def run_model_with_preprocessing(
                 learning_rate=learning_rate,
                 random_state=random_state,
                 model_runtime=model_runtime,
+                phase_observer=phase_observer,
             )
         except Exception as error:
             last_error = error
@@ -273,7 +291,7 @@ def run_model_with_preprocessing(
                 print(f"  OOM error on attempt {attempt + 1}/{max_retries + 1}, retrying after cleanup...")
                 continue
             raise
-    
+
     if last_error:
         raise last_error
     raise RuntimeError("Unexpected: no result and no error")
@@ -294,49 +312,57 @@ def _run_model_with_preprocessing_impl(
     learning_rate: float,
     random_state: int,
     model_runtime: ModelRuntimeConfig | None = None,
+    phase_observer: PhaseObserver | None = None,
 ) -> tuple[float, int, dict[str, list[float]], pd.DataFrame]:
     enforce_reproducibility(random_state)
-    
-    # Clear memory before starting
-    clear_gpu_memory()
-    gc.collect()
 
-    x_train, y_train = preprocess_images(train_df, task.apply)
-    x_validation, y_validation = preprocess_images(validation_df, task.apply)
-    x_evaluation, _ = preprocess_images(evaluation_df, task.apply)
+    clear_ml_memory()
 
-    train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(
-        x_train,
-        model_name,
-        batch_size,
-        model_runtime,
-    )
-    validation_inputs, _, _ = _prepare_model_inputs(
-        x_validation,
-        model_name,
-        batch_size,
-        model_runtime,
-    )
-    evaluation_inputs, _, _ = _prepare_model_inputs(
-        x_evaluation,
-        model_name,
-        batch_size,
-        model_runtime,
-    )
-    
-    # Delete raw image arrays immediately after conversion
-    del x_train, x_validation, x_evaluation
-    gc.collect()
-
-    y_train_encoded = _one_hot_encode(y_train, num_classes)
-    y_validation_encoded = _one_hot_encode(y_validation, num_classes)
-    
-    # Delete label arrays after encoding
-    del y_train, y_validation
-    gc.collect()
-
+    x_train: np.ndarray | None = None
+    y_train: np.ndarray | None = None
+    x_validation: np.ndarray | None = None
+    y_validation: np.ndarray | None = None
+    x_evaluation: np.ndarray | None = None
+    train_inputs: np.ndarray | None = None
+    validation_inputs: np.ndarray | None = None
+    evaluation_inputs: np.ndarray | None = None
+    y_train_encoded: np.ndarray | None = None
+    y_validation_encoded: np.ndarray | None = None
+    history: Any | None = None
+    history_dict: dict[str, list[float]] | None = None
+    predictions_df: pd.DataFrame | None = None
+    callbacks: list[object] | None = None
+    input_shape: tuple[int, ...] | None = None
+    effective_batch_size = batch_size
     model = None
     try:
+        x_train, y_train = preprocess_images(train_df, task.apply)
+        x_validation, y_validation = preprocess_images(validation_df, task.apply)
+        _emit_phase(phase_observer, "after_preprocess_train")
+
+        _emit_phase(phase_observer, "before_prepare_train_inputs")
+        train_inputs, input_shape, effective_batch_size = _prepare_model_inputs(
+            x_train,
+            model_name,
+            batch_size,
+            model_runtime,
+        )
+        validation_inputs, _, _ = _prepare_model_inputs(
+            x_validation,
+            model_name,
+            batch_size,
+            model_runtime,
+        )
+        x_train = None
+        x_validation = None
+
+        y_train_encoded = _one_hot_encode(y_train, num_classes)
+        y_validation_encoded = _one_hot_encode(y_validation, num_classes)
+        y_train = None
+        y_validation = None
+        _emit_phase(phase_observer, "after_prepare_train_inputs")
+
+        _emit_phase(phase_observer, "before_model_build")
         model = model_fn(
             input_shape=input_shape,
             num_classes=num_classes,
@@ -344,7 +370,10 @@ def _run_model_with_preprocessing_impl(
             learning_rate=learning_rate,
             runtime=model_runtime,
         )
-        
+        _emit_phase(phase_observer, "after_model_build")
+
+        _emit_phase(phase_observer, "before_fit")
+        callbacks = _build_fit_callbacks()
         history = model.fit(
             train_inputs,
             y_train_encoded,
@@ -352,39 +381,59 @@ def _run_model_with_preprocessing_impl(
             epochs=epochs,
             batch_size=effective_batch_size,
             verbose=0,
-            callbacks=_build_fit_callbacks(),
+            callbacks=callbacks,
         )
-        
-        # Delete training data immediately after fit
-        del train_inputs, y_train_encoded, validation_inputs, y_validation_encoded
-        gc.collect()
-        
-        history_dict = history.history
+        _emit_phase(phase_observer, "after_fit")
+
+        train_inputs = None
+        validation_inputs = None
+        y_train_encoded = None
+        y_validation_encoded = None
+        callbacks = None
+        clear_ml_memory(clear_session=False)
+        _emit_phase(phase_observer, "after_train_release")
+
+        history_dict = dict(history.history)
+        history = None
         val_accuracies = history_dict.get("val_accuracy")
         if not val_accuracies:
-            raise ValueError(
-                "Model history does not contain val_accuracy, "
-                "required for model selection."
-            )
+            raise ValueError("Model history does not contain val_accuracy, " "required for model selection.")
         best_epoch = int(np.argmax(val_accuracies)) + 1
         best_val_acc = float(np.max(val_accuracies))
-        
-        predictions_df = _predict_dataframe(
-            model, evaluation_inputs, evaluation_df, effective_batch_size
+
+        _emit_phase(phase_observer, "before_eval_preprocess")
+        x_evaluation, _ = preprocess_images(evaluation_df, task.apply)
+        evaluation_inputs, _, _ = _prepare_model_inputs(
+            x_evaluation,
+            model_name,
+            batch_size,
+            model_runtime,
         )
-        
-        # Delete evaluation inputs after prediction
-        del evaluation_inputs
-        gc.collect()
-        
+        x_evaluation = None
+        _emit_phase(phase_observer, "after_eval_preprocess")
+        _emit_phase(phase_observer, "before_predict")
+        predictions_df = _predict_dataframe(model, evaluation_inputs, evaluation_df, effective_batch_size)
+        _emit_phase(phase_observer, "after_predict")
+
+        evaluation_inputs = None
+        clear_ml_memory(clear_session=False)
+
         return best_val_acc, best_epoch, history_dict, predictions_df
     finally:
-        # Aggressive cleanup
-        if model is not None:
-            del model
-        gc.collect()
+        x_train = None
+        y_train = None
+        x_validation = None
+        y_validation = None
+        x_evaluation = None
+        train_inputs = None
+        validation_inputs = None
+        evaluation_inputs = None
+        y_train_encoded = None
+        y_validation_encoded = None
+        history = None
+        callbacks = None
+        model = None
         _clear_keras_session()
-        gc.collect()
 
 
 def _artifact_paths(
@@ -393,21 +442,22 @@ def _artifact_paths(
     preproc_id: str,
     model_name: str,
     param_id: str,
+    augmentations_per_image: int,
 ) -> tuple[Path, Path]:
-    history_path = history_dir / preproc_id / model_name / f"history_{param_id}.csv"
-    predictions_path = predictions_dir / preproc_id / model_name / f"{param_id}.csv"
+    suffix = f"{param_id}__aug{augmentations_per_image}"
+    history_path = history_dir / preproc_id / model_name / f"history_{suffix}.csv"
+    predictions_path = predictions_dir / preproc_id / model_name / f"{suffix}.csv"
     return history_path, predictions_path
 
 
-def artifact_paths_for_task(
-    config: TrainingConfig, task: TrainingTask
-) -> tuple[Path, Path]:
+def artifact_paths_for_task(config: TrainingConfig, task: TrainingTask) -> tuple[Path, Path]:
     return _artifact_paths(
         config.history_dir,
         config.predictions_dir,
         task.preproc_id,
         task.model_name,
         task.param_id,
+        task.augmentations_per_image,
     )
 
 
@@ -417,9 +467,15 @@ def check_if_model_exists(
     preproc_id: str,
     model_name: str,
     param_id: str,
+    augmentations_per_image: int,
 ) -> bool:
     history_path, predictions_path = _artifact_paths(
-        history_dir, predictions_dir, preproc_id, model_name, param_id
+        history_dir,
+        predictions_dir,
+        preproc_id,
+        model_name,
+        param_id,
+        augmentations_per_image,
     )
     return history_path.exists() and predictions_path.exists()
 
@@ -431,21 +487,16 @@ def task_has_existing_artifacts(config: TrainingConfig, task: TrainingTask) -> b
         task.preproc_id,
         task.model_name,
         task.param_id,
+        task.augmentations_per_image,
     )
 
 
 def _metrics_at_best_epoch(result: TrainingRunResult) -> dict[str, Any]:
     best_epoch_index = result.best_epoch - 1
-    return {
-        key: values[best_epoch_index]
-        for key, values in result.history_dict.items()
-        if isinstance(values, list) and best_epoch_index < len(values)
-    }
+    return {key: values[best_epoch_index] for key, values in result.history_dict.items() if isinstance(values, list) and best_epoch_index < len(values)}
 
 
-def build_history_row(
-    result: TrainingRunResult, config: TrainingConfig
-) -> dict[str, Any]:
+def build_history_row(result: TrainingRunResult, config: TrainingConfig) -> dict[str, Any]:
     return {
         "fold": result.fold,
         "best_val_acc": result.best_val_acc,
@@ -459,28 +510,28 @@ def build_history_row(
         "train_samples": result.train_samples,
         "validation_samples": result.validation_samples,
         "test_samples": result.test_samples,
+        "augmentations_per_image": result.augmentations_per_image,
         "random_state": config.random_state,
         **_metrics_at_best_epoch(result),
         **result.summary_metrics,
     }
 
 
-def save_run_result(
-    result: TrainingRunResult, config: TrainingConfig
-) -> tuple[Path, Path]:
+def save_run_result(result: TrainingRunResult, config: TrainingConfig) -> tuple[Path, Path]:
     history_path, predictions_path = _artifact_paths(
         config.history_dir,
         config.predictions_dir,
         result.preproc_id,
         result.model_name,
         result.param_id,
+        result.augmentations_per_image,
     )
     history_path.parent.mkdir(parents=True, exist_ok=True)
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
 
     pd.DataFrame([build_history_row(result, config)]).to_csv(history_path, index=False)
 
-    predictions_df = result.predictions_df.copy()
+    predictions_df = result.predictions_df
     predictions_df["preproc_id"] = result.preproc_id
     predictions_df["model_name"] = result.model_name
     predictions_df["param_id"] = result.param_id
@@ -489,13 +540,9 @@ def save_run_result(
     return history_path, predictions_path
 
 
-def _build_validation_split(
-    train_df: pd.DataFrame, config: TrainingConfig
-) -> DatasetSplitResult:
+def _build_validation_split(train_df: pd.DataFrame, config: TrainingConfig) -> DatasetSplitResult:
     if not 0 < config.validation_size < 1:
-        raise ValueError(
-            f"validation_size must be between 0 and 1, got {config.validation_size}."
-        )
+        raise ValueError(f"validation_size must be between 0 and 1, got {config.validation_size}.")
     return split_dataset(
         train_df,
         test_size=config.validation_size,
@@ -505,32 +552,55 @@ def _build_validation_split(
     )
 
 
+def _filter_train_dataframe_for_augmentations(
+    train_df: pd.DataFrame,
+    *,
+    augmentations_per_image: int,
+) -> pd.DataFrame:
+    if augmentations_per_image < 0:
+        raise ValueError("augmentations_per_image must be >= 0, " f"got {augmentations_per_image}.")
+    if "is_augmented" not in train_df.columns or "augmentation_index" not in train_df.columns:
+        return train_df
+
+    augmented_mask = train_df["is_augmented"].astype(bool)
+    augmentation_index = pd.to_numeric(train_df["augmentation_index"], errors="coerce").fillna(-1).astype(int)
+    keep_mask = (~augmented_mask) | (augmentation_index < augmentations_per_image)
+    filtered = train_df.loc[keep_mask].reset_index(drop=True)
+    if filtered.empty:
+        raise ValueError("Filtered training split is empty after applying " f"augmentations_per_image={augmentations_per_image}.")
+    return filtered
+
+
 def _run_fixed_split(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    task: PreprocessingTask,
+    task: TrainingTask,
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
-    validation_split = _build_validation_split(train_df, config)
+    filtered_train_df = _filter_train_dataframe_for_augmentations(
+        train_df,
+        augmentations_per_image=task.augmentations_per_image,
+    )
+    validation_split = _build_validation_split(filtered_train_df, config)
     model_runtime = (config.model_runtime or {}).get(model_name)
-    best_val_acc, best_epoch, history_dict, predictions_df = (
-        run_model_with_preprocessing(
-            validation_split.train_df,
-            validation_split.test_df,
-            test_df,
-            task,
-            model_name,
-            model_fn,
-            num_classes=config.num_classes,
-            batch_size=config.batch_size,
-            epochs=config.epochs,
-            loss=config.loss,
-            learning_rate=config.learning_rate,
-            random_state=config.random_state,
-            model_runtime=model_runtime,
-        )
+    best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
+        validation_split.train_df,
+        validation_split.test_df,
+        test_df,
+        task.preprocessing_task,
+        model_name,
+        model_fn,
+        num_classes=config.num_classes,
+        batch_size=config.batch_size,
+        epochs=config.epochs,
+        loss=config.loss,
+        learning_rate=config.learning_rate,
+        random_state=config.random_state,
+        model_runtime=model_runtime,
+        phase_observer=phase_observer,
     )
     return TrainingRunResult(
         preproc_id=task.preproc_id,
@@ -547,6 +617,7 @@ def _run_fixed_split(
         train_samples=len(validation_split.train_df),
         validation_samples=len(validation_split.test_df),
         test_samples=len(test_df),
+        augmentations_per_image=task.augmentations_per_image,
         summary_metrics={"validation_split_strategy": validation_split.strategy},
     )
 
@@ -555,9 +626,7 @@ def _build_cv_indices(
     train_df: pd.DataFrame,
     config: TrainingConfig,
 ) -> tuple[Iterable[tuple[np.ndarray, np.ndarray]], str]:
-    groups = (
-        train_df["split_group_id"] if "split_group_id" in train_df.columns else None
-    )
+    groups = train_df["split_group_id"] if "split_group_id" in train_df.columns else None
     labels = train_df["label"]
 
     if groups is not None and groups.nunique() >= config.folds:
@@ -579,33 +648,39 @@ def _build_cv_indices(
 def _run_cross_validation(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    task: PreprocessingTask,
+    task: TrainingTask,
     model_name: str,
     model_fn: ModelBuilder,
     config: TrainingConfig,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
-    split_iterator, cv_strategy = _build_cv_indices(train_df, config)
+    filtered_train_df = _filter_train_dataframe_for_augmentations(
+        train_df,
+        augmentations_per_image=task.augmentations_per_image,
+    )
+    split_iterator, cv_strategy = _build_cv_indices(filtered_train_df, config)
 
     best_result: TrainingRunResult | None = None
     fold_scores: list[float] = []
     fold_epochs: list[int] = []
     model_runtime = (config.model_runtime or {}).get(model_name)
     for fold_index, (fit_idx, validation_idx) in enumerate(split_iterator, start=1):
-        # Aggressive cleanup before each fold
-        if fold_index > 1:
-            clear_gpu_memory()
-            gc.collect()
-            time.sleep(1)
-        
-        fit_df = train_df.iloc[fit_idx].reset_index(drop=True)
-        validation_df = train_df.iloc[validation_idx].reset_index(drop=True)
-        fold_seed = config.random_state + fold_index
-        best_val_acc, best_epoch, history_dict, predictions_df = (
-            run_model_with_preprocessing(
+        clear_ml_memory()
+
+        fit_df: pd.DataFrame | None = None
+        validation_df: pd.DataFrame | None = None
+        current: TrainingRunResult | None = None
+        history_dict: dict[str, list[float]] | None = None
+        predictions_df: pd.DataFrame | None = None
+        try:
+            fit_df = filtered_train_df.iloc[fit_idx].reset_index(drop=True)
+            validation_df = filtered_train_df.iloc[validation_idx].reset_index(drop=True)
+            fold_seed = config.random_state + fold_index
+            best_val_acc, best_epoch, history_dict, predictions_df = run_model_with_preprocessing(
                 fit_df,
                 validation_df,
                 test_df,
-                task,
+                task.preprocessing_task,
                 model_name,
                 model_fn,
                 num_classes=config.num_classes,
@@ -615,33 +690,41 @@ def _run_cross_validation(
                 learning_rate=config.learning_rate,
                 random_state=fold_seed,
                 model_runtime=model_runtime,
+                phase_observer=phase_observer,
             )
-        )
 
-        fold_scores.append(best_val_acc)
-        fold_epochs.append(best_epoch)
-        current = TrainingRunResult(
-            preproc_id=task.preproc_id,
-            model_name=model_name,
-            param_id=task.param_id,
-            param_combo=task.param_display,
-            param_json=task.param_json,
-            best_val_acc=best_val_acc,
-            best_epoch=best_epoch,
-            fold=fold_index,
-            history_dict=history_dict,
-            predictions_df=predictions_df,
-            selection_strategy="cross_validation",
-            train_samples=len(fit_df),
-            validation_samples=len(validation_df),
-            test_samples=len(test_df),
-        )
-        if best_result is None or current.best_val_acc > best_result.best_val_acc:
-            best_result = current
-        
-        # Cleanup after each fold
-        del fit_df, validation_df, history_dict, predictions_df
-        gc.collect()
+            fold_scores.append(best_val_acc)
+            fold_epochs.append(best_epoch)
+            current = TrainingRunResult(
+                preproc_id=task.preproc_id,
+                model_name=model_name,
+                param_id=task.param_id,
+                param_combo=task.param_display,
+                param_json=task.param_json,
+                best_val_acc=best_val_acc,
+                best_epoch=best_epoch,
+                fold=fold_index,
+                history_dict=history_dict,
+                predictions_df=predictions_df,
+                selection_strategy="cross_validation",
+                train_samples=len(fit_df),
+                validation_samples=len(validation_df),
+                test_samples=len(test_df),
+                augmentations_per_image=task.augmentations_per_image,
+            )
+            if best_result is None or current.best_val_acc > best_result.best_val_acc:
+                best_result = current
+            else:
+                current = None
+                history_dict = None
+                predictions_df = None
+        finally:
+            fit_df = None
+            validation_df = None
+            if current is None:
+                history_dict = None
+                predictions_df = None
+            clear_ml_memory()
 
     if best_result is None:
         raise RuntimeError("Cross-validation did not produce any runs.")
@@ -664,32 +747,48 @@ def build_training_tasks(
     model_builders: dict[str, ModelBuilder] | None = None,
     preprocessing_tasks: Iterable[PreprocessingTask] | None = None,
 ) -> list[TrainingTask]:
-    available_builders = model_builders or MODEL_BUILDERS
-    model_names = config.model_names or list(available_builders.keys())
-    resolved_preprocessing_tasks = (
-        list(preprocessing_tasks)
-        if preprocessing_tasks is not None
-        else list(
-            iter_preprocessing_tasks(
-                config.preprocessing_ids,
-                include_combinations=config.include_combinations,
-                param_grids=config.preprocessing_grids,
-            )
+    return list(
+        iter_training_tasks(
+            config,
+            model_builders=model_builders,
+            preprocessing_tasks=preprocessing_tasks,
         )
     )
 
-    queue: list[TrainingTask] = []
+
+def iter_training_tasks(
+    config: TrainingConfig,
+    *,
+    model_builders: dict[str, ModelBuilder] | None = None,
+    preprocessing_tasks: Iterable[PreprocessingTask] | None = None,
+) -> Iterable[TrainingTask]:
+    available_builders = model_builders or MODEL_BUILDERS
+    model_names = config.model_names or list(available_builders.keys())
+    resolved_preprocessing_tasks = (
+        preprocessing_tasks
+        if preprocessing_tasks is not None
+        else iter_preprocessing_tasks(
+            config.preprocessing_ids,
+            include_combinations=config.include_combinations,
+            param_grids=config.preprocessing_grids,
+        )
+    )
+
+    augmentation_values = tuple(int(value) for value in config.augmentation_values)
+    for augmentation_value in augmentation_values:
+        if augmentation_value < 0:
+            raise ValueError("augmentation_values must contain integers >= 0, " f"got {augmentation_values!r}.")
+
     for preprocessing_task in resolved_preprocessing_tasks:
-        for model_name in model_names:
-            if model_name not in available_builders:
-                raise ValueError(f"Unknown model name requested: {model_name}")
-            queue.append(
-                TrainingTask(
+        for augmentation_value in augmentation_values:
+            for model_name in model_names:
+                if model_name not in available_builders:
+                    raise ValueError(f"Unknown model name requested: {model_name}")
+                yield TrainingTask(
                     model_name=model_name,
                     preprocessing_task=preprocessing_task,
+                    augmentations_per_image=augmentation_value,
                 )
-            )
-    return queue
 
 
 def run_training_task(
@@ -699,39 +798,34 @@ def run_training_task(
     train_df: pd.DataFrame | None = None,
     test_df: pd.DataFrame | None = None,
     model_builders: dict[str, ModelBuilder] | None = None,
+    phase_observer: PhaseObserver | None = None,
 ) -> TrainingRunResult:
     available_builders = model_builders or MODEL_BUILDERS
     if task.model_name not in available_builders:
         raise ValueError(f"Unknown model name requested: {task.model_name}")
 
-    resolved_train_df = (
-        load_split_dataframe(config.train_split_path)
-        if train_df is None
-        else train_df.copy()
-    )
-    resolved_test_df = (
-        load_split_dataframe(config.test_split_path)
-        if test_df is None
-        else test_df.copy()
-    )
+    resolved_train_df = load_split_dataframe(config.train_split_path) if train_df is None else train_df
+    resolved_test_df = load_split_dataframe(config.test_split_path) if test_df is None else test_df
     model_fn = available_builders[task.model_name]
 
     if config.folds == 0:
         return _run_fixed_split(
             resolved_train_df,
             resolved_test_df,
-            task.preprocessing_task,
+            task,
             task.model_name,
             model_fn,
             config,
+            phase_observer=phase_observer,
         )
     return _run_cross_validation(
         resolved_train_df,
         resolved_test_df,
-        task.preprocessing_task,
+        task,
         task.model_name,
         model_fn,
         config,
+        phase_observer=phase_observer,
     )
 
 
@@ -768,6 +862,7 @@ def run_training_pipeline(
 
         model_started_at = time.time()
         try:
+            clear_ml_memory()
             result = run_training_task(
                 task,
                 config,
@@ -776,24 +871,19 @@ def run_training_pipeline(
                 model_builders=available_builders,
             )
         except Exception as error:
-            prefix = (
-                "GPU memory error detected for"
-                if _is_resource_exhausted_error(error)
-                else "Error running"
-            )
+            prefix = "GPU memory error detected for" if _is_resource_exhausted_error(error) else "Error running"
             print(f"{prefix} {task.label}: {error}")
+            clear_ml_memory()
             continue
 
         history_path, predictions_path = save_run_result(result, config)
         summaries.append(result)
         elapsed = time.time() - model_started_at
         fold_label = f" fold {result.fold}" if result.fold else ""
-        print(
-            f"Saved best run for {task.label}{fold_label} with val_accuracy="
-            f"{result.best_val_acc:.4f} at epoch {result.best_epoch}."
-        )
+        print(f"Saved best run for {task.label}{fold_label} with val_accuracy=" f"{result.best_val_acc:.4f} at epoch {result.best_epoch}.")
         print(f"History: {history_path}")
         print(f"Predictions: {predictions_path}")
         print(f"Time taken: {format_duration(elapsed)}\n")
+        clear_ml_memory()
 
     return summaries

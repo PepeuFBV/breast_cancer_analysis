@@ -27,11 +27,11 @@ def bootstrap_environment(gpu_mode: str, install_dev: bool) -> bool:
     print("\n" + "=" * 70)
     print("STEP 1: Bootstrapping Python environment")
     print("=" * 70)
-    
+
     cmd = ["python3", "scripts/bootstrap_env.py", "--gpu", gpu_mode]
     if install_dev:
         cmd.append("--dev")
-    
+
     result = _run(cmd, check=False)
     return result.returncode == 0
 
@@ -41,7 +41,7 @@ def validate_dataset() -> bool:
     print("\n" + "=" * 70)
     print("STEP 2: Validating dataset")
     print("=" * 70)
-    
+
     result = _run([str(VENV_PYTHON), "scripts/validate_dataset.py"], check=False)
     return result.returncode == 0
 
@@ -51,7 +51,7 @@ def run_smoke_tests() -> bool:
     print("\n" + "=" * 70)
     print("STEP 3: Running smoke tests")
     print("=" * 70)
-    
+
     result = _run([str(VENV_PYTHON), "scripts/smoke_run.py"], check=False)
     return result.returncode == 0
 
@@ -61,7 +61,7 @@ def preprocess_data() -> bool:
     print("\n" + "=" * 70)
     print("STEP 4: Preprocessing dataset")
     print("=" * 70)
-    
+
     result = _run([str(VENV_PYTHON), "preprocess.py"], check=False)
     return result.returncode == 0
 
@@ -108,15 +108,12 @@ def print_next_steps(all_ok: bool, skip_preprocess: bool) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Unattended setup for the breast cancer analysis pipeline."
-    )
+    parser = argparse.ArgumentParser(description="Unattended setup for the breast cancer analysis pipeline.")
     parser.add_argument(
         "--gpu",
         choices=("auto", "required", "off"),
         default="auto",
-        help="GPU mode: auto (use if available), required (fail if unavailable), "
-        "or off (CPU only). Default: auto",
+        help="GPU mode: auto (use if available), required (fail if unavailable), " "or off (CPU only). Default: auto",
     )
     parser.add_argument(
         "--dev",
@@ -138,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    
+
     print("=" * 70)
     print("UNATTENDED SETUP FOR BREAST CANCER ANALYSIS PIPELINE")
     print("=" * 70)
@@ -146,14 +143,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Install dev dependencies: {args.dev}")
     print(f"Skip smoke tests: {args.skip_smoke}")
     print(f"Skip preprocessing: {args.skip_preprocess}")
-    
+
     # Step 1: Bootstrap environment
     bootstrap_ok = bootstrap_environment(args.gpu, args.dev)
     if not bootstrap_ok:
         print("\n✗ Environment bootstrap failed.", file=sys.stderr)
         print("Cannot proceed with setup.", file=sys.stderr)
         return 1
-    
+
     # Step 2: Validate dataset
     dataset_ok = validate_dataset()
     if not dataset_ok:
@@ -162,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         print_summary(bootstrap_ok, dataset_ok, False, False, args.skip_preprocess)
         print_next_steps(False, args.skip_preprocess)
         return 1
-    
+
     # Step 3: Run smoke tests (optional)
     smoke_ok = True
     if not args.skip_smoke:
@@ -170,19 +167,19 @@ def main(argv: list[str] | None = None) -> int:
         if not smoke_ok:
             print("\n⚠ Smoke tests failed.", file=sys.stderr)
             print("The environment may still work, but validation failed.")
-    
+
     # Step 4: Preprocess data (optional)
     preprocess_ok = True
     if not args.skip_preprocess:
         preprocess_ok = preprocess_data()
         if not preprocess_ok:
             print("\n✗ Data preprocessing failed.", file=sys.stderr)
-    
+
     # Summary
     all_ok = bootstrap_ok and dataset_ok and smoke_ok and preprocess_ok
     print_summary(bootstrap_ok, dataset_ok, smoke_ok, preprocess_ok, args.skip_preprocess)
     print_next_steps(all_ok, args.skip_preprocess)
-    
+
     return 0 if all_ok else 1
 
 

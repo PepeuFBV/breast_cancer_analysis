@@ -50,10 +50,7 @@ def inspect_dataset_layout(
     else:
         dicom_count = sum(1 for path in dicom_dir.glob("*.dcm") if path.is_file())
         if dicom_count < min_dicoms:
-            errors.append(
-                f"expected at least {min_dicoms} .dcm file(s) under {dicom_dir}, "
-                f"found {dicom_count}"
-            )
+            errors.append(f"expected at least {min_dicoms} .dcm file(s) under {dicom_dir}, " f"found {dicom_count}")
 
     if metadata_path.exists() and metadata_path.stat().st_size == 0:
         warnings.append(f"metadata CSV is empty: {metadata_path}")

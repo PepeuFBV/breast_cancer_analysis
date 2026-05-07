@@ -27,31 +27,42 @@ class ExperimentConfigTest(unittest.TestCase):
         self.assertFalse(config.train.include_combinations)
         self.assertIn("custom cnn", config.models)
         self.assertEqual(config.models["custom cnn"].input_channels, 1)
+        self.assertEqual(config.runner.device_policy, "adaptive")
+        self.assertEqual(config.runner.gpu_retries, 1)
+        self.assertEqual(config.runner.cpu_retries, 1)
+        self.assertIsNone(config.runner.cpu_max_threads)
+        self.assertIsNone(config.runner.cpu_opencv_threads)
+        self.assertIsNone(config.runner.cpu_inter_op_threads)
+        self.assertIsNone(config.runner.cpu_intra_op_threads)
+        self.assertIsNone(config.runner.cpu_nice)
+
+    def test_low_memory_config_loads(self) -> None:
+        config = load_experiment_config("configs/experiment.low-memory.json")
+        self.assertEqual(config.runner.device_policy, "adaptive")
+        self.assertTrue(config.runner.isolate_tasks)
+        self.assertEqual(config.runner.cpu_max_threads, 2)
+        self.assertEqual(config.runner.cpu_opencv_threads, 1)
+        self.assertEqual(config.train.batch_size, 2)
+        self.assertEqual(config.models["custom cnn"].batch_size, 1)
 
     def test_relative_paths_resolve_from_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "custom.json"
-            payload = json.loads(
-                DEFAULT_EXPERIMENT_CONFIG_PATH.read_text(encoding="utf-8")
-            )
+            payload = json.loads(DEFAULT_EXPERIMENT_CONFIG_PATH.read_text(encoding="utf-8"))
             payload["paths"]["artifacts_dir"] = "tmp/artifacts"
             payload["paths"]["history_dir"] = "tmp/history"
             config_path.write_text(json.dumps(payload), encoding="utf-8")
 
             config = load_experiment_config(config_path)
 
-            self.assertTrue(str(config.paths.artifacts_dir).endswith("tmp/artifacts"))
-            self.assertTrue(str(config.paths.history_dir).endswith("tmp/history"))
+            self.assertTrue(config.paths.artifacts_dir.as_posix().endswith("tmp/artifacts"))
+            self.assertTrue(config.paths.history_dir.as_posix().endswith("tmp/history"))
 
     def test_invalid_preprocessing_name_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "invalid.json"
-            payload = json.loads(
-                DEFAULT_EXPERIMENT_CONFIG_PATH.read_text(encoding="utf-8")
-            )
-            payload["preprocess"]["preprocessing_grid"]["unknown-filter"] = {
-                "alpha": [1]
-            }
+            payload = json.loads(DEFAULT_EXPERIMENT_CONFIG_PATH.read_text(encoding="utf-8"))
+            payload["preprocess"]["preprocessing_grid"]["unknown-filter"] = {"alpha": [1]}
             config_path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaises(ValueError):
@@ -86,9 +97,7 @@ class ExperimentConfigTest(unittest.TestCase):
 
     def test_preprocess_cli_uses_config_defaults(self) -> None:
         parser = build_preprocess_parser()
-        args = parser.parse_args(
-            ["--config", "configs/experiment.default.json", "--random-state", "123"]
-        )
+        args = parser.parse_args(["--config", "configs/experiment.default.json", "--random-state", "123"])
 
         config = build_dataset_config_from_args(args)
 
@@ -112,9 +121,7 @@ class ExperimentConfigTest(unittest.TestCase):
         config = build_evaluation_config_from_args(args)
 
         self.assertEqual(config.top_k, 5)
-        self.assertTrue(
-            str(config.details_dir).endswith("artifacts/reports/custom-details")
-        )
+        self.assertTrue(config.details_dir.as_posix().endswith("artifacts/reports/custom-details"))
 
 
 if __name__ == "__main__":

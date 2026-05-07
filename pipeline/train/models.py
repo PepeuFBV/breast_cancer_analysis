@@ -49,10 +49,7 @@ def _resolve_dropout_rates(
     if runtime is None or not runtime.dropout_rates:
         return defaults
     if len(runtime.dropout_rates) != len(defaults):
-        raise ValueError(
-            f"Expected {len(defaults)} dropout values, "
-            f"got {len(runtime.dropout_rates)}."
-        )
+        raise ValueError(f"Expected {len(defaults)} dropout values, " f"got {len(runtime.dropout_rates)}.")
     return runtime.dropout_rates
 
 
@@ -64,9 +61,7 @@ def _resolve_dense_units(runtime: ModelRuntimeConfig | None, *, default: int) ->
     return runtime.dense_units
 
 
-def _resolve_dropout_rate(
-    runtime: ModelRuntimeConfig | None, *, default: float
-) -> float:
+def _resolve_dropout_rate(runtime: ModelRuntimeConfig | None, *, default: float) -> float:
     """Return the configured dropout rate or the builder default."""
 
     if runtime is None or runtime.dropout_rate is None:
@@ -209,9 +204,7 @@ def _build_transfer_learning_model(
     dense_units = _resolve_dense_units(runtime, default=spec.dense_units)
     dropout_rate = _resolve_dropout_rate(runtime, default=spec.dropout_rate)
 
-    base_model = spec.application_cls(
-        weights="imagenet", include_top=False, input_tensor=Input(shape=input_shape)
-    )
+    base_model = spec.application_cls(weights="imagenet", include_top=False, input_tensor=Input(shape=input_shape))
     base_model.trainable = False
 
     outputs = _build_transfer_learning_classifier(
@@ -239,30 +232,14 @@ def _transfer_learning_specs() -> dict[str, _TransferLearningSpec]:
     )
 
     return {
-        "resnet": _TransferLearningSpec(
-            application_cls=ResNet50, dense_units=256, dropout_rate=0.5
-        ),
-        "densenet": _TransferLearningSpec(
-            application_cls=DenseNet121, dense_units=128, dropout_rate=0.5
-        ),
-        "efficientnet": _TransferLearningSpec(
-            application_cls=EfficientNetB3, dense_units=128, dropout_rate=0.5
-        ),
-        "mobilenetv3": _TransferLearningSpec(
-            application_cls=MobileNetV3Large, dense_units=128, dropout_rate=0.3
-        ),
-        "inception": _TransferLearningSpec(
-            application_cls=InceptionV3, dense_units=256, dropout_rate=0.5
-        ),
-        "nasnet": _TransferLearningSpec(
-            application_cls=NASNetMobile, dense_units=128, dropout_rate=0.4
-        ),
-        "chexnet": _TransferLearningSpec(
-            application_cls=DenseNet121, dense_units=0, dropout_rate=0.5
-        ),
-        "vgg19": _TransferLearningSpec(
-            application_cls=VGG19, dense_units=128, dropout_rate=0.5
-        ),
+        "resnet": _TransferLearningSpec(application_cls=ResNet50, dense_units=256, dropout_rate=0.5),
+        "densenet": _TransferLearningSpec(application_cls=DenseNet121, dense_units=128, dropout_rate=0.5),
+        "efficientnet": _TransferLearningSpec(application_cls=EfficientNetB3, dense_units=128, dropout_rate=0.5),
+        "mobilenetv3": _TransferLearningSpec(application_cls=MobileNetV3Large, dense_units=128, dropout_rate=0.3),
+        "inception": _TransferLearningSpec(application_cls=InceptionV3, dense_units=256, dropout_rate=0.5),
+        "nasnet": _TransferLearningSpec(application_cls=NASNetMobile, dense_units=128, dropout_rate=0.4),
+        "chexnet": _TransferLearningSpec(application_cls=DenseNet121, dense_units=0, dropout_rate=0.5),
+        "vgg19": _TransferLearningSpec(application_cls=VGG19, dense_units=128, dropout_rate=0.5),
     }
 
 

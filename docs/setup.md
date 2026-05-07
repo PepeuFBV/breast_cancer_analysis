@@ -36,6 +36,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 ```
 
@@ -44,6 +45,17 @@ For tests and formatting:
 ```bash
 python3 scripts/bootstrap_env.py --gpu auto --dev
 ```
+
+The full `run_experiments.py run` battery can take hours. For default setup
+validation, run smoke and long-run checks first:
+
+```bash
+./.venv/bin/python scripts/check_runtime.py --device auto
+./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device cpu
+```
+
+CPU-only validation is supported. GPU is optional unless you explicitly pass a
+`--require-gpu` flag to the runtime checks.
 
 ## Dataset
 

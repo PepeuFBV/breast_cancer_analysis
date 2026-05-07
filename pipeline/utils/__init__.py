@@ -1,6 +1,7 @@
 """Shared utilities for the reusable project pipeline."""
 
-from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env, ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.memory import clear_ml_memory, log_memory_snapshot
 from pipeline.utils.naming import (
     param_dict_to_display,
     param_dict_to_file_id,
@@ -14,9 +15,12 @@ from pipeline.utils.runtime import format_duration, resolve_bool_flag
 __all__ = [
     "ProjectPaths",
     "build_project_paths",
+    "clear_ml_memory",
+    "bootstrap_tensorflow_runtime_env",
     "ensure_tensorflow_wsl_gpu_env",
     "enforce_reproducibility",
     "format_duration",
+    "log_memory_snapshot",
     "param_dict_to_display",
     "param_dict_to_file_id",
     "param_dict_to_json",

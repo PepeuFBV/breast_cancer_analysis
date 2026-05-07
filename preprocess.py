@@ -7,16 +7,11 @@ from pipeline.data.validation import validate_dataset_layout
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Prepare the INbreast dataset into reusable pipeline artifacts."
-    )
+    parser = argparse.ArgumentParser(description="Prepare the INbreast dataset into reusable pipeline artifacts.")
     parser.add_argument(
         "--config",
         default=None,
-        help=(
-            "Path to an experiment JSON config. "
-            "Defaults to configs/experiment.default.json."
-        ),
+        help=("Path to an experiment JSON config. " "Defaults to configs/experiment.default.json."),
     )
     parser.add_argument(
         "--raw-data-dir",
@@ -52,16 +47,8 @@ def build_dataset_config_from_args(args: argparse.Namespace):
     resize_dim = None
     if args.resize_width is not None or args.resize_height is not None:
         resize_dim = (
-            (
-                args.resize_width
-                if args.resize_width is not None
-                else experiment_config.preprocess.image_size[0]
-            ),
-            (
-                args.resize_height
-                if args.resize_height is not None
-                else experiment_config.preprocess.image_size[1]
-            ),
+            (args.resize_width if args.resize_width is not None else experiment_config.preprocess.image_size[0]),
+            (args.resize_height if args.resize_height is not None else experiment_config.preprocess.image_size[1]),
         )
     return experiment_config.build_dataset_preparation_config(
         project_paths,

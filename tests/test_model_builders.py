@@ -32,9 +32,7 @@ def _fake_application_builder(
 ) -> Model:
     assert weights == "imagenet"
     assert include_top is False
-    outputs = Conv2D(4, (1, 1), activation="relu", name="fake_backbone_conv")(
-        input_tensor
-    )
+    outputs = Conv2D(4, (1, 1), activation="relu", name="fake_backbone_conv")(input_tensor)
     return Model(inputs=input_tensor, outputs=outputs, name="fake_backbone")
 
 
@@ -87,9 +85,7 @@ def test_transfer_learning_builder_freezes_backbone(monkeypatch) -> None:
 
     dense_units = [layer.units for layer in model.layers if isinstance(layer, Dense)]
     dropout_rates = [layer.rate for layer in model.layers if isinstance(layer, Dropout)]
-    backbone_conv = next(
-        layer for layer in model.layers if layer.name == "fake_backbone_conv"
-    )
+    backbone_conv = next(layer for layer in model.layers if layer.name == "fake_backbone_conv")
 
     assert dense_units == [32, 2]
     assert dropout_rates == pytest.approx([0.2, 0.2])

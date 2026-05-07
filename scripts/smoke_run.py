@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -9,10 +10,17 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from pipeline.config import load_experiment_config
-from pipeline.evaluate.reporting import generate_final_report
-from pipeline.experiments import IterativeExperimentRunner, IterativeRunOptions
-from pipeline.train.preprocessing import PreprocessingTask
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from pipeline.config import load_experiment_config  # noqa: E402
+from pipeline.evaluate.reporting import generate_final_report  # noqa: E402
+from pipeline.experiments import (  # noqa: E402
+    IterativeExperimentRunner,
+    IterativeRunOptions,
+)
+from pipeline.train.preprocessing import PreprocessingTask  # noqa: E402
 
 
 class _SmokeHistory:
@@ -28,9 +36,7 @@ class _SmokeModel:
     def fit(self, *args: Any, **kwargs: Any) -> _SmokeHistory:
         return _SmokeHistory()
 
-    def predict(
-        self, model_inputs: np.ndarray, batch_size: int = 8, verbose: int = 0
-    ) -> np.ndarray:
+    def predict(self, model_inputs: np.ndarray, batch_size: int = 8, verbose: int = 0) -> np.ndarray:
         probabilities = np.full((len(model_inputs), 8), 0.01, dtype="float32")
         probabilities[:, 0] = 0.78
         probabilities[:, 1] = 0.15
@@ -138,9 +144,7 @@ def _run_smoke(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run a fast synthetic smoke check through runner and evaluation."
-    )
+    parser = argparse.ArgumentParser(description="Run a fast synthetic smoke check through runner and evaluation.")
     parser.add_argument("--config", default=None)
     parser.add_argument(
         "--artifacts-dir",

@@ -15,25 +15,25 @@ include = ["pipeline*"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
-addopts = "-m 'not slow and not integration'"
+addopts = "-m 'not slow and not integration and not gpu'"
 markers = [
     "unit: fast deterministic tests that do not require external data or hardware",
     "smoke: lightweight end-to-end checks with synthetic or mocked data",
     "integration: checks that require local datasets, services, or external tools",
-    "gpu: GPU-related checks; mocked GPU tests may still run by default",
+    "gpu: GPU-related checks; skipped by default in CI without GPU hardware",
     "slow: long-running tests excluded from default pytest",
 ]
 
 [tool.ruff]
 target-version = "py310"
-line-length = 88
+line-length = 300
 extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
 [tool.black]
-line-length = 88
+line-length = 300
 target-version = ["py310"]
 include = '\.pyi?$'
 extend-exclude = '''

@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
 
-from pipeline.config import load_experiment_config
-from pipeline.data.validation import (
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from pipeline.config import load_experiment_config  # noqa: E402
+from pipeline.data.validation import (  # noqa: E402
     format_dataset_layout_report,
     inspect_dataset_layout,
 )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Validate the expected INbreast dataset directory layout."
-    )
+    parser = argparse.ArgumentParser(description="Validate the expected INbreast dataset directory layout.")
     parser.add_argument(
         "--config",
         default=None,

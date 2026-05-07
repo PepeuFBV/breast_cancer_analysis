@@ -1,224 +1,234 @@
 # Quick Start
 
-This is the shortest path from a local INbreast copy to a validated run. The
-full experiment grid can take hours, so run the checks and smoke command first.
+Use the same `--config` for `preprocess.py`, `run_experiments.py launch`,
+`status`, `stop`, and `reset`. If you launch `configs/experiment.low-memory.json`,
+do not preprocess or check status against the default `artifacts/` tree by
+accident.
 
-## Unattended Setup (Recommended)
+Windows PowerShell equivalents:
 
-For a fully automated setup that handles everything:
+- Python: `.\.venv\Scripts\python.exe`
+- Follow logs: `Get-Content <log-path> -Wait`
+- Delete artifacts: `Remove-Item <path> -Recurse -Force`
+
+## 0. Native Windows GPU Baseline (TensorFlow 2.10)
+
+Use this only for native Windows CUDA GPU:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
+.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+```
+
+If `check_windows_gpu.py` fails, do not launch full experiments.
+
+## 1. Check Runtime
 
 ```bash
-python3 scripts/unattended_setup.py --gpu auto
+./.venv/bin/python run_experiments.py probe-runtime --device gpu
+./.venv/bin/python run_experiments.py probe-runtime --device cpu
+./.venv/bin/python run_experiments.py probe-runtime --device gpu --json
+./.venv/bin/python run_experiments.py probe-runtime --device cpu --json
 ```
 
-This will:
-1. Bootstrap the Python environment
-2. Validate the dataset
-3. Run smoke tests
-4. Preprocess the data
-
-After this completes successfully, skip to step 7 to run experiments.
-
-For CPU-only mode:
+Equivalent command:
 
 ```bash
-python3 scripts/unattended_setup.py --gpu off
+python run_experiments.py probe-runtime --device gpu
 ```
 
-Verify readiness:
+## 1.1 Count Experiments (Dry Run)
 
 ```bash
-python3 scripts/check_readiness.py
+./.venv/bin/python run_experiments.py count
+./.venv/bin/python run_experiments.py count --augmentations-per-image 1 2 3
+./.venv/bin/python run_experiments.py count --combined-preprocessing
+./.venv/bin/python run_experiments.py count --combined-preprocessing --augmentations-per-image 1 2 3
 ```
 
-## Manual Setup
+Expected totals with default config:
 
-If you prefer step-by-step control, follow the sections below.
+- default: `4,330` experiments / `17,320` fits
+- `--augmentations-per-image 1 2 3`: `12,990` experiments / `51,960` fits
+- `--combined-preprocessing`: `1,559,530` experiments / `6,238,120` fits
+- both flags: `4,678,590` experiments / `18,714,360` fits
 
-## 1. Prerequisites
+## 2. Preprocess
 
-- Python 3.10, 3.11, or 3.12
-- `python3`, `python3-venv`, `python3-pip`
-- Build tools such as `build-essential` and `python3-dev`
-- The INbreast dataset available locally
-- Optional NVIDIA GPU support; see [`gpu.md`](gpu.md) and [`wsl_gpu_setup.md`](wsl_gpu_setup.md)
-
-Note: GPU is optional. The pipeline runs on CPU if GPU is not available.
-
-Expected dataset layout:
-
-```text
-data/INbreast Release 1.0/
-  INbreast.csv
-  AllDICOMs/*.dcm
-```
-
-## 2. Set Up the Environment
-
-On Debian/Ubuntu:
-
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip build-essential python3-dev
-```
-
-Create and install:
-
-```bash
-python3 scripts/bootstrap_env.py --gpu auto
-```
-
-For development checks:
-
-```bash
-python3 scripts/bootstrap_env.py --gpu auto --dev
-```
-
-Use `--gpu required` instead of `--gpu auto` when the run must fail unless
-TensorFlow can use the GPU. Use `--gpu off` to force CPU-only mode.
-
-Note: If GPU setup fails with `--gpu auto`, the bootstrap will succeed and the
-pipeline will run on CPU. For WSL GPU troubleshooting, see
-[`wsl_gpu_setup.md`](wsl_gpu_setup.md).
-
-## 3. Validate Setup
-
-```bash
-./.venv/bin/python scripts/check_environment.py --require-venv
-./.venv/bin/python scripts/validate_dataset.py
-./.venv/bin/python scripts/check_gpu.py
-./.venv/bin/python scripts/smoke_run.py
-```
-
-Use `./.venv/bin/python scripts/check_gpu.py --require-gpu` only when the run
-must use GPU.
-
-## 4. Review the Experiment Grid
-
-The default grid lives in
-[`configs/experiment.default.json`](../configs/experiment.default.json). It
-controls paths, preprocessing combinations, model names, folds, epochs, batch
-size, and evaluation settings.
-
-The shipped config disables pairwise preprocessing combinations by default.
-Enable them only when you intentionally want a much larger queue:
-
-```bash
-./.venv/bin/python run_experiments.py run --combined-preprocessing
-```
-
-## 5. Preprocess the Dataset
+Default artifacts:
 
 ```bash
 ./.venv/bin/python preprocess.py
 ```
 
-Main outputs:
-
-- `artifacts/processed/images/train/`
-- `artifacts/processed/images/test/`
-- `artifacts/processed/splits/train_split.csv`
-- `artifacts/processed/splits/test_split.csv`
-- `artifacts/processed/splits/split_summary.json`
-
-## 6. Optional Real Training Smoke
-
-After preprocessing, run a single real training task before the full grid:
+Low-memory config:
 
 ```bash
-./.venv/bin/python run_experiments.py run \
-  --models "custom cnn" \
-  --preprocessing none \
-  --no-combined-preprocessing \
-  --folds 0 \
-  --epochs 1 \
-  --limit 1
+./.venv/bin/python preprocess.py --config configs/experiment.low-memory.json
 ```
 
-## 7. Run the Full Experiment Queue
-
-Only start this when the checks above pass and you are ready for a long run.
-For unattended execution, prefer the background launcher:
+## 3. Start A Safe Adaptive Run
 
 ```bash
-./.venv/bin/python run_experiments.py launch
+./.venv/bin/python run_experiments.py launch \
+  --config configs/experiment.low-memory.json \
+  --isolate-tasks \
+  --device-policy adaptive \
+  --gpu-retries 1 \
+  --cpu-retries 1 \
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1 \
+  --cpu-inter-op-threads 1 \
+  --cpu-intra-op-threads 2 \
+  --cpu-nice 10
 ```
 
-Foreground mode is still available:
+## 4. Status And Logs
+
+Explicit config:
 
 ```bash
-./.venv/bin/python run_experiments.py run
+./.venv/bin/python run_experiments.py status --config configs/experiment.low-memory.json
 ```
 
-Local dashboard:
-
-```bash
-./.venv/bin/streamlit run experiment_dashboard.py
-```
-
-The dashboard and CLI share the same persisted runner state.
-
-## 8. Check Status, Stop, and Resume
-
-Check progress:
+Plain status also works when there is only one active runner:
 
 ```bash
 ./.venv/bin/python run_experiments.py status
 ```
 
-Request a safe stop:
+Logs:
 
 ```bash
-./.venv/bin/python run_experiments.py stop
+tail -f artifacts/experiments/logs/iterative-runner.log
+tail -f artifacts-low-memory/experiments/logs/iterative-runner.log
+tail -f artifacts-low-memory/experiments/logs/background-runner-*.out.log
+tail -f artifacts-low-memory/experiments/logs/background-runner-*.err.log
 ```
 
-Behavior:
+## 5. Stop
 
-- the current experiment is allowed to finish
-- completed results stay saved
-- the queue stops at the next safe boundary
-
-Resume later:
+Graceful stop:
 
 ```bash
-./.venv/bin/python run_experiments.py run
+./.venv/bin/python run_experiments.py stop --config configs/experiment.low-memory.json
 ```
 
-Useful rerun options:
+Immediate kill:
 
 ```bash
-./.venv/bin/python run_experiments.py run --rerun-failed
-./.venv/bin/python run_experiments.py run --rerun-completed
+./.venv/bin/python run_experiments.py stop --config configs/experiment.low-memory.json --kill
 ```
 
-Reset only the orchestration state:
+## 6. Reset
+
+Reset orchestration state only:
 
 ```bash
-./.venv/bin/python run_experiments.py reset
+./.venv/bin/python run_experiments.py reset --config configs/experiment.low-memory.json
 ```
 
-Reset state and remove saved run outputs:
+Reset and delete results:
 
 ```bash
 ./.venv/bin/python run_experiments.py reset --purge-results
+./.venv/bin/python run_experiments.py reset --config configs/experiment.low-memory.json --purge-results
 ```
 
-## 9. Generate the Final Report
+If a background runner is still alive, kill it as part of reset:
 
 ```bash
-./.venv/bin/python evaluate.py
+./.venv/bin/python run_experiments.py reset --config configs/experiment.low-memory.json --purge-results --kill-active
 ```
 
-Main outputs:
+## 7. Restart After A New Preprocess Run
 
-- `artifacts/reports/final_comprehensive_results.csv`
-- `artifacts/reports/evaluation_details/`
+```bash
+./.venv/bin/python run_experiments.py reset \
+  --config configs/experiment.low-memory.json \
+  --purge-results \
+  --kill-active
 
-## 10. Where Everything Is Saved
+./.venv/bin/python preprocess.py --config configs/experiment.low-memory.json
 
-- Processed data: `artifacts/processed/`
-- Training history: `artifacts/runs/history/`
-- Predictions: `artifacts/runs/predictions/`
-- Runner state: `artifacts/experiments/state/runner_state.json`
-- Runner summary: `artifacts/experiments/summary/experiment_runs.csv`
-- Runner log: `artifacts/experiments/logs/iterative-runner.log`
+./.venv/bin/python run_experiments.py launch \
+  --config configs/experiment.low-memory.json \
+  --isolate-tasks \
+  --device-policy adaptive \
+  --gpu-retries 1 \
+  --cpu-retries 1 \
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1 \
+  --cpu-inter-op-threads 1 \
+  --cpu-intra-op-threads 2 \
+  --cpu-nice 10
+```
+
+## 8. Smoke Commands
+
+CPU-safe smoke:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --config configs/experiment.smoke.json \
+  --limit 2 \
+  --isolate-tasks \
+  --device-policy cpu-only \
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1
+```
+
+GPU-only validation run:
+
+```bash
+python run_experiments.py run --device-policy gpu-only --limit 1
+```
+
+Adaptive smoke:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --config configs/experiment.smoke.json \
+  --limit 3 \
+  --isolate-tasks \
+  --device-policy adaptive \
+  --gpu-retries 1 \
+  --cpu-retries 1 \
+  --cpu-max-threads 2 \
+  --cpu-opencv-threads 1
+```
+
+Equivalent adaptive command:
+
+```bash
+python run_experiments.py run --device-policy adaptive --isolate-tasks --limit 10
+```
+
+Augmentation dimension command:
+
+```bash
+python run_experiments.py run --augmentations-per-image 1 2 3 --limit 10
+```
+
+GPU probe command:
+
+```bash
+python run_experiments.py probe-runtime --device gpu
+```
+
+## 9. Huge Queues
+
+The runner refuses very large queues by default.
+
+- Narrow with `--models`, `--preprocessing`, and `--no-combined-preprocessing`
+- Export the queue first with `--queue-export-path`
+- Use `--allow-huge-queue` only intentionally
+
+Example:
+
+```bash
+./.venv/bin/python run_experiments.py run \
+  --allow-huge-queue \
+  --queue-export-path artifacts/experiments/state/queue-export.jsonl
+```

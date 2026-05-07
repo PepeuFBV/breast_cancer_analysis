@@ -1,34 +1,38 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+    pull_request:
 
 jobs:
-  checks:
-    runs-on: ubuntu-latest
+    checks:
+        name: Overall CI Checks
+        runs-on: ubuntu-latest
 
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+        steps:
+            - name: Check out repository
+              uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          cache: "pip"
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.10"
+                  cache: "pip"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
-          python -m pip install -e .
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  python -m pip install -r requirements-dev.txt
+                  python -m pip install -e .
 
-      - name: Run Ruff
-        run: python -m ruff check .
+            - name: Run Ruff
+              run: python -m ruff check .
 
-      - name: Run Black
-        run: python -m black --check .
+            - name: Run Black
+              run: python -m black --check .
 
-      - name: Run Pytest
-        run: python -m pytest
+            - name: Run Pytest
+              run: |
+                  for test_file in tests/test_*.py; do
+                      echo "Running ${test_file}"
+                      python -m pytest -q "${test_file}"
+                  done
