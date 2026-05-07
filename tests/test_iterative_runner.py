@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 import pandas as pd
+import pytest
 
 from pipeline.config import load_experiment_config
 from pipeline.experiments import (
@@ -26,11 +28,14 @@ from pipeline.experiments import (
 from pipeline.experiments.runner import (
     BACKGROUND_STDERR_LOG_ENV,
     BACKGROUND_STDOUT_LOG_ENV,
+    MATERIALIZED_QUEUE_HARD_LIMIT,
     MAX_QUEUE_TASKS,
     REQUESTED_DEVICE_ENV,
+    ExperimentGridCounts,
+    build_experiment_record,
 )
 from pipeline.train.preprocessing import PreprocessingTask
-from pipeline.train.runner import TrainingConfig, artifact_paths_for_task
+from pipeline.train.runner import TrainingConfig, TrainingTask, artifact_paths_for_task
 from pipeline.utils.paths import build_project_paths
 from pipeline.utils.runtime_limits import CPU_THREAD_ENV_KEYS, CpuExecutionLimits
 
@@ -401,6 +406,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(len(subprocess_events), 1)
             self.assertEqual(subprocess_events[0]["subprocess_exit_code"], 7)
 
+    @pytest.mark.gpu
     def test_adaptive_policy_retries_gpu_then_falls_back_to_cpu_and_recovers_gpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -483,6 +489,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(len(first_task["attempt_history"]), 3)
             self.assertEqual(second_task["final_device"], "gpu")
 
+    @pytest.mark.gpu
     def test_gpu_attempt_preserves_visible_devices_and_records_probe_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -598,6 +605,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(attempt["effective_cpu_thread_env"]["OMP_NUM_THREADS"], "2")
             self.assertFalse(attempt["gpu_used"])
 
+    @pytest.mark.gpu
     def test_adaptive_gpu_probe_failure_falls_back_to_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -671,6 +679,77 @@ class IterativeRunnerTest(unittest.TestCase):
             phases = {row.get("event") for row in run_events}
             self.assertIn("gpu_probe_failed", phases)
             self.assertIn("cpu_fallback_scheduled", phases)
+
+    @pytest.mark.gpu
+    def test_adaptive_cooldown_is_not_extended_by_cpu_success_without_gpu_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[
+                    _task("none"),
+                    _task("none", {"variant": "second"}),
+                    _task("none", {"variant": "third"}),
+                ],
+            )
+            gpu_probe_calls = {"count": 0}
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                env = kwargs.get("env", {})
+                if _is_probe_runtime_command(command):
+                    payload = _probe_runtime_payload(env)
+                    if env.get("CUDA_VISIBLE_DEVICES") != "-1":
+                        gpu_probe_calls["count"] += 1
+                        payload.update(
+                            {
+                                "ok": False,
+                                "effective_device": "cpu",
+                                "physical_gpu_devices": [],
+                                "logical_gpu_devices": [],
+                                "tensorflow_visible_devices": [],
+                                "tensorflow_tiny_gpu_op": False,
+                                "tensorflow_tiny_gpu_op_device": None,
+                                "gpu_used": False,
+                                "errors": ["No TensorFlow GPU devices are visible."],
+                            }
+                        )
+                        return SimpleNamespace(returncode=1, stdout=json.dumps(payload), stderr="")
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                if env.get("CUDA_VISIBLE_DEVICES") == "-1":
+                    time.sleep(0.65)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.91},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="adaptive",
+                        gpu_retries=0,
+                        cpu_retries=0,
+                        cooldown_after_oom_seconds=0,
+                        gpu_recovery_cooldown_seconds=1,
+                        max_task_attempts=2,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 3)
+            self.assertEqual(gpu_probe_calls["count"], 2)
 
     def test_cpu_limits_are_applied_for_direct_cpu_task_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -770,6 +849,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["completed"], 2)
             self.assertEqual(seen_devices, ["cpu", "cpu"])
 
+    @pytest.mark.gpu
     def test_gpu_only_policy_never_falls_back_to_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -816,6 +896,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["failed"], 1)
             self.assertEqual(seen_devices, ["gpu", "gpu"])
 
+    @pytest.mark.gpu
     def test_gpu_only_policy_fails_fast_when_gpu_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -999,7 +1080,7 @@ class IterativeRunnerTest(unittest.TestCase):
             timeout_events = [row for row in run_events if row.get("phase") == "task:timeout"]
             self.assertEqual(len(timeout_events), 1)
 
-    def test_run_forces_isolation_even_when_disabled_in_options(self) -> None:
+    def test_run_keeps_custom_components_in_process_when_isolation_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             config, project_paths = _build_training_config(root)
@@ -1010,34 +1091,31 @@ class IterativeRunnerTest(unittest.TestCase):
                 model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.87)},
                 preprocessing_tasks=[_task("none")],
             )
-            original_run = subprocess.run
+            fit_calls = {"count": 0}
 
-            def _fake_subprocess_run(command, **kwargs):
-                if _is_probe_runtime_command(command):
-                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
-                if "--task-id" not in command:
-                    return original_run(command, **kwargs)
-                task_id = command[command.index("--task-id") + 1]
-                runner.store.update_task_status(task_id, status="running")
-                runner.store.update_task_status(
-                    task_id,
-                    status="completed",
-                    result_summary={"best_val_acc": 0.9},
-                    duration_seconds=0.1,
-                )
-                return SimpleNamespace(returncode=0)
+            def fake_builder(*args, **kwargs):
+                fit_calls["count"] += 1
+                return _CountingModel(0.87)
 
-            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
-                snapshot = runner.run(
-                    IterativeRunOptions(
-                        isolate_tasks=False,
-                        task_cooldown_seconds=0,
-                    )
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": fake_builder},
+                preprocessing_tasks=[_task("none")],
+            )
+
+            snapshot = runner.run(
+                IterativeRunOptions(
+                    isolate_tasks=False,
+                    task_cooldown_seconds=0,
                 )
+            )
             self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(fit_calls["count"], 1)
             run_events = _read_jsonl(runner.store.run_events_path)
             subprocess_start_events = [row for row in run_events if row.get("phase") == "task:subprocess_start"]
-            self.assertEqual(len(subprocess_start_events), 1)
+            self.assertEqual(len(subprocess_start_events), 0)
 
     def test_write_pid_record_preserves_background_log_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1357,6 +1435,72 @@ class IterativeRunnerTest(unittest.TestCase):
                 queue = runner.build_queue_with_options(max_queue_tasks=MAX_QUEUE_TASKS + 10)
 
             self.assertEqual(queue, [])
+
+    def test_run_streams_huge_queue_without_materializing_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+            )
+            record = build_experiment_record(
+                TrainingTask(
+                    model_name="custom cnn",
+                    preprocessing_task=_task("none"),
+                    augmentations_per_image=1,
+                ),
+                config,
+            )
+
+            def _fake_streamed_task_run(*, record, options, runtime_state):
+                runner.store.register_task_record(record, config_path=runner.config_path)
+                runner.store.update_task_status(
+                    record["id"],
+                    status="completed",
+                    result_summary={"status": "ok"},
+                    duration_seconds=0.1,
+                )
+                return {"status": "completed"}
+
+            with (
+                patch.object(
+                    runner,
+                    "estimate_grid_counts",
+                    return_value=ExperimentGridCounts(
+                        preprocessing_count=1,
+                        model_count=1,
+                        augmentation_count=1,
+                        total_experiments=MATERIALIZED_QUEUE_HARD_LIMIT + 1,
+                        total_fits=MATERIALIZED_QUEUE_HARD_LIMIT + 1,
+                        folds=1,
+                    ),
+                ),
+                patch.object(
+                    runner,
+                    "_build_queue_and_sync_state",
+                    side_effect=AssertionError("streamed run should not materialize the queue"),
+                ),
+                patch.object(runner, "_iter_queue_entries", return_value=iter([(record, None)])),
+                patch.object(
+                    runner,
+                    "_run_task_with_isolated_device_policy",
+                    side_effect=_fake_streamed_task_run,
+                ),
+            ):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        max_queue_tasks=None,
+                        limit=1,
+                    )
+                )
+
+            self.assertTrue(snapshot["stream_queue_mode"])
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(snapshot["counts"]["pending"], MATERIALIZED_QUEUE_HARD_LIMIT)
 
     def test_build_queue_can_export_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

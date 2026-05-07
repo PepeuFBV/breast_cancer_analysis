@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 
-from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env
 
-ensure_tensorflow_wsl_gpu_env()
+bootstrap_tensorflow_runtime_env()
 
 
 def add_training_runtime_arguments(
@@ -55,10 +55,7 @@ def add_training_runtime_arguments(
         nargs="+",
         type=int,
         default=None,
-        help=(
-            "One or more augmentation counts to evaluate as an experiment dimension. "
-            "Examples: `--augmentations-per-image 3` or `--augmentations-per-image 1 2 3`."
-        ),
+        help=("One or more augmentation counts to evaluate as an experiment dimension. " "Examples: `--augmentations-per-image 3` or `--augmentations-per-image 1 2 3`."),
     )
     parser.add_argument(
         "--models",
@@ -74,6 +71,7 @@ def add_training_runtime_arguments(
     )
     parser.add_argument(
         "--combined-preprocessing",
+        "--include-combinations",
         dest="include_combinations",
         action="store_true",
         default=None,
@@ -81,6 +79,7 @@ def add_training_runtime_arguments(
     )
     parser.add_argument(
         "--no-combined-preprocessing",
+        "--no-include-combinations",
         dest="include_combinations",
         action="store_false",
         help="Disable pairwise preprocessing combinations.",

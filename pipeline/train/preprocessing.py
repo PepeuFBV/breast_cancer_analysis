@@ -266,6 +266,26 @@ def _build_combined_task(
     )
 
 
+def build_preprocessing_task(
+    preproc_id: str,
+    params: dict[str, Any],
+    *,
+    param_grids: dict[str, dict[str, list[Any]]] | None = None,
+) -> PreprocessingTask:
+    definitions = _build_definitions(param_grids)
+    if "__" not in preproc_id:
+        if preproc_id not in definitions:
+            raise ValueError(f"Unknown preprocessing id: {preproc_id}")
+        return _build_single_task(preproc_id, params, definitions)
+
+    first_id, second_id = preproc_id.split("__", 1)
+    if first_id not in definitions or second_id not in definitions:
+        raise ValueError(f"Unknown combined preprocessing id: {preproc_id}")
+    first_params = dict(params.get(f"{first_id}_params", {}))
+    second_params = dict(params.get(f"{second_id}_params", {}))
+    return _build_combined_task(first_id, second_id, first_params, second_params, definitions)
+
+
 def iter_preprocessing_tasks(
     selected_ids: list[str] | None = None,
     *,

@@ -64,10 +64,7 @@ def _normalize_augmentation_values(value: Any) -> tuple[int, ...]:
         normalized = (int(value),)
     invalid = [item for item in normalized if item < 0]
     if invalid:
-        raise ValueError(
-            "preprocess.augmentations_per_image values must be >= 0, "
-            f"got {invalid}."
-        )
+        raise ValueError("preprocess.augmentations_per_image values must be >= 0, " f"got {invalid}.")
     return normalized
 
 
@@ -372,7 +369,7 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     raw_runner = dict(raw_config.get("runner", {}))
 
     _validate_model_names(raw_config["train"].get("model_names"), model_config)
-    cooldown_seconds = float(raw_runner.get("task_cooldown_seconds", 2.0))
+    cooldown_seconds = float(raw_runner.get("task_cooldown_seconds", 0.0))
     if cooldown_seconds < 0:
         raise ValueError("runner.task_cooldown_seconds must be >= 0.")
     timeout_raw = raw_runner.get("task_timeout_seconds")

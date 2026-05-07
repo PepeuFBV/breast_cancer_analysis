@@ -91,10 +91,7 @@ class TrainingTask:
 
     @property
     def label(self) -> str:
-        return (
-            f"{self.preproc_id} [{self.model_name} - {self.param_display} - "
-            f"aug={self.augmentations_per_image}]"
-        )
+        return f"{self.preproc_id} [{self.model_name} - {self.param_display} - " f"aug={self.augmentations_per_image}]"
 
 
 @dataclass(frozen=True)
@@ -561,10 +558,7 @@ def _filter_train_dataframe_for_augmentations(
     augmentations_per_image: int,
 ) -> pd.DataFrame:
     if augmentations_per_image < 0:
-        raise ValueError(
-            "augmentations_per_image must be >= 0, "
-            f"got {augmentations_per_image}."
-        )
+        raise ValueError("augmentations_per_image must be >= 0, " f"got {augmentations_per_image}.")
     if "is_augmented" not in train_df.columns or "augmentation_index" not in train_df.columns:
         return train_df
 
@@ -573,10 +567,7 @@ def _filter_train_dataframe_for_augmentations(
     keep_mask = (~augmented_mask) | (augmentation_index < augmentations_per_image)
     filtered = train_df.loc[keep_mask].reset_index(drop=True)
     if filtered.empty:
-        raise ValueError(
-            "Filtered training split is empty after applying "
-            f"augmentations_per_image={augmentations_per_image}."
-        )
+        raise ValueError("Filtered training split is empty after applying " f"augmentations_per_image={augmentations_per_image}.")
     return filtered
 
 
@@ -675,7 +666,6 @@ def _run_cross_validation(
     model_runtime = (config.model_runtime or {}).get(model_name)
     for fold_index, (fit_idx, validation_idx) in enumerate(split_iterator, start=1):
         clear_ml_memory()
-        time.sleep(1)
 
         fit_df: pd.DataFrame | None = None
         validation_df: pd.DataFrame | None = None
@@ -775,25 +765,22 @@ def iter_training_tasks(
     available_builders = model_builders or MODEL_BUILDERS
     model_names = config.model_names or list(available_builders.keys())
     resolved_preprocessing_tasks = (
-        list(preprocessing_tasks)
+        preprocessing_tasks
         if preprocessing_tasks is not None
-        else list(
-            iter_preprocessing_tasks(
-                config.preprocessing_ids,
-                include_combinations=config.include_combinations,
-                param_grids=config.preprocessing_grids,
-            )
+        else iter_preprocessing_tasks(
+            config.preprocessing_ids,
+            include_combinations=config.include_combinations,
+            param_grids=config.preprocessing_grids,
         )
     )
 
     augmentation_values = tuple(int(value) for value in config.augmentation_values)
     for augmentation_value in augmentation_values:
         if augmentation_value < 0:
-            raise ValueError(
-                "augmentation_values must contain integers >= 0, "
-                f"got {augmentation_values!r}."
-            )
-        for preprocessing_task in resolved_preprocessing_tasks:
+            raise ValueError("augmentation_values must contain integers >= 0, " f"got {augmentation_values!r}.")
+
+    for preprocessing_task in resolved_preprocessing_tasks:
+        for augmentation_value in augmentation_values:
             for model_name in model_names:
                 if model_name not in available_builders:
                     raise ValueError(f"Unknown model name requested: {model_name}")

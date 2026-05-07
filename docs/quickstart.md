@@ -11,6 +11,18 @@ Windows PowerShell equivalents:
 - Follow logs: `Get-Content <log-path> -Wait`
 - Delete artifacts: `Remove-Item <path> -Recurse -Force`
 
+## 0. Native Windows GPU Baseline (TensorFlow 2.10)
+
+Use this only for native Windows CUDA GPU:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
+.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+```
+
+If `check_windows_gpu.py` fails, do not launch full experiments.
+
 ## 1. Check Runtime
 
 ```bash
@@ -197,6 +209,12 @@ Augmentation dimension command:
 
 ```bash
 python run_experiments.py run --augmentations-per-image 1 2 3 --limit 10
+```
+
+GPU probe command:
+
+```bash
+python run_experiments.py probe-runtime --device gpu
 ```
 
 ## 9. Huge Queues

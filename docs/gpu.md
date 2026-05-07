@@ -3,6 +3,26 @@
 TensorFlow can run on CPU. GPU is optional unless you explicitly require it for
 an experiment.
 
+## Native Windows 11 (TensorFlow 2.10)
+
+For native Windows GPU, use the TensorFlow 2.10 stack only:
+
+- Python `3.10.x`
+- TensorFlow `2.10.x`
+- CUDA `11.2`
+- cuDNN `8.1`
+
+Quick setup:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
+.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+```
+
+If TensorFlow is `2.11+`, native Windows CUDA GPU is unsupported and the probe
+must fail until the stack is downgraded.
+
 Recommended setup on Linux/WSL2:
 
 ```bash
@@ -20,6 +40,7 @@ dependencies, and switches the TensorFlow requirement to
 `tensorflow[and-cuda]` when an NVIDIA driver is visible from Linux/WSL.
 
 For detailed WSL2 GPU setup instructions, see [`wsl_gpu_setup.md`](wsl_gpu_setup.md).
+For native Windows setup instructions, see [`windows_gpu_setup.md`](windows_gpu_setup.md).
 
 CPU/GPU optional check:
 

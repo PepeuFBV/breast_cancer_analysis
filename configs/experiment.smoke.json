@@ -33,7 +33,7 @@
   },
   "runner": {
     "isolate_tasks": false,
-    "task_cooldown_seconds": 2,
+    "task_cooldown_seconds": 0,
     "task_timeout_seconds": null,
     "device_policy": "adaptive",
     "gpu_retries": 1,

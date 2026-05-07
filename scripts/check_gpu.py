@@ -3,11 +3,17 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
-from pipeline.utils.runtime_device import check_runtime_device
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from pipeline.utils.gpu_env import bootstrap_tensorflow_runtime_env  # noqa: E402
+from pipeline.utils.runtime_device import check_runtime_device  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,7 @@ def check_tensorflow_gpu(
     device = "cpu" if cpu_only else "gpu" if require_gpu else "auto"
     resolved_tensorflow = tensorflow_module
     if resolved_tensorflow is None:
-        ensure_tensorflow_wsl_gpu_env()
+        bootstrap_tensorflow_runtime_env()
         try:
             resolved_tensorflow = importlib.import_module("tensorflow")
         except Exception as error:

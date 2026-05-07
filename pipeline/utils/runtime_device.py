@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 from dataclasses import dataclass
 from typing import Any
 
-from pipeline.utils.gpu_env import ensure_tensorflow_wsl_gpu_env
+from pipeline.utils.gpu_env import WINDOWS_NATIVE_TF_GPU_MAX_VERSION, bootstrap_tensorflow_runtime_env, is_native_windows
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,18 @@ class RuntimeDeviceCheck:
 
 def _device_name(device: Any) -> str:
     return str(getattr(device, "name", device))
+
+
+def _parse_major_minor(version: str | None) -> tuple[int, int] | None:
+    if not version:
+        return None
+    parts = version.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
 
 
 def check_runtime_device(
@@ -60,7 +73,7 @@ def check_runtime_device(
         os.environ.pop("CUDA_VISIBLE_DEVICES")
 
     if tensorflow_module is None:
-        ensure_tensorflow_wsl_gpu_env()
+        bootstrap_tensorflow_runtime_env()
 
     try:
         tf = tensorflow_module or importlib.import_module("tensorflow")
@@ -95,6 +108,20 @@ def check_runtime_device(
         built_with_cuda = None
         warnings.append(f"Could not determine CUDA build support: {error}")
 
+    tensorflow_version = str(getattr(tf, "__version__", "unknown"))
+    tensorflow_major_minor = _parse_major_minor(tensorflow_version)
+    on_native_windows = is_native_windows() and not sys.platform.startswith("linux")
+    windows_gpu_supported_tf = tensorflow_major_minor is not None and tensorflow_major_minor <= WINDOWS_NATIVE_TF_GPU_MAX_VERSION
+    if on_native_windows and device != "cpu":
+        if tensorflow_major_minor is None:
+            warnings.append("Could not parse TensorFlow version on native Windows; native CUDA GPU support requires TensorFlow 2.10.x.")
+        elif not windows_gpu_supported_tf:
+            message = "Unsupported native Windows GPU stack: TensorFlow " f"{tensorflow_version} is installed, but native CUDA GPU is supported only on TensorFlow 2.10.x " "(with Python 3.10, CUDA 11.2, cuDNN 8.1)."
+            if device == "gpu" or require_gpu:
+                errors.append(message)
+            else:
+                warnings.append(message)
+
     if require_gpu and device == "cpu":
         errors.append("--require-gpu cannot be combined with --device cpu.")
 
@@ -113,7 +140,10 @@ def check_runtime_device(
         selected_device = "cpu"
         warning = "No TensorFlow GPU devices are visible; CPU execution is available."
         if device == "gpu" and require_gpu:
-            errors.append("No TensorFlow GPU devices are visible. Check NVIDIA driver, " "CUDA/cuDNN compatibility, WSL GPU passthrough if applicable, " "and CUDA_VISIBLE_DEVICES.")
+            if on_native_windows and windows_gpu_supported_tf:
+                errors.append("No TensorFlow GPU devices are visible on native Windows with TensorFlow 2.10.x. " "Verify Python 3.10, CUDA 11.2, cuDNN 8.1, CUDA bin paths in PATH, and CUDA_VISIBLE_DEVICES.")
+            else:
+                errors.append("No TensorFlow GPU devices are visible. Check NVIDIA driver, " "CUDA/cuDNN compatibility, WSL GPU passthrough if applicable, " "and CUDA_VISIBLE_DEVICES.")
         else:
             warnings.append(warning)
 
@@ -130,7 +160,7 @@ def check_runtime_device(
         requested_device=device,
         selected_device=selected_device,
         tensorflow_available=True,
-        tensorflow_version=str(getattr(tf, "__version__", "unknown")),
+        tensorflow_version=tensorflow_version,
         built_with_cuda=built_with_cuda,
         physical_gpus=physical_gpus,
         logical_gpus=logical_gpus,
