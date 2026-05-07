@@ -16,6 +16,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 import pandas as pd
+import pytest
 
 from pipeline.config import load_experiment_config
 from pipeline.experiments import (
@@ -405,6 +406,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(len(subprocess_events), 1)
             self.assertEqual(subprocess_events[0]["subprocess_exit_code"], 7)
 
+    @pytest.mark.gpu
     def test_adaptive_policy_retries_gpu_then_falls_back_to_cpu_and_recovers_gpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -487,6 +489,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(len(first_task["attempt_history"]), 3)
             self.assertEqual(second_task["final_device"], "gpu")
 
+    @pytest.mark.gpu
     def test_gpu_attempt_preserves_visible_devices_and_records_probe_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -602,6 +605,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(attempt["effective_cpu_thread_env"]["OMP_NUM_THREADS"], "2")
             self.assertFalse(attempt["gpu_used"])
 
+    @pytest.mark.gpu
     def test_adaptive_gpu_probe_failure_falls_back_to_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -676,6 +680,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertIn("gpu_probe_failed", phases)
             self.assertIn("cpu_fallback_scheduled", phases)
 
+    @pytest.mark.gpu
     def test_adaptive_cooldown_is_not_extended_by_cpu_success_without_gpu_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -844,6 +849,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["completed"], 2)
             self.assertEqual(seen_devices, ["cpu", "cpu"])
 
+    @pytest.mark.gpu
     def test_gpu_only_policy_never_falls_back_to_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -890,6 +896,7 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["failed"], 1)
             self.assertEqual(seen_devices, ["gpu", "gpu"])
 
+    @pytest.mark.gpu
     def test_gpu_only_policy_fails_fast_when_gpu_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
