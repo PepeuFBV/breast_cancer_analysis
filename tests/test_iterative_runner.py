@@ -1080,7 +1080,7 @@ class IterativeRunnerTest(unittest.TestCase):
             timeout_events = [row for row in run_events if row.get("phase") == "task:timeout"]
             self.assertEqual(len(timeout_events), 1)
 
-    def test_run_forces_isolation_even_when_disabled_in_options(self) -> None:
+    def test_run_keeps_custom_components_in_process_when_isolation_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             config, project_paths = _build_training_config(root)
@@ -1091,34 +1091,31 @@ class IterativeRunnerTest(unittest.TestCase):
                 model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.87)},
                 preprocessing_tasks=[_task("none")],
             )
-            original_run = subprocess.run
+            fit_calls = {"count": 0}
 
-            def _fake_subprocess_run(command, **kwargs):
-                if _is_probe_runtime_command(command):
-                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
-                if "--task-id" not in command:
-                    return original_run(command, **kwargs)
-                task_id = command[command.index("--task-id") + 1]
-                runner.store.update_task_status(task_id, status="running")
-                runner.store.update_task_status(
-                    task_id,
-                    status="completed",
-                    result_summary={"best_val_acc": 0.9},
-                    duration_seconds=0.1,
-                )
-                return SimpleNamespace(returncode=0)
+            def fake_builder(*args, **kwargs):
+                fit_calls["count"] += 1
+                return _CountingModel(0.87)
 
-            with patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run):
-                snapshot = runner.run(
-                    IterativeRunOptions(
-                        isolate_tasks=False,
-                        task_cooldown_seconds=0,
-                    )
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": fake_builder},
+                preprocessing_tasks=[_task("none")],
+            )
+
+            snapshot = runner.run(
+                IterativeRunOptions(
+                    isolate_tasks=False,
+                    task_cooldown_seconds=0,
                 )
+            )
             self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(fit_calls["count"], 1)
             run_events = _read_jsonl(runner.store.run_events_path)
             subprocess_start_events = [row for row in run_events if row.get("phase") == "task:subprocess_start"]
-            self.assertEqual(len(subprocess_start_events), 1)
+            self.assertEqual(len(subprocess_start_events), 0)
 
     def test_write_pid_record_preserves_background_log_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

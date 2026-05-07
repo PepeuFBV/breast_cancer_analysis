@@ -2713,8 +2713,7 @@ class IterativeExperimentRunner:
         resolved_options = options or IterativeRunOptions()
         has_process_local_components = self.model_builders is not None or self.preprocessing_tasks is not None
         if resolved_options.isolate_tasks and has_process_local_components:
-            self.logger.warning("Disabling isolate_tasks because custom model_builders/preprocessing_tasks " "are only available in the current process.")
-            resolved_options = replace(resolved_options, isolate_tasks=False)
+            self.logger.warning("isolate_tasks=True with process-local model_builders/preprocessing_tasks; " "ensure child process can resolve task dependencies.")
         elif not resolved_options.isolate_tasks and not has_process_local_components:
             self.logger.warning("Forcing isolate_tasks=True because device-policy handling and GPU/CPU recovery " "are only reliable with per-task subprocess isolation.")
             resolved_options = replace(resolved_options, isolate_tasks=True)
