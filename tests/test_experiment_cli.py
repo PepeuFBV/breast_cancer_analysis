@@ -23,47 +23,13 @@ def _import_run_experiments_module():
     return importlib.import_module("run_experiments")
 
 
-def test_run_command_returns_130_on_keyboard_interrupt_before_state(
-    capsys,
-    monkeypatch,
-) -> None:
+def test_removed_run_command_prints_migration_message(capsys) -> None:
     module = _import_run_experiments_module()
-    fake_runner = SimpleNamespace(
-        store=SimpleNamespace(
-            summarize=lambda: {
-                "total": 0,
-                "counts": {
-                    "pending": 0,
-                    "running": 0,
-                    "completed": 0,
-                    "failed": 0,
-                    "stopped": 0,
-                },
-                "overall_status": "idle",
-                "current_task": None,
-                "state_path": "/tmp/missing-runner-state.json",
-                "summary_path": "/tmp/missing-summary.csv",
-                "history_dir": "/tmp/history",
-                "predictions_dir": "/tmp/predictions",
-                "log_path": "/tmp/runner.log",
-                "active_pid": None,
-                "stop_requested": False,
-            }
-        ),
-    )
-
-    def _interrupting_run(_options):
-        raise KeyboardInterrupt("manual stop")
-
-    fake_runner.run = _interrupting_run
-
-    monkeypatch.setattr(module, "_build_runner", lambda args: fake_runner)
-
     exit_code = module.main(["run"])
-
     output = capsys.readouterr().out
-    assert exit_code == 130
-    assert "Run interrupted before any experiment state was created." in output
+    assert exit_code == 2
+    assert "The `run` command was removed." in output
+    assert "run_experiments.py launch" in output
 
 
 def test_print_status_snapshot_shows_background_logs_when_present(capsys) -> None:
@@ -180,7 +146,7 @@ def test_run_task_command_shows_clear_error_for_missing_task(
     assert "Task id 'exp-missing' was not found." in output
 
 
-def test_run_command_forwards_isolation_options_and_artifacts_dir(
+def test_launch_worker_forwards_isolation_options_and_artifacts_dir(
     capsys,
     monkeypatch,
 ) -> None:
@@ -230,7 +196,8 @@ def test_run_command_forwards_isolation_options_and_artifacts_dir(
 
     exit_code = module.main(
         [
-            "run",
+            "launch",
+            "--_launch-worker",
             "--isolate-tasks",
             "--task-cooldown-seconds",
             "4",
@@ -506,6 +473,9 @@ def test_launch_command_prints_preflight_summary(
         def has_active_run(self) -> bool:
             return False
 
+        def mark_launch_requested(self):
+            return {}
+
     monkeypatch.setattr(
         module,
         "_load_project_paths",
@@ -559,7 +529,7 @@ def test_quickstart_contains_common_operations_commands() -> None:
     assert "tail -f artifacts/experiments/logs/iterative-runner.log" in quickstart
 
 
-def test_run_command_allow_huge_queue_disables_limit(
+def test_launch_worker_allow_huge_queue_disables_limit(
     capsys,
     monkeypatch,
 ) -> None:
@@ -615,7 +585,7 @@ def test_run_command_allow_huge_queue_disables_limit(
         ),
     )
 
-    exit_code = module.main(["run", "--allow-huge-queue"])
+    exit_code = module.main(["launch", "--_launch-worker", "--allow-huge-queue"])
 
     assert exit_code == 0
     options = captured["options"]
@@ -661,7 +631,7 @@ def test_status_auto_discovers_single_active_runner_without_config(
     stderr_path = active_paths.experiment_logs_dir / "background.err.log"
     active_store.write_pid_record(
         config_path=Path("configs/experiment.low-memory.json"),
-        command=["python", "run_experiments.py", "run"],
+        command=["python", "run_experiments.py", "launch", "--_launch-worker"],
         pid=2222,
         stdout_log_path=stdout_path,
         stderr_log_path=stderr_path,
@@ -703,6 +673,26 @@ def test_stop_command_can_kill_active_runner(
     assert exit_code == 0
     assert captured["force"] is True
     assert "Runner pid=4321 was terminated." in output
+
+
+def test_stop_command_persists_pause_when_no_active_runner(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    fake_store = SimpleNamespace(
+        has_active_run=lambda: False,
+        request_stop=lambda: Path("/tmp/stop_requested.flag"),
+    )
+    monkeypatch.setattr(module, "_resolve_store_for_control_command", lambda args: (fake_store, None))
+
+    exit_code = module.main(["stop"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "No active runner process found." in output
+    assert "Pause was persisted" in output
+    assert "stop_requested.flag" in output
 
 
 def test_reset_command_forwards_kill_active(

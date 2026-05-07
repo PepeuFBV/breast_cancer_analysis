@@ -205,9 +205,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_cpu_limit_arguments(probe_parser)
 
-    run_parser = subparsers.add_parser("run", help="Run or resume experiments.")
-    _add_run_arguments(run_parser)
-
     count_parser = subparsers.add_parser(
         "count",
         help="Dry run: print queue dimensions, total experiments, and total fits.",
@@ -274,6 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Launch the iterative runner in the background.",
     )
     _add_run_arguments(launch_parser)
+    launch_parser.add_argument(
+        "--_launch-worker",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
 
     stop_parser = subparsers.add_parser(
         "stop",
@@ -551,6 +554,18 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print(f"Background stdout log: {snapshot['background_stdout_log_path']}")
     if snapshot.get("background_stderr_log_path"):
         print(f"Background stderr log: {snapshot['background_stderr_log_path']}")
+    if snapshot.get("desired_state") is not None:
+        print(f"Desired state: {snapshot['desired_state']}")
+    if snapshot.get("pause_reason"):
+        print(f"Pause reason: {snapshot['pause_reason']}")
+    if snapshot.get("pause_requested_at"):
+        print(f"Pause requested at: {snapshot['pause_requested_at']}")
+    if snapshot.get("resume_requested_at"):
+        print(f"Resume requested at: {snapshot['resume_requested_at']}")
+    if snapshot.get("last_recovery_reason"):
+        print(f"Last recovery: {snapshot['last_recovery_reason']}")
+    if snapshot.get("last_recovery_at"):
+        print(f"Last recovery at: {snapshot['last_recovery_at']}")
     if current_task:
         print("Current task: " f"{current_task['preproc_id']} [{current_task['model_name']} - " f"{current_task['param_display']}]")
     if snapshot.get("device_policy") is not None:
@@ -705,6 +720,9 @@ def _print_launch_preflight(preflight: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     resolved_argv = sys.argv[1:] if argv is None else argv
+    if resolved_argv and resolved_argv[0] == "run":
+        print("The `run` command was removed. Use `python run_experiments.py launch ...` instead.")
+        return 2
     args = build_parser().parse_args(resolved_argv)
 
     if args.command == "probe-runtime":
@@ -718,7 +736,70 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.command == "launch":
-        from pipeline.experiments import ExperimentStateStore, launch_background_runner
+        from pipeline.experiments import ExperimentStateStore, IterativeRunOptions, launch_background_runner
+
+        if bool(getattr(args, "_launch_worker", False)):
+            runner = _build_runner(args)
+            try:
+                (
+                    isolate_tasks,
+                    task_cooldown_seconds,
+                    task_timeout_seconds,
+                    device_policy,
+                    gpu_retries,
+                    cpu_retries,
+                    cooldown_after_oom_seconds,
+                    gpu_recovery_cooldown_seconds,
+                    max_consecutive_oom,
+                    max_task_attempts,
+                    fail_fast_on_oom,
+                ) = _resolve_runner_cli_options(args)
+                run_task_command_base = (
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "run-task",
+                    *_build_run_task_forwarded_args(
+                        args,
+                        task_cooldown_seconds=task_cooldown_seconds,
+                    ),
+                )
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        rerun_failed=args.rerun_failed,
+                        rerun_completed=args.rerun_completed,
+                        limit=args.limit,
+                        isolate_tasks=isolate_tasks,
+                        task_cooldown_seconds=task_cooldown_seconds,
+                        task_timeout_seconds=task_timeout_seconds,
+                        run_task_command_base=run_task_command_base,
+                        device_policy=device_policy,
+                        gpu_retries=gpu_retries,
+                        cpu_retries=cpu_retries,
+                        cooldown_after_oom_seconds=cooldown_after_oom_seconds,
+                        gpu_recovery_cooldown_seconds=gpu_recovery_cooldown_seconds,
+                        max_consecutive_oom=max_consecutive_oom,
+                        max_task_attempts=max_task_attempts,
+                        fail_fast_on_oom=fail_fast_on_oom,
+                        max_queue_tasks=_resolve_max_queue_tasks(args),
+                        queue_export_path=args.queue_export_path,
+                    )
+                )
+            except RuntimeError as error:
+                print(str(error))
+                return 1
+            except ValueError as error:
+                print(str(error))
+                return 1
+            except KeyboardInterrupt:
+                snapshot = runner.store.summarize()
+                if snapshot["total"] == 0:
+                    print("Run interrupted before any experiment state was created.")
+                else:
+                    print("Run interrupted.")
+                    _print_status_snapshot(snapshot)
+                return 130
+            _print_status_snapshot(snapshot)
+            return 0
 
         project_paths = _load_project_paths(args)
         store = ExperimentStateStore(project_paths)
@@ -742,75 +823,11 @@ def main(argv: list[str] | None = None) -> int:
             cwd=PROJECT_ROOT,
             logs_dir=project_paths.experiment_logs_dir,
         )
+        store.mark_launch_requested()
         print(f"Background runner started with pid={process.process.pid}.")
         print(f"stdout: {process.stdout_path}")
         print(f"stderr: {process.stderr_path}")
         print(f"Check status with: python run_experiments.py status{_resolution_args_suffix(args)}")
-        return 0
-
-    if args.command == "run":
-        from pipeline.experiments import IterativeRunOptions
-
-        runner = _build_runner(args)
-        try:
-            (
-                isolate_tasks,
-                task_cooldown_seconds,
-                task_timeout_seconds,
-                device_policy,
-                gpu_retries,
-                cpu_retries,
-                cooldown_after_oom_seconds,
-                gpu_recovery_cooldown_seconds,
-                max_consecutive_oom,
-                max_task_attempts,
-                fail_fast_on_oom,
-            ) = _resolve_runner_cli_options(args)
-            run_task_command_base = (
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "run-task",
-                *_build_run_task_forwarded_args(
-                    args,
-                    task_cooldown_seconds=task_cooldown_seconds,
-                ),
-            )
-            snapshot = runner.run(
-                IterativeRunOptions(
-                    rerun_failed=args.rerun_failed,
-                    rerun_completed=args.rerun_completed,
-                    limit=args.limit,
-                    isolate_tasks=isolate_tasks,
-                    task_cooldown_seconds=task_cooldown_seconds,
-                    task_timeout_seconds=task_timeout_seconds,
-                    run_task_command_base=run_task_command_base,
-                    device_policy=device_policy,
-                    gpu_retries=gpu_retries,
-                    cpu_retries=cpu_retries,
-                    cooldown_after_oom_seconds=cooldown_after_oom_seconds,
-                    gpu_recovery_cooldown_seconds=gpu_recovery_cooldown_seconds,
-                    max_consecutive_oom=max_consecutive_oom,
-                    max_task_attempts=max_task_attempts,
-                    fail_fast_on_oom=fail_fast_on_oom,
-                    max_queue_tasks=_resolve_max_queue_tasks(args),
-                    queue_export_path=args.queue_export_path,
-                )
-            )
-        except RuntimeError as error:
-            print(str(error))
-            return 1
-        except ValueError as error:
-            print(str(error))
-            return 1
-        except KeyboardInterrupt:
-            snapshot = runner.store.summarize()
-            if snapshot["total"] == 0:
-                print("Run interrupted before any experiment state was created.")
-            else:
-                print("Run interrupted.")
-                _print_status_snapshot(snapshot)
-            return 130
-        _print_status_snapshot(snapshot)
         return 0
 
     if args.command == "run-task":
@@ -876,10 +893,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(f"Runner pid={pid} was terminated.")
             return 0
+        stop_path = store.request_stop()
         if not store.has_active_run():
             print("No active runner process found.")
+            print("Pause was persisted and will be honored until the next `launch` request.")
+            print(f"Stop flag: {stop_path}")
             return 0
-        stop_path = store.request_stop()
         print("Stop requested. The runner will finish the current experiment and stop.")
         print(f"Stop flag: {stop_path}")
         return 0

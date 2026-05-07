@@ -44,6 +44,7 @@ RUN_EVENTS_FILENAME = "run-events.jsonl"
 TASK_LOGS_DIRNAME = "tasks"
 RUNNER_PID_FILENAME = "runner_pid.json"
 STOP_REQUEST_FILENAME = "stop_requested.flag"
+RUNNER_LIFECYCLE_FILENAME = "runner_lifecycle.json"
 BACKGROUND_RUNNER_LOG_PREFIX = "background-runner"
 TASK_STATUSES = {"pending", "running", "completed", "failed", "stopped"}
 MAX_QUEUE_TASKS = 50_000
@@ -131,6 +132,20 @@ def _default_runner_runtime() -> dict[str, Any]:
         "gpu_recovery_cooldown_until": None,
         "oom_policy_stop": None,
         "stream_queue_mode": False,
+    }
+
+
+def _default_lifecycle_record() -> dict[str, Any]:
+    return {
+        "desired_state": "running",
+        "pause_reason": None,
+        "pause_requested_at": None,
+        "resume_requested_at": None,
+        "last_active_pid": None,
+        "last_active_started_at": None,
+        "last_active_command": None,
+        "last_recovery_reason": None,
+        "last_recovery_at": None,
     }
 
 
@@ -387,6 +402,7 @@ class ExperimentStateStore:
         self.task_logs_dir = project_paths.experiment_logs_dir / TASK_LOGS_DIRNAME
         self.pid_path = project_paths.experiment_control_dir / RUNNER_PID_FILENAME
         self.stop_flag_path = project_paths.experiment_control_dir / STOP_REQUEST_FILENAME
+        self.lifecycle_path = project_paths.experiment_control_dir / RUNNER_LIFECYCLE_FILENAME
 
     def ensure_dirs(self) -> None:
         self.project_paths.ensure_artifact_dirs()
@@ -410,6 +426,69 @@ class ExperimentStateStore:
 
     def read_pid_record(self) -> dict[str, Any] | None:
         return _load_json_file(self.pid_path)
+
+    def read_lifecycle_record(self) -> dict[str, Any]:
+        payload = dict(_default_lifecycle_record())
+        payload.update(dict(_load_json_file(self.lifecycle_path) or {}))
+        desired_state = str(payload.get("desired_state", "running"))
+        if desired_state not in {"running", "paused"}:
+            desired_state = "running"
+        payload["desired_state"] = desired_state
+        return payload
+
+    def _write_lifecycle_record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        resolved = dict(_default_lifecycle_record())
+        resolved.update(_normalize_json_value(payload))
+        desired_state = str(resolved.get("desired_state", "running"))
+        if desired_state not in {"running", "paused"}:
+            raise ValueError("desired_state must be either 'running' or 'paused'.")
+        resolved["desired_state"] = desired_state
+        _atomic_write_json(self.lifecycle_path, resolved)
+        return resolved
+
+    def update_lifecycle_record(self, updates: dict[str, Any]) -> dict[str, Any]:
+        payload = self.read_lifecycle_record()
+        payload.update(_normalize_json_value(updates))
+        return self._write_lifecycle_record(payload)
+
+    def set_desired_state(
+        self,
+        desired_state: str,
+        *,
+        reason: str | None = None,
+        requested_at: str | None = None,
+    ) -> dict[str, Any]:
+        now = requested_at or _timestamp_now()
+        if desired_state == "paused":
+            return self.update_lifecycle_record(
+                {
+                    "desired_state": "paused",
+                    "pause_reason": (reason or "manual"),
+                    "pause_requested_at": now,
+                }
+            )
+        if desired_state == "running":
+            return self.update_lifecycle_record(
+                {
+                    "desired_state": "running",
+                    "resume_requested_at": now,
+                    "pause_reason": None,
+                    "pause_requested_at": None,
+                }
+            )
+        raise ValueError("desired_state must be either 'running' or 'paused'.")
+
+    def record_recovery_event(self, *, reason: str) -> dict[str, Any]:
+        return self.update_lifecycle_record(
+            {
+                "last_recovery_reason": reason,
+                "last_recovery_at": _timestamp_now(),
+            }
+        )
+
+    def clear_lifecycle_record(self) -> None:
+        if self.lifecycle_path.exists():
+            self.lifecycle_path.unlink()
 
     def has_active_run(self) -> bool:
         pid_record = self.read_pid_record()
@@ -475,15 +554,28 @@ class ExperimentStateStore:
             payload["stderr_log_path"] = str(resolved_stderr_log)
 
         _atomic_write_json(self.pid_path, payload)
+        self.update_lifecycle_record(
+            {
+                "last_active_pid": resolved_pid,
+                "last_active_started_at": payload["started_at"],
+                "last_active_command": list(command),
+            }
+        )
 
     def clear_pid_record(self) -> None:
         if self.pid_path.exists():
             self.pid_path.unlink()
 
     def request_stop(self, *, reason: str = "manual") -> Path:
+        requested_at = _timestamp_now()
+        self.set_desired_state(
+            "paused",
+            reason=reason,
+            requested_at=requested_at,
+        )
         _atomic_write_text(
             self.stop_flag_path,
-            json.dumps({"requested_at": _timestamp_now(), "reason": reason}),
+            json.dumps({"requested_at": requested_at, "reason": reason}),
         )
         return self.stop_flag_path
 
@@ -493,6 +585,36 @@ class ExperimentStateStore:
 
     def stop_requested(self) -> bool:
         return self.stop_flag_path.exists()
+
+    def mark_launch_requested(self) -> dict[str, Any]:
+        self.clear_stop_request()
+        return self.set_desired_state("running", requested_at=_timestamp_now())
+
+    def reconcile_for_launch(self) -> dict[str, Any] | None:
+        pid_record = self.read_pid_record()
+        if pid_record is None:
+            return None
+        stale_pid = pid_record.get("pid")
+        if _is_process_alive(stale_pid):
+            return None
+
+        stale_state = self.load_state()
+        running_before = sum(1 for task in stale_state["tasks"] if task.get("status") == "running")
+        if running_before > 0:
+            self._reconcile_running_tasks(stale_state)
+            self._persist_state(stale_state, full_snapshot_sync=True)
+        self.clear_pid_record()
+        reason = (
+            f"Recovered from stale runner pid={stale_pid}; marked {running_before} running task(s) as stopped."
+            if running_before > 0
+            else f"Recovered from stale runner pid={stale_pid}; no running tasks required reconciliation."
+        )
+        self.record_recovery_event(reason=reason)
+        return {
+            "stale_pid": stale_pid,
+            "recovered_running_tasks": running_before,
+            "reason": reason,
+        }
 
     def sync_queue(
         self,
@@ -933,6 +1055,7 @@ class ExperimentStateStore:
 
     def summarize(self) -> dict[str, Any]:
         state = self.load_state()
+        lifecycle = self.read_lifecycle_record()
         pid_record = self.read_pid_record()
         active_pid = None if pid_record is None else pid_record.get("pid")
         stdout_log_path = None if pid_record is None else pid_record.get("stdout_log_path")
@@ -963,10 +1086,14 @@ class ExperimentStateStore:
             total = int(expected_total)
             counts = {status: int(expected_counts.get(status, 0)) for status in TASK_STATUSES}
         stop_requested = self.stop_requested()
+        desired_state = str(lifecycle.get("desired_state", "running"))
+        paused_with_remaining_work = desired_state == "paused" and (counts["pending"] > 0 or counts["stopped"] > 0 or stop_requested)
         if active_run and stop_requested:
             overall_status = "stopping"
         elif active_run:
             overall_status = "running"
+        elif paused_with_remaining_work:
+            overall_status = "paused"
         elif counts["running"] > 0:
             overall_status = "stopped"
         elif stop_requested and (counts["pending"] > 0 or counts["stopped"] > 0):
@@ -998,6 +1125,15 @@ class ExperimentStateStore:
             "background_stderr_log_path": stderr_log_path,
             "config_path": state.get("config_path"),
             "updated_at": state.get("updated_at"),
+            "desired_state": desired_state,
+            "pause_reason": lifecycle.get("pause_reason"),
+            "pause_requested_at": lifecycle.get("pause_requested_at"),
+            "resume_requested_at": lifecycle.get("resume_requested_at"),
+            "last_active_pid": lifecycle.get("last_active_pid"),
+            "last_active_started_at": lifecycle.get("last_active_started_at"),
+            "last_active_command": lifecycle.get("last_active_command"),
+            "last_recovery_reason": lifecycle.get("last_recovery_reason"),
+            "last_recovery_at": lifecycle.get("last_recovery_at"),
             "device_policy": runtime.get("device_policy"),
             "preferred_device": runtime.get("preferred_device"),
             "gpu_health": runtime.get("gpu_health"),
@@ -1027,6 +1163,7 @@ class ExperimentStateStore:
             self.terminate_active_run(force=True)
         self.clear_stop_request()
         self.clear_pid_record()
+        self.clear_lifecycle_record()
 
         for path in (self.state_path, self.summary_path):
             if path.exists():
@@ -2667,9 +2804,9 @@ class IterativeExperimentRunner:
                 "skip_reason": reason,
             }
 
-        self.store.clear_stop_request()
         command = [sys.executable, "run_experiments.py", "run-task", "--task-id", task_id]
         if not isolated_child_mode:
+            self.store.clear_stop_request()
             self.store.write_pid_record(config_path=self.config_path, command=command)
             self._install_signal_handlers()
         self._log_structured_phase(
@@ -2737,6 +2874,9 @@ class IterativeExperimentRunner:
         if resolved_options.max_queue_tasks is not None and resolved_options.max_queue_tasks <= 0:
             raise ValueError("max_queue_tasks must be > 0 when provided.")
         self.store.ensure_dirs()
+        recovered = self.store.reconcile_for_launch()
+        if recovered:
+            self.logger.info(str(recovered["reason"]))
         if self.store.has_active_run():
             pid_record = self.store.read_pid_record() or {}
             pid = pid_record.get("pid")
@@ -2750,8 +2890,8 @@ class IterativeExperimentRunner:
         self.store.set_expected_queue_totals(
             total_experiments=estimated_counts.total_experiments,
         )
-        self.store.clear_stop_request()
-        command = [sys.executable, "run_experiments.py", "run"]
+        self.store.mark_launch_requested()
+        command = [sys.executable, "run_experiments.py", "launch", "--_launch-worker"]
         self.store.write_pid_record(
             config_path=self.config_path,
             command=command,
@@ -2801,7 +2941,7 @@ class IterativeExperimentRunner:
             snapshot["peak_process_memory_mb"] = self._peak_process_memory_mb
             return snapshot
 
-        self.store.clear_stop_request()
+        self.store.mark_launch_requested()
         self.store.write_pid_record(
             config_path=self.config_path,
             command=command,
@@ -2980,7 +3120,7 @@ def launch_background_runner(
 ) -> BackgroundRunnerLaunch:
     logs_dir.mkdir(parents=True, exist_ok=True)
     stdout_path, stderr_path = _build_background_log_paths(logs_dir)
-    command = [sys.executable, str(script_path), "run", *forwarded_args]
+    command = [sys.executable, str(script_path), "launch", "--_launch-worker", *forwarded_args]
     stdout_handle = stdout_path.open("a", encoding="utf-8")
     stderr_handle = stderr_path.open("a", encoding="utf-8")
     env = os.environ.copy()

@@ -186,6 +186,7 @@ class IterativeRunnerTest(unittest.TestCase):
             captured: dict[str, object] = {}
 
             def fake_popen(*args, **kwargs):
+                captured["args"] = args
                 captured.update(kwargs)
                 captured["stdout"] = kwargs["stdout"]
                 captured["stderr"] = kwargs["stderr"]
@@ -212,6 +213,8 @@ class IterativeRunnerTest(unittest.TestCase):
             launch_env = cast(dict[str, str], captured["env"])
             self.assertEqual(launch_env[BACKGROUND_STDOUT_LOG_ENV], str(launch.stdout_path))
             self.assertEqual(launch_env[BACKGROUND_STDERR_LOG_ENV], str(launch.stderr_path))
+            launch_command = [str(item) for item in list(captured["args"][0])]
+            self.assertEqual(launch_command[2:4], ["launch", "--_launch-worker"])
             if os.name == "nt":
                 self.assertNotIn("start_new_session", captured)
                 self.assertGreater(int(captured.get("creationflags", 0)), 0)
@@ -1128,14 +1131,14 @@ class IterativeRunnerTest(unittest.TestCase):
 
             store.write_pid_record(
                 config_path=Path("configs/experiment.default.json"),
-                command=["python", "run_experiments.py", "run"],
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
                 pid=4444,
                 stdout_log_path=stdout_path,
                 stderr_log_path=stderr_path,
             )
             store.write_pid_record(
                 config_path=Path("configs/experiment.default.json"),
-                command=["python", "run_experiments.py", "run"],
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
                 pid=4444,
             )
 
@@ -1153,7 +1156,7 @@ class IterativeRunnerTest(unittest.TestCase):
             store.ensure_dirs()
             store.write_pid_record(
                 config_path=Path("configs/experiment.default.json"),
-                command=["python", "run_experiments.py", "run"],
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
                 pid=4444,
             )
 
@@ -1171,7 +1174,7 @@ class IterativeRunnerTest(unittest.TestCase):
             store.ensure_dirs()
             store.write_pid_record(
                 config_path=Path("configs/experiment.default.json"),
-                command=["python", "run_experiments.py", "run"],
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
                 pid=4444,
             )
 
@@ -1182,6 +1185,57 @@ class IterativeRunnerTest(unittest.TestCase):
                 store.reset(purge_results=True, kill_active=True)
 
             terminate_active_run.assert_called_once_with(force=True)
+
+    def test_request_stop_persists_pause_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            project_paths = build_project_paths(root / "raw-data", root / "artifacts")
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+
+            stop_path = store.request_stop(reason="manual-test")
+            lifecycle = store.read_lifecycle_record()
+
+            self.assertTrue(stop_path.exists())
+            self.assertEqual(lifecycle["desired_state"], "paused")
+            self.assertEqual(lifecycle["pause_reason"], "manual-test")
+            self.assertIsNotNone(lifecycle["pause_requested_at"])
+
+    def test_reconcile_for_launch_recovers_stale_pid_and_running_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            record, _task_entry = runner.build_queue()[0]
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.sync_queue([record], config_path=Path("configs/experiment.default.json"))
+            store.update_task_status(record["id"], status="running")
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
+                pid=99999,
+            )
+
+            with patch("pipeline.experiments.runner._is_process_alive", return_value=False):
+                recovered = store.reconcile_for_launch()
+
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            self.assertEqual(recovered["stale_pid"], 99999)
+            self.assertEqual(recovered["recovered_running_tasks"], 1)
+            self.assertFalse(store.pid_path.exists())
+            state = store.load_state()
+            self.assertEqual(state["tasks"][0]["status"], "stopped")
+            lifecycle = store.read_lifecycle_record()
+            self.assertIsNotNone(lifecycle["last_recovery_reason"])
+            self.assertIsNotNone(lifecycle["last_recovery_at"])
 
     def test_build_experiment_id_does_not_resolve_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1381,7 +1435,7 @@ class IterativeRunnerTest(unittest.TestCase):
             store.ensure_dirs()
             store.write_pid_record(
                 config_path=Path("configs/experiment.default.json"),
-                command=["python", "run_experiments.py", "run"],
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
                 pid=os.getpid(),
             )
 
