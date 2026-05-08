@@ -70,7 +70,7 @@ machines, use:
 ./.venv/bin/python scripts/check_runtime.py --device gpu
 ```
 
-Device policy behavior in `run_experiments.py run`:
+Device policy behavior in `run_experiments.py launch`:
 
 - `gpu-only`: requires a visible and usable GPU before launching tasks; fails fast when GPU is unavailable.
 - `gpu-first`: starts on GPU, then falls back to CPU for task-level GPU failure when retries are exhausted.

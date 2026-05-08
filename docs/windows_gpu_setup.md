@@ -56,8 +56,8 @@ least one GPU device.
 ## 5. Smoke Validation Before Large Queue
 
 ```powershell
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py run --device-policy gpu-only --isolate-tasks --limit 1
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py run --device-policy adaptive --isolate-tasks --include-combinations --limit 2
+.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py launch --device-policy gpu-only --isolate-tasks --limit 1
+.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py launch --device-policy adaptive --isolate-tasks --include-combinations --limit 2
 .\.venv-win-gpu\Scripts\python.exe .\run_experiments.py dry-run --include-combinations
 ```
 

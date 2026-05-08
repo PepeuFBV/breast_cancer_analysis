@@ -40,7 +40,7 @@ python3 scripts/check_readiness.py
 1. Put the INbreast dataset under `data/INbreast Release 1.0/`.
 2. Bootstrap the project environment.
 3. Run `python preprocess.py`.
-4. Run the experiment queue with `python run_experiments.py launch` for unattended execution, or `python run_experiments.py run` in the foreground.
+4. Run the experiment queue with `python run_experiments.py launch`.
 5. Generate the consolidated report with `python evaluate.py`.
 
 ## Minimal Setup

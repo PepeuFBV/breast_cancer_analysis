@@ -46,7 +46,7 @@ For tests and formatting:
 python3 scripts/bootstrap_env.py --gpu auto --dev
 ```
 
-The full `run_experiments.py run` battery can take hours. For default setup
+The full `run_experiments.py launch` battery can take hours. For default setup
 validation, run smoke and long-run checks first:
 
 ```bash
