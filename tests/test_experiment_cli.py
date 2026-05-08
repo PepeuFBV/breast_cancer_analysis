@@ -522,6 +522,7 @@ def test_quickstart_contains_common_operations_commands() -> None:
     assert "probe-runtime --device cpu" in quickstart
     assert "run_experiments.py launch" in quickstart
     assert "run_experiments.py status" in quickstart
+    assert "run_experiments.py partial" in quickstart
     assert "run_experiments.py stop" in quickstart
     assert "run_experiments.py reset --purge-results" in quickstart
     assert "run_experiments.py stop --config configs/experiment.low-memory.json --kill" in quickstart
@@ -648,6 +649,101 @@ def test_status_auto_discovers_single_active_runner_without_config(
     assert "Using the only active runner found under" in output
     assert "Active PID: 2222" in output
     assert "artifacts-low-memory" in output
+
+
+def test_partial_command_prints_json_and_writes_csv(
+    capsys,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    module = _import_run_experiments_module()
+    csv_output = tmp_path / "partial.csv"
+    captured = {"max_rows": None, "all_rows": None}
+
+    def _partial_results(*, max_rows: int, all_rows: bool):
+        captured["max_rows"] = max_rows
+        captured["all_rows"] = all_rows
+        return {
+            "schema_version": 2,
+            "generated_at": "2026-05-08T00:00:00+00:00",
+            "overall_status": "running",
+            "total": 3,
+            "counts": {"pending": 1, "running": 0, "completed": 1, "failed": 0, "stopped": 0, "skipped": 1},
+            "rows_returned": 1,
+            "rows_capped": True,
+            "row_filter": "finalized_only",
+            "paths": {
+                "state_path": "/tmp/state.json",
+                "summary_path": "/tmp/summary.csv",
+                "history_dir": "/tmp/history",
+                "predictions_dir": "/tmp/predictions",
+                "log_path": "/tmp/runner.log",
+            },
+            "launch": {
+                "launch_id": "launch-123",
+                "started_at": "2026-05-08T00:00:00+00:00",
+                "stream_queue_mode": True,
+                "rerun_failed": False,
+                "rerun_completed": False,
+                "limit": 1,
+                "planned_runnable_count": 1,
+                "skipped_count": 1,
+                "skip_reason_counts": {"already_completed": 0, "failed_without_rerun": 0, "limit_excluded": 1},
+            },
+            "partial_rows": [{"id": "exp-1", "status": "completed", "model_name": "custom cnn"}],
+        }
+
+    fake_store = SimpleNamespace(partial_results=_partial_results)
+    monkeypatch.setattr(module, "_resolve_store_for_control_command", lambda args: (fake_store, "selection note"))
+
+    exit_code = module.main(["partial", "--max-rows", "1", "--csv-output", str(csv_output)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert captured == {"max_rows": 1, "all_rows": False}
+    assert "Partial rows written to:" in output
+    assert '"schema_version": 2' in output
+    assert csv_output.exists()
+    csv_text = csv_output.read_text(encoding="utf-8")
+    header = csv_text.splitlines()[0].split(",")
+    assert "id" in header
+    assert "status" in header
+    assert "exp-1" in csv_text
+
+
+def test_partial_command_forwards_all_rows(
+    capsys,
+    monkeypatch,
+) -> None:
+    module = _import_run_experiments_module()
+    captured = {"max_rows": None, "all_rows": None}
+
+    def _partial_results(*, max_rows: int, all_rows: bool):
+        captured["max_rows"] = max_rows
+        captured["all_rows"] = all_rows
+        return {
+            "schema_version": 2,
+            "generated_at": "2026-05-08T00:00:00+00:00",
+            "overall_status": "idle",
+            "total": 0,
+            "counts": {"pending": 0, "running": 0, "completed": 0, "failed": 0, "stopped": 0, "skipped": 0},
+            "rows_returned": 0,
+            "rows_capped": False,
+            "row_filter": "finalized_only",
+            "paths": {},
+            "launch": {},
+            "partial_rows": [],
+        }
+
+    fake_store = SimpleNamespace(partial_results=_partial_results)
+    monkeypatch.setattr(module, "_resolve_store_for_control_command", lambda args: (fake_store, None))
+
+    exit_code = module.main(["partial", "--all-rows"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert captured == {"max_rows": 500, "all_rows": True}
+    assert '"rows_returned": 0' in output
 
 
 def test_stop_command_can_kill_active_runner(
