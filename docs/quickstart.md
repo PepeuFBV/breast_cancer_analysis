@@ -107,6 +107,13 @@ tail -f artifacts-low-memory/experiments/logs/background-runner-*.out.log
 tail -f artifacts-low-memory/experiments/logs/background-runner-*.err.log
 ```
 
+Partial extraction while run is active:
+
+```bash
+./.venv/bin/python run_experiments.py partial --config configs/experiment.low-memory.json
+./.venv/bin/python run_experiments.py partial --config configs/experiment.low-memory.json --max-rows 500 --csv-output artifacts-low-memory/experiments/summary/partial.csv
+```
+
 ## 5. Stop
 
 Graceful stop:
