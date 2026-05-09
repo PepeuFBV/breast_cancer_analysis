@@ -726,6 +726,22 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print(f"Last successful device: {snapshot['last_successful_device']}")
     if snapshot.get("oom_policy_stop"):
         print(f"OOM policy stop: {snapshot['oom_policy_stop']}")
+    if snapshot.get("thermal_policy_enabled") is not None:
+        print(f"Thermal policy enabled: {snapshot['thermal_policy_enabled']}")
+    if snapshot.get("thermal_state") is not None:
+        print(f"Thermal state: {snapshot['thermal_state']}")
+    if snapshot.get("thermal_last_reason"):
+        print(f"Thermal reason: {snapshot['thermal_last_reason']}")
+    if snapshot.get("thermal_last_sample_at"):
+        print(f"Thermal sample at: {snapshot['thermal_last_sample_at']}")
+    if snapshot.get("thermal_last_cpu_temp_celsius") is not None:
+        print("Thermal CPU temp (C): " f"{snapshot['thermal_last_cpu_temp_celsius']}")
+    if snapshot.get("thermal_last_cpu_load_percent") is not None:
+        print("Thermal CPU load (%): " f"{snapshot['thermal_last_cpu_load_percent']}")
+    if snapshot.get("thermal_last_gpu_temp_celsius") is not None:
+        print("Thermal GPU temp (C): " f"{snapshot['thermal_last_gpu_temp_celsius']}")
+    if snapshot.get("thermal_last_gpu_utilization_percent") is not None:
+        print("Thermal GPU util (%): " f"{snapshot['thermal_last_gpu_utilization_percent']}")
     if snapshot.get("config_path"):
         print(f"Config: {snapshot['config_path']}")
     if snapshot.get("results_root"):

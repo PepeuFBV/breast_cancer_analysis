@@ -36,6 +36,7 @@ from pipeline.train.runner import (
 from pipeline.utils.memory import clear_ml_memory, log_memory_snapshot
 from pipeline.utils.paths import ProjectPaths
 from pipeline.utils.runtime_limits import CpuExecutionLimits, apply_cpu_runtime_limits, current_cpu_thread_env, resolve_cpu_thread_env
+from pipeline.utils.thermal import collect_thermal_snapshot
 
 STATE_SCHEMA_VERSION = 2
 RUNNER_STATE_FILENAME = "runner_state.json"
@@ -1156,6 +1157,14 @@ class ExperimentStateStore:
             "consecutive_final_oom_failures": runtime.get("consecutive_final_oom_failures"),
             "last_successful_device": runtime.get("last_successful_device"),
             "oom_policy_stop": runtime.get("oom_policy_stop"),
+            "thermal_policy_enabled": runtime.get("thermal_policy_enabled"),
+            "thermal_state": runtime.get("thermal_state"),
+            "thermal_last_sample_at": runtime.get("thermal_last_sample_at"),
+            "thermal_last_reason": runtime.get("thermal_last_reason"),
+            "thermal_last_cpu_temp_celsius": runtime.get("thermal_last_cpu_temp_celsius"),
+            "thermal_last_cpu_load_percent": runtime.get("thermal_last_cpu_load_percent"),
+            "thermal_last_gpu_temp_celsius": runtime.get("thermal_last_gpu_temp_celsius"),
+            "thermal_last_gpu_utilization_percent": runtime.get("thermal_last_gpu_utilization_percent"),
             "isolate_tasks": runtime.get("isolate_tasks"),
             "allow_huge_queue": runtime.get("allow_huge_queue"),
             "max_queue_tasks": runtime.get("max_queue_tasks"),
@@ -2373,6 +2382,148 @@ class IterativeExperimentRunner:
         self.logger.info("Sleeping for %.2fs (%s).", delay, reason)
         time.sleep(delay)
 
+    @staticmethod
+    def _is_hot_metric(value: float | None, limit: float | None) -> bool:
+        if value is None or limit is None:
+            return False
+        return value >= limit
+
+    def _apply_thermal_policy_before_task(
+        self,
+        *,
+        record: dict[str, Any],
+        options: IterativeRunOptions,
+        runtime_state: dict[str, Any],
+    ) -> tuple[str | None, float]:
+        if not bool(options.thermal_policy_enabled):
+            runtime_state["thermal_policy_enabled"] = False
+            runtime_state["thermal_state"] = "disabled"
+            runtime_state["thermal_last_reason"] = None
+            return None, 0.0
+
+        snapshot = collect_thermal_snapshot()
+        runtime_state["thermal_policy_enabled"] = True
+        runtime_state["thermal_last_sample_at"] = _timestamp_now()
+        runtime_state["thermal_last_cpu_temp_celsius"] = snapshot.cpu_temperature_celsius
+        runtime_state["thermal_last_cpu_load_percent"] = snapshot.cpu_load_percent
+        runtime_state["thermal_last_gpu_temp_celsius"] = snapshot.max_gpu_temperature_celsius
+        runtime_state["thermal_last_gpu_utilization_percent"] = snapshot.max_gpu_utilization_percent
+
+        cpu_hot = self._is_hot_metric(
+            snapshot.cpu_temperature_celsius,
+            options.thermal_cpu_temp_celsius_limit,
+        ) or self._is_hot_metric(
+            snapshot.cpu_load_percent,
+            options.thermal_cpu_load_percent_limit,
+        )
+        gpu_hot = self._is_hot_metric(
+            snapshot.max_gpu_temperature_celsius,
+            options.thermal_gpu_temp_celsius_limit,
+        ) or self._is_hot_metric(
+            snapshot.max_gpu_utilization_percent,
+            options.thermal_gpu_utilization_percent_limit,
+        )
+        recovery_temp = options.thermal_gpu_recovery_temp_celsius
+        if recovery_temp is not None and snapshot.max_gpu_temperature_celsius is not None:
+            gpu_hot = gpu_hot or snapshot.max_gpu_temperature_celsius > recovery_temp
+
+        warnings = list(snapshot.warnings)
+        if warnings:
+            self._log_structured_phase(
+                phase="task:thermal_probe_warning",
+                event="thermal_probe_warning",
+                task_record=record,
+                message=f"Thermal probe warning(s) for {record['id']}.",
+                extra={"warnings": warnings},
+            )
+
+        cooldown_seconds = max(0.0, float(options.thermal_cooldown_seconds))
+        now = datetime.now(timezone.utc)
+        forced_device: str | None = None
+        thermal_state = "normal"
+        reason = "thermal metrics are below configured limits."
+
+        if cpu_hot and gpu_hot:
+            thermal_state = "both_hot"
+            reason = "CPU and GPU are above configured thermal limits."
+            if options.device_policy in {"adaptive", "gpu-first"}:
+                forced_device = "cpu"
+            self._log_structured_phase(
+                phase="task:thermal_both_hot_pause",
+                event="thermal_both_hot_pause",
+                task_record=record,
+                message=f"Pausing before task {record['id']} because CPU and GPU are hot.",
+                extra={
+                    "cooldown_seconds": cooldown_seconds,
+                    "cpu_temperature_celsius": snapshot.cpu_temperature_celsius,
+                    "cpu_load_percent": snapshot.cpu_load_percent,
+                    "gpu_temperature_celsius": snapshot.max_gpu_temperature_celsius,
+                    "gpu_utilization_percent": snapshot.max_gpu_utilization_percent,
+                },
+            )
+        elif gpu_hot:
+            thermal_state = "gpu_hot"
+            reason = "GPU is above configured thermal limits."
+            if options.device_policy in {"adaptive", "gpu-first"}:
+                forced_device = "cpu"
+            self._log_structured_phase(
+                phase="task:thermal_gpu_hot",
+                event="thermal_gpu_hot",
+                task_record=record,
+                message=f"GPU thermal limit reached before task {record['id']}.",
+                extra={
+                    "cpu_temperature_celsius": snapshot.cpu_temperature_celsius,
+                    "cpu_load_percent": snapshot.cpu_load_percent,
+                    "gpu_temperature_celsius": snapshot.max_gpu_temperature_celsius,
+                    "gpu_utilization_percent": snapshot.max_gpu_utilization_percent,
+                    "forced_device": forced_device,
+                },
+            )
+        elif cpu_hot:
+            thermal_state = "cpu_hot"
+            reason = "CPU is above configured thermal limits."
+            self._log_structured_phase(
+                phase="task:thermal_cpu_hot_pause",
+                event="thermal_cpu_hot_pause",
+                task_record=record,
+                message=f"Pausing before task {record['id']} because CPU is hot.",
+                extra={
+                    "cooldown_seconds": cooldown_seconds,
+                    "cpu_temperature_celsius": snapshot.cpu_temperature_celsius,
+                    "cpu_load_percent": snapshot.cpu_load_percent,
+                    "gpu_temperature_celsius": snapshot.max_gpu_temperature_celsius,
+                    "gpu_utilization_percent": snapshot.max_gpu_utilization_percent,
+                },
+            )
+        elif runtime_state.get("thermal_state") in {"gpu_hot", "both_hot"} and runtime_state.get("preferred_device") == "cpu":
+            self._log_structured_phase(
+                phase="task:thermal_recovered",
+                event="thermal_recovered",
+                task_record=record,
+                message=f"Thermal conditions recovered before task {record['id']}.",
+                extra={
+                    "cpu_temperature_celsius": snapshot.cpu_temperature_celsius,
+                    "cpu_load_percent": snapshot.cpu_load_percent,
+                    "gpu_temperature_celsius": snapshot.max_gpu_temperature_celsius,
+                    "gpu_utilization_percent": snapshot.max_gpu_utilization_percent,
+                },
+            )
+
+        runtime_state["thermal_state"] = thermal_state
+        runtime_state["thermal_last_reason"] = reason
+        if thermal_state in {"gpu_hot", "both_hot"}:
+            runtime_state["preferred_device"] = "cpu"
+            runtime_state["gpu_health"] = "cooling_down"
+            runtime_state["gpu_recovery_cooldown_until"] = datetime.fromtimestamp(
+                now.timestamp() + cooldown_seconds,
+                tz=timezone.utc,
+            ).isoformat()
+        if thermal_state in {"cpu_hot", "both_hot"} and cooldown_seconds > 0:
+            pause_reason = "thermal_both_hot" if thermal_state == "both_hot" else "thermal_cpu_hot"
+            self._sleep_with_log(cooldown_seconds, reason=pause_reason)
+
+        return forced_device, cooldown_seconds
+
     def _task_record_for_id(
         self,
         queue_entries: list[tuple[dict[str, Any], TrainingTask]],
@@ -2413,6 +2564,13 @@ class IterativeExperimentRunner:
             next_device = "gpu"
         if policy == "gpu-first":
             next_device = "gpu"
+        forced_thermal_device, _thermal_cooldown_seconds = self._apply_thermal_policy_before_task(
+            record=record,
+            options=options,
+            runtime_state=runtime_state,
+        )
+        if forced_thermal_device is not None:
+            next_device = forced_thermal_device
         if policy == "adaptive":
             cooldown_until = _parse_timestamp(runtime_state.get("gpu_recovery_cooldown_until"))
             if next_device == "cpu" and cooldown_until is not None and datetime.now(timezone.utc) >= cooldown_until:
@@ -3026,6 +3184,39 @@ class IterativeExperimentRunner:
             raise ValueError("max_consecutive_oom must be > 0.")
         if resolved_options.max_task_attempts <= 0:
             raise ValueError("max_task_attempts must be > 0.")
+        if resolved_options.thermal_cooldown_seconds < 0:
+            raise ValueError("thermal_cooldown_seconds must be >= 0.")
+        if (
+            resolved_options.thermal_cpu_temp_celsius_limit is not None
+            and resolved_options.thermal_cpu_temp_celsius_limit <= 0
+        ):
+            raise ValueError("thermal_cpu_temp_celsius_limit must be > 0 when provided.")
+        if (
+            resolved_options.thermal_gpu_temp_celsius_limit is not None
+            and resolved_options.thermal_gpu_temp_celsius_limit <= 0
+        ):
+            raise ValueError("thermal_gpu_temp_celsius_limit must be > 0 when provided.")
+        if (
+            resolved_options.thermal_gpu_recovery_temp_celsius is not None
+            and resolved_options.thermal_gpu_recovery_temp_celsius <= 0
+        ):
+            raise ValueError("thermal_gpu_recovery_temp_celsius must be > 0 when provided.")
+        if (
+            resolved_options.thermal_cpu_load_percent_limit is not None
+            and not 0 <= resolved_options.thermal_cpu_load_percent_limit <= 100
+        ):
+            raise ValueError("thermal_cpu_load_percent_limit must be between 0 and 100 when provided.")
+        if (
+            resolved_options.thermal_gpu_utilization_percent_limit is not None
+            and not 0 <= resolved_options.thermal_gpu_utilization_percent_limit <= 100
+        ):
+            raise ValueError("thermal_gpu_utilization_percent_limit must be between 0 and 100 when provided.")
+        if (
+            resolved_options.thermal_gpu_temp_celsius_limit is not None
+            and resolved_options.thermal_gpu_recovery_temp_celsius is not None
+            and resolved_options.thermal_gpu_recovery_temp_celsius > resolved_options.thermal_gpu_temp_celsius_limit
+        ):
+            raise ValueError("thermal_gpu_recovery_temp_celsius must be <= thermal_gpu_temp_celsius_limit.")
         if resolved_options.max_queue_tasks is not None and resolved_options.max_queue_tasks <= 0:
             raise ValueError("max_queue_tasks must be > 0 when provided.")
         self.store.ensure_dirs()
@@ -3085,6 +3276,8 @@ class IterativeExperimentRunner:
         runtime_state["max_queue_tasks"] = resolved_options.max_queue_tasks
         runtime_state["stream_queue_mode"] = use_stream_queue_mode
         runtime_state["launch_context"] = launch_context
+        runtime_state["thermal_policy_enabled"] = bool(resolved_options.thermal_policy_enabled)
+        runtime_state["thermal_state"] = ("idle" if resolved_options.thermal_policy_enabled else "disabled")
         if resolved_options.device_policy == "cpu-only":
             runtime_state["preferred_device"] = "cpu"
             runtime_state["gpu_health"] = "unhealthy"
@@ -3132,6 +3325,13 @@ class IterativeExperimentRunner:
                 "max_consecutive_oom": resolved_options.max_consecutive_oom,
                 "max_task_attempts": resolved_options.max_task_attempts,
                 "fail_fast_on_oom": resolved_options.fail_fast_on_oom,
+                "thermal_policy_enabled": resolved_options.thermal_policy_enabled,
+                "thermal_cpu_temp_celsius_limit": resolved_options.thermal_cpu_temp_celsius_limit,
+                "thermal_cpu_load_percent_limit": resolved_options.thermal_cpu_load_percent_limit,
+                "thermal_gpu_temp_celsius_limit": resolved_options.thermal_gpu_temp_celsius_limit,
+                "thermal_gpu_utilization_percent_limit": resolved_options.thermal_gpu_utilization_percent_limit,
+                "thermal_gpu_recovery_temp_celsius": resolved_options.thermal_gpu_recovery_temp_celsius,
+                "thermal_cooldown_seconds": resolved_options.thermal_cooldown_seconds,
                 "max_queue_tasks": resolved_options.max_queue_tasks,
                 "queue_export_path": resolved_options.queue_export_path,
                 "launch_id": launch_context.get("launch_id"),
