@@ -78,6 +78,13 @@ class IterativeRunOptions:
     max_consecutive_oom: int = 3
     max_task_attempts: int = 4
     fail_fast_on_oom: bool = False
+    thermal_policy_enabled: bool = False
+    thermal_cpu_temp_celsius_limit: float | None = None
+    thermal_cpu_load_percent_limit: float | None = None
+    thermal_gpu_temp_celsius_limit: float | None = None
+    thermal_gpu_utilization_percent_limit: float | None = None
+    thermal_gpu_recovery_temp_celsius: float | None = None
+    thermal_cooldown_seconds: float = 30.0
     max_queue_tasks: int | None = MAX_QUEUE_TASKS
     queue_export_path: str | None = None
 
@@ -131,6 +138,14 @@ def _default_runner_runtime() -> dict[str, Any]:
         "last_gpu_oom_task_id": None,
         "last_successful_device": None,
         "gpu_recovery_cooldown_until": None,
+        "thermal_policy_enabled": False,
+        "thermal_state": "disabled",
+        "thermal_last_sample_at": None,
+        "thermal_last_reason": None,
+        "thermal_last_cpu_temp_celsius": None,
+        "thermal_last_cpu_load_percent": None,
+        "thermal_last_gpu_temp_celsius": None,
+        "thermal_last_gpu_utilization_percent": None,
         "oom_policy_stop": None,
         "stream_queue_mode": False,
         "launch_context": {},
