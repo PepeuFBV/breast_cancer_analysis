@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -298,6 +299,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Print the status snapshot as JSON.",
+    )
+
+    partial_parser = subparsers.add_parser(
+        "partial",
+        help="Extract completed-results-so-far from persisted runner state.",
+    )
+    _add_resolution_arguments(partial_parser)
+    partial_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print partial results as JSON (default behavior).",
+    )
+    partial_parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=500,
+        help="Maximum number of finalized task rows to include (default: 500).",
+    )
+    partial_parser.add_argument(
+        "--all-rows",
+        action="store_true",
+        help="Disable row cap and include all finalized rows.",
+    )
+    partial_parser.add_argument(
+        "--csv-output",
+        default=None,
+        help="Optional CSV file path to write extracted task rows.",
     )
 
     reset_parser = subparsers.add_parser(
@@ -608,6 +636,21 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print("Note: no persisted runner state exists yet.")
 
 
+def _write_partial_rows_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["id", "status"])
+        return
+
+    fieldnames = sorted({key for row in rows for key in row.keys()})
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def _print_runtime_probe(args: argparse.Namespace) -> int:
     probe_result = collect_runtime_probe(
         device=args.device,
@@ -911,6 +954,24 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(snapshot, indent=2, sort_keys=True))
         else:
             _print_status_snapshot(snapshot)
+        return 0
+
+    if args.command == "partial":
+        try:
+            payload = store.partial_results(
+                max_rows=args.max_rows,
+                all_rows=bool(args.all_rows),
+            )
+        except ValueError as error:
+            print(str(error))
+            return 1
+        if selection_note:
+            payload["selection_note"] = selection_note
+        if args.csv_output:
+            csv_path = Path(args.csv_output).expanduser()
+            _write_partial_rows_csv(csv_path, list(payload.get("partial_rows", [])))
+            print(f"Partial rows written to: {csv_path}")
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
     if args.command == "reset":

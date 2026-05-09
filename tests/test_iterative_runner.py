@@ -1556,6 +1556,122 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["completed"], 1)
             self.assertEqual(snapshot["counts"]["pending"], MATERIALIZED_QUEUE_HARD_LIMIT)
 
+    def test_run_persists_launch_context_with_limit_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none"), _task("none", {"variant": "second"}), _task("none", {"variant": "third"})],
+            )
+
+            snapshot = runner.run(IterativeRunOptions(limit=1))
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(snapshot["counts"]["pending"], 2)
+
+            state = runner.store.load_state()
+            launch_context = dict(state["runtime"].get("launch_context", {}))
+            self.assertEqual(launch_context["planned_runnable_count"], 1)
+            self.assertEqual(launch_context["skipped_count"], 2)
+            self.assertEqual(launch_context["skip_reason_counts"]["limit_excluded"], 2)
+            self.assertEqual(launch_context["skip_reason_counts"]["already_completed"], 0)
+            self.assertEqual(launch_context["skip_reason_counts"]["failed_without_rerun"], 0)
+            self.assertFalse(launch_context["stream_queue_mode"])
+
+    def test_run_stream_mode_persists_launch_context_for_limit_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+            )
+            record = build_experiment_record(
+                TrainingTask(
+                    model_name="custom cnn",
+                    preprocessing_task=_task("none"),
+                    augmentations_per_image=1,
+                ),
+                config,
+            )
+
+            def _fake_streamed_task_run(*, record, options, runtime_state):
+                runner.store.register_task_record(record, config_path=runner.config_path)
+                runner.store.update_task_status(
+                    record["id"],
+                    status="completed",
+                    result_summary={"status": "ok"},
+                    duration_seconds=0.1,
+                )
+                return {"status": "completed"}
+
+            with (
+                patch.object(
+                    runner,
+                    "estimate_grid_counts",
+                    return_value=ExperimentGridCounts(
+                        preprocessing_count=1,
+                        model_count=1,
+                        augmentation_count=1,
+                        total_experiments=MATERIALIZED_QUEUE_HARD_LIMIT + 1,
+                        total_fits=MATERIALIZED_QUEUE_HARD_LIMIT + 1,
+                        folds=1,
+                    ),
+                ),
+                patch.object(runner, "_iter_queue_entries", return_value=iter([(record, None)])),
+                patch.object(
+                    runner,
+                    "_run_task_with_isolated_device_policy",
+                    side_effect=_fake_streamed_task_run,
+                ),
+            ):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        max_queue_tasks=None,
+                        limit=1,
+                    )
+                )
+
+            self.assertTrue(snapshot["stream_queue_mode"])
+            state = runner.store.load_state()
+            launch_context = dict(state["runtime"].get("launch_context", {}))
+            self.assertTrue(launch_context["stream_queue_mode"])
+            self.assertEqual(launch_context["planned_runnable_count"], 1)
+            self.assertEqual(launch_context["skipped_count"], MATERIALIZED_QUEUE_HARD_LIMIT)
+            self.assertEqual(launch_context["skip_reason_counts"]["limit_excluded"], MATERIALIZED_QUEUE_HARD_LIMIT)
+
+    def test_partial_results_returns_finalized_rows_with_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none"), _task("none", {"variant": "second"})],
+            )
+
+            snapshot = runner.run()
+            self.assertEqual(snapshot["counts"]["completed"], 2)
+
+            store = ExperimentStateStore(project_paths)
+            partial = store.partial_results(max_rows=1)
+            self.assertEqual(partial["rows_returned"], 1)
+            self.assertTrue(partial["rows_capped"])
+            self.assertIn(partial["partial_rows"][0]["status"], {"completed", "failed", "stopped"})
+            self.assertIn("skipped", partial["counts"])
+
+            all_rows = store.partial_results(max_rows=1, all_rows=True)
+            self.assertEqual(all_rows["rows_returned"], 2)
+            self.assertFalse(all_rows["rows_capped"])
+
     def test_build_queue_can_export_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

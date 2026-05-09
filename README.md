@@ -106,4 +106,6 @@ Default validation should use smoke/memory checks first (`smoke_run.py`,
 supported; GPU is optional unless a command uses `--require-gpu`. If a run
 fails after several combinations, inspect `iterative-runner.log`,
 `runner_state.json`, `experiment_runs.csv`, and the per-task snapshots under
-`artifacts/experiments/tasks/`.
+`artifacts/experiments/tasks/`. To inspect completed-results-so-far during an
+active launch, use `python run_experiments.py partial --json` (optionally with
+`--csv-output <path>`).

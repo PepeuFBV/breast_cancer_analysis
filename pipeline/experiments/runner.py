@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import traceback
+from collections import deque
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,6 +133,7 @@ def _default_runner_runtime() -> dict[str, Any]:
         "gpu_recovery_cooldown_until": None,
         "oom_policy_stop": None,
         "stream_queue_mode": False,
+        "launch_context": {},
     }
 
 
@@ -1145,6 +1147,91 @@ class ExperimentStateStore:
             "stream_queue_mode": runtime.get("stream_queue_mode"),
         }
 
+    def partial_results(
+        self,
+        *,
+        max_rows: int = 500,
+        all_rows: bool = False,
+    ) -> dict[str, Any]:
+        if max_rows <= 0:
+            raise ValueError("max_rows must be > 0.")
+
+        snapshot = self.summarize()
+        state = self.load_state()
+        runtime = dict(_default_runner_runtime())
+        runtime.update(dict(state.get("runtime", {})))
+        launch_context = dict(runtime.get("launch_context", {}))
+
+        skip_reason_counts = dict(launch_context.get("skip_reason_counts", {}))
+        skipped_count = int(launch_context.get("skipped_count", 0))
+        counts = dict(snapshot.get("counts", {}))
+        counts["skipped"] = skipped_count
+
+        rows, matched_count = self._read_partial_summary_rows(
+            max_rows=max_rows,
+            all_rows=all_rows,
+        )
+        capped = (not all_rows) and matched_count > len(rows)
+        return {
+            "schema_version": int(state.get("schema_version", STATE_SCHEMA_VERSION)),
+            "generated_at": _timestamp_now(),
+            "overall_status": snapshot.get("overall_status"),
+            "total": int(snapshot.get("total", 0)),
+            "counts": counts,
+            "rows_returned": len(rows),
+            "rows_capped": capped,
+            "row_filter": "finalized_only",
+            "paths": {
+                "state_path": str(self.state_path),
+                "summary_path": str(self.summary_path),
+                "history_dir": str(self.project_paths.history_dir),
+                "predictions_dir": str(self.project_paths.predictions_dir),
+                "log_path": str(self.log_path),
+            },
+            "launch": {
+                "launch_id": launch_context.get("launch_id"),
+                "started_at": launch_context.get("started_at"),
+                "stream_queue_mode": bool(launch_context.get("stream_queue_mode", runtime.get("stream_queue_mode", False))),
+                "rerun_failed": bool(launch_context.get("rerun_failed", False)),
+                "rerun_completed": bool(launch_context.get("rerun_completed", False)),
+                "limit": launch_context.get("limit"),
+                "planned_runnable_count": launch_context.get("planned_runnable_count"),
+                "skipped_count": skipped_count,
+                "skip_reason_counts": {
+                    "already_completed": int(skip_reason_counts.get("already_completed", 0)),
+                    "failed_without_rerun": int(skip_reason_counts.get("failed_without_rerun", 0)),
+                    "limit_excluded": int(skip_reason_counts.get("limit_excluded", 0)),
+                },
+            },
+            "partial_rows": rows,
+        }
+
+    def _read_partial_summary_rows(
+        self,
+        *,
+        max_rows: int,
+        all_rows: bool,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not self.summary_path.exists():
+            return [], 0
+        finalized_statuses = {"completed", "failed", "stopped"}
+        if all_rows:
+            rows: list[dict[str, Any]] = []
+            with self.summary_path.open("r", encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    if str(row.get("status")) in finalized_statuses:
+                        rows.append(dict(row))
+            return rows, len(rows)
+
+        latest_rows = deque(maxlen=max_rows)
+        matched_count = 0
+        with self.summary_path.open("r", encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                if str(row.get("status")) in finalized_statuses:
+                    matched_count += 1
+                    latest_rows.append(dict(row))
+        return list(latest_rows), matched_count
+
     def reset(
         self,
         *,
@@ -1585,6 +1672,63 @@ class IterativeExperimentRunner:
             if record["id"] == task_id:
                 return record, training_task
         return None
+
+    def _launch_skip_reason_counts_default(self) -> dict[str, int]:
+        return {
+            "already_completed": 0,
+            "failed_without_rerun": 0,
+            "limit_excluded": 0,
+        }
+
+    def _build_launch_context(
+        self,
+        *,
+        options: IterativeRunOptions,
+        use_stream_queue_mode: bool,
+        estimated_total_experiments: int,
+        state: dict[str, Any],
+        runnable_ids_before_limit: list[str],
+        runnable_ids_after_limit: list[str],
+    ) -> dict[str, Any]:
+        now = _timestamp_now()
+        launch_id_seed = f"{now}|pid={os.getpid()}|config={self.config_path}"
+        launch_id = f"launch-{hashlib.sha1(launch_id_seed.encode('utf-8')).hexdigest()[:12]}"
+        skip_reason_counts = self._launch_skip_reason_counts_default()
+
+        if use_stream_queue_mode:
+            planned_runnable_count = int(estimated_total_experiments)
+            if options.limit is not None:
+                planned_runnable_count = min(planned_runnable_count, int(options.limit))
+                skip_reason_counts["limit_excluded"] = max(0, int(estimated_total_experiments) - planned_runnable_count)
+        else:
+            runnable_after_limit_set = set(runnable_ids_after_limit)
+            if options.limit is not None:
+                skip_reason_counts["limit_excluded"] = max(0, len(runnable_ids_before_limit) - len(runnable_ids_after_limit))
+
+            for task in state.get("tasks", []):
+                task_id = str(task.get("id"))
+                status = str(task.get("status", "pending"))
+                if task_id in runnable_after_limit_set:
+                    continue
+                if status == "completed" and not options.rerun_completed:
+                    skip_reason_counts["already_completed"] += 1
+                    continue
+                if status == "failed" and not options.rerun_failed:
+                    skip_reason_counts["failed_without_rerun"] += 1
+            planned_runnable_count = len(runnable_ids_after_limit)
+
+        skipped_count = int(sum(skip_reason_counts.values()))
+        return {
+            "launch_id": launch_id,
+            "started_at": now,
+            "stream_queue_mode": bool(use_stream_queue_mode),
+            "rerun_failed": bool(options.rerun_failed),
+            "rerun_completed": bool(options.rerun_completed),
+            "limit": options.limit,
+            "planned_runnable_count": int(planned_runnable_count),
+            "skipped_count": skipped_count,
+            "skip_reason_counts": skip_reason_counts,
+        }
 
     def _resolve_gpu_visible_devices_for_policy(self, *, device_policy: str) -> str | None:
         if device_policy == "cpu-only":
@@ -2890,6 +3034,7 @@ class IterativeExperimentRunner:
 
         queue_entries: list[tuple[dict[str, Any], TrainingTask]] = []
         runnable_ids: list[str] = []
+        runnable_ids_before_limit: list[str] = []
         if use_stream_queue_mode:
             state = self.store.load_state(config_path=self.config_path)
         else:
@@ -2897,13 +3042,22 @@ class IterativeExperimentRunner:
                 max_queue_tasks=resolved_options.max_queue_tasks,
                 queue_export_path=resolved_options.queue_export_path,
             )
-            runnable_ids = self.store.select_runnable_task_ids(
+            runnable_ids_before_limit = self.store.select_runnable_task_ids(
                 state,
                 rerun_failed=resolved_options.rerun_failed,
                 rerun_completed=resolved_options.rerun_completed,
             )
+            runnable_ids = list(runnable_ids_before_limit)
             if resolved_options.limit is not None:
                 runnable_ids = runnable_ids[: resolved_options.limit]
+        launch_context = self._build_launch_context(
+            options=resolved_options,
+            use_stream_queue_mode=use_stream_queue_mode,
+            estimated_total_experiments=int(estimated_counts.total_experiments),
+            state=state,
+            runnable_ids_before_limit=runnable_ids_before_limit,
+            runnable_ids_after_limit=runnable_ids,
+        )
         runtime_state = dict(_default_runner_runtime())
         runtime_state.update(dict(state.get("runtime", {})))
         runtime_state["device_policy"] = resolved_options.device_policy
@@ -2915,6 +3069,7 @@ class IterativeExperimentRunner:
         runtime_state["allow_huge_queue"] = resolved_options.max_queue_tasks is None
         runtime_state["max_queue_tasks"] = resolved_options.max_queue_tasks
         runtime_state["stream_queue_mode"] = use_stream_queue_mode
+        runtime_state["launch_context"] = launch_context
         if resolved_options.device_policy == "cpu-only":
             runtime_state["preferred_device"] = "cpu"
             runtime_state["gpu_health"] = "unhealthy"
@@ -2939,7 +3094,7 @@ class IterativeExperimentRunner:
             stderr_log_path=os.environ.get(BACKGROUND_STDERR_LOG_ENV),
         )
         self._install_signal_handlers()
-        planned_runnable_count = estimated_counts.total_experiments if use_stream_queue_mode else len(runnable_ids)
+        planned_runnable_count = int(launch_context.get("planned_runnable_count", 0))
         self.logger.info(
             "Starting iterative run with %s runnable experiments (stream_queue_mode=%s).",
             planned_runnable_count,
@@ -2964,6 +3119,9 @@ class IterativeExperimentRunner:
                 "fail_fast_on_oom": resolved_options.fail_fast_on_oom,
                 "max_queue_tasks": resolved_options.max_queue_tasks,
                 "queue_export_path": resolved_options.queue_export_path,
+                "launch_id": launch_context.get("launch_id"),
+                "launch_skipped_count": launch_context.get("skipped_count"),
+                "launch_skip_reason_counts": launch_context.get("skip_reason_counts"),
             },
         )
 
