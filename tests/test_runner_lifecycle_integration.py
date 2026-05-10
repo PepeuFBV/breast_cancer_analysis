@@ -46,13 +46,7 @@ def _run_cli(*args: str, env: dict[str, str], check: bool = True) -> subprocess.
         check=False,
     )
     if check and completed.returncode != 0:
-        raise AssertionError(
-            "Command failed.\n"
-            f"command={' '.join(command)}\n"
-            f"returncode={completed.returncode}\n"
-            f"stdout={completed.stdout}\n"
-            f"stderr={completed.stderr}"
-        )
+        raise AssertionError("Command failed.\n" f"command={' '.join(command)}\n" f"returncode={completed.returncode}\n" f"stdout={completed.stdout}\n" f"stderr={completed.stderr}")
     return completed
 
 
@@ -165,15 +159,7 @@ def test_launch_stop_resume_with_partial_consistency(tmp_path: Path) -> None:
     _run_cli(*_launch_args(train_split=train_split, test_split=test_split, artifacts_dir=artifacts_dir, limit=3), env=env)
 
     _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("completed", 0) >= 1
-                and snapshot.get("counts", {}).get("running", 0) >= 1
-                and snapshot.get("active_pid") is not None
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("completed", 0) >= 1 and snapshot.get("counts", {}).get("running", 0) >= 1 and snapshot.get("active_pid") is not None) else None),
         timeout_seconds=30.0,
     )
 
@@ -185,28 +171,14 @@ def test_launch_stop_resume_with_partial_consistency(tmp_path: Path) -> None:
 
     _run_cli("stop", "--artifacts-dir", str(artifacts_dir), env=env)
     stopped_snapshot = _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("overall_status") in {"paused", "stopped", "idle", "completed_with_failures"}
-                and snapshot.get("active_pid") is None
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("overall_status") in {"paused", "stopped", "idle", "completed_with_failures"} and snapshot.get("active_pid") is None) else None),
         timeout_seconds=30.0,
     )
     assert stopped_snapshot["counts"]["pending"] >= 1
 
     _run_cli(*_launch_args(train_split=train_split, test_split=test_split, artifacts_dir=artifacts_dir, limit=3), env=env)
     final_snapshot = _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("overall_status") == "completed"
-                and snapshot.get("active_pid") is None
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("overall_status") == "completed" and snapshot.get("active_pid") is None) else None),
         timeout_seconds=40.0,
     )
     assert final_snapshot["counts"]["completed"] == 3
@@ -239,14 +211,7 @@ def test_stale_pid_recovery_after_external_kill(tmp_path: Path) -> None:
     _run_cli(*_launch_args(train_split=train_split, test_split=test_split, artifacts_dir=artifacts_dir, limit=1), env=env)
 
     running_snapshot = _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("active_pid") is not None
-                and snapshot.get("counts", {}).get("running", 0) == 1
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("active_pid") is not None and snapshot.get("counts", {}).get("running", 0) == 1) else None),
         timeout_seconds=20.0,
     )
     pid = int(running_snapshot["active_pid"])
@@ -257,28 +222,14 @@ def test_stale_pid_recovery_after_external_kill(tmp_path: Path) -> None:
         os.kill(pid, signal.SIGKILL)
 
     post_kill_snapshot = _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("active_pid") is None
-                and snapshot.get("counts", {}).get("stopped", 0) >= 1
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("active_pid") is None and snapshot.get("counts", {}).get("stopped", 0) >= 1) else None),
         timeout_seconds=30.0,
     )
     assert post_kill_snapshot["overall_status"] in {"stopped", "idle"}
 
     _run_cli(*_launch_args(train_split=train_split, test_split=test_split, artifacts_dir=artifacts_dir, limit=1), env=env)
     final_snapshot = _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("overall_status") == "completed"
-                and snapshot.get("active_pid") is None
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("overall_status") == "completed" and snapshot.get("active_pid") is None) else None),
         timeout_seconds=40.0,
     )
     assert final_snapshot["counts"]["completed"] == 1
