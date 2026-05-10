@@ -164,14 +164,7 @@ def test_launch_stop_resume_with_partial_consistency(tmp_path: Path) -> None:
     )
 
     partial_running = _wait_for(
-        lambda: (
-            payload
-            if (
-                (payload := _partial_json(env=env, artifacts_dir=artifacts_dir, max_rows=10)).get("counts", {}).get("completed", 0) >= 1
-                and payload.get("counts", {}).get("running", 0) >= 1
-            )
-            else None
-        ),
+        lambda: (payload if ((payload := _partial_json(env=env, artifacts_dir=artifacts_dir, max_rows=10)).get("counts", {}).get("completed", 0) >= 1 and payload.get("counts", {}).get("running", 0) >= 1) else None),
         timeout_seconds=20.0,
     )
     assert partial_running["row_filter"] == "finalized_only"
@@ -249,15 +242,7 @@ def test_stale_pid_recovery_after_external_kill(tmp_path: Path) -> None:
 
     _run_cli(*_launch_args(train_split=train_split, test_split=test_split, artifacts_dir=artifacts_dir, limit=1), env=env)
     final_snapshot = _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("completed", 0) == 1
-                and snapshot.get("counts", {}).get("running", 0) == 0
-                and snapshot.get("active_pid") is None
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("completed", 0) == 1 and snapshot.get("counts", {}).get("running", 0) == 0 and snapshot.get("active_pid") is None) else None),
         timeout_seconds=90.0,
     )
     assert final_snapshot["counts"]["completed"] == 1
