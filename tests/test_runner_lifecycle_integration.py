@@ -179,14 +179,7 @@ def test_launch_stop_resume_with_partial_consistency(tmp_path: Path) -> None:
     )
 
     _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("running", 0) >= 1
-                and snapshot.get("active_pid") is not None
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("running", 0) >= 1 and snapshot.get("active_pid") is not None) else None),
         timeout_seconds=30.0,
     )
 
@@ -226,16 +219,7 @@ def test_launch_stop_resume_with_partial_consistency(tmp_path: Path) -> None:
         env=env,
     )
     final_snapshot = _wait_for(
-        lambda: (
-            snapshot
-            if (
-                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("completed", 0) == 3
-                and snapshot.get("counts", {}).get("pending", 0) == 0
-                and snapshot.get("counts", {}).get("running", 0) == 0
-                and snapshot.get("active_pid") is None
-            )
-            else None
-        ),
+        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("completed", 0) == 3 and snapshot.get("counts", {}).get("pending", 0) == 0 and snapshot.get("counts", {}).get("running", 0) == 0 and snapshot.get("active_pid") is None) else None),
         timeout_seconds=90.0,
     )
     assert final_snapshot["counts"]["completed"] == 3
