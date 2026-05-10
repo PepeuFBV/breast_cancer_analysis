@@ -11,21 +11,21 @@ path:
 ## 1. Create a Python 3.10 Virtualenv
 
 ```powershell
-py -3.10 -m venv .venv-win-gpu
-.\.venv-win-gpu\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
 ```
 
 ## 2. Install Project Dependencies
 
 ```powershell
-.\.venv-win-gpu\Scripts\python.exe -m pip install -r requirements-windows-gpu.txt
-.\.venv-win-gpu\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -r requirements-windows-gpu.txt
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
 Or use the helper:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv
 ```
 
 ## 3. Install CUDA and cuDNN
@@ -46,8 +46,8 @@ use on native Windows.
 ## 4. Validate Runtime
 
 ```powershell
-.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+.\.venv\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
 ```
 
 Do not proceed to full runs unless both checks pass and TensorFlow reports at
@@ -56,9 +56,9 @@ least one GPU device.
 ## 5. Smoke Validation Before Large Queue
 
 ```powershell
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py launch --device-policy gpu-only --isolate-tasks --limit 1
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py launch --device-policy adaptive --isolate-tasks --include-combinations --limit 2
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py dry-run --include-combinations
+.\.venv\Scripts\python.exe .\run_experiments.py launch --device-policy gpu-only --isolate-tasks --limit 1
+.\.venv\Scripts\python.exe .\run_experiments.py launch --device-policy adaptive --isolate-tasks --include-combinations --limit 2
+.\.venv\Scripts\python.exe .\run_experiments.py dry-run --include-combinations
 ```
 
 Expected dry-run totals:
@@ -69,9 +69,9 @@ Expected dry-run totals:
 ## 6. Launch Full Combinations Queue (Only After GPU Passes)
 
 ```powershell
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py stop
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py status
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py launch --include-combinations --device-policy adaptive --isolate-tasks --allow-huge-queue
+.\.venv\Scripts\python.exe .\run_experiments.py stop
+.\.venv\Scripts\python.exe .\run_experiments.py status
+.\.venv\Scripts\python.exe .\run_experiments.py launch --include-combinations --device-policy adaptive --isolate-tasks --allow-huge-queue
 ```
 
 Do not add `--limit` to the launch command.

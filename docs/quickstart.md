@@ -16,9 +16,9 @@ Windows PowerShell equivalents:
 Use this only for native Windows CUDA GPU:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
-.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv
+.\.venv\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
 ```
 
 If `check_windows_gpu.py` fails, do not launch full experiments.
@@ -210,6 +210,21 @@ Equivalent adaptive command:
 
 ```bash
 python run_experiments.py launch --device-policy adaptive --isolate-tasks --limit 10
+```
+
+Thermal-aware adaptive command (optional safety policy):
+
+```bash
+python run_experiments.py launch \
+  --device-policy adaptive \
+  --isolate-tasks \
+  --thermal-policy-enabled \
+  --thermal-cpu-temp-celsius-limit 85 \
+  --thermal-cpu-load-percent-limit 90 \
+  --thermal-gpu-temp-celsius-limit 82 \
+  --thermal-gpu-utilization-percent-limit 95 \
+  --thermal-gpu-recovery-temp-celsius 75 \
+  --thermal-cooldown-seconds 30
 ```
 
 Augmentation dimension command:

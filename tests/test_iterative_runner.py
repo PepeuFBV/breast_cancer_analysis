@@ -754,6 +754,197 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["counts"]["completed"], 3)
             self.assertEqual(gpu_probe_calls["count"], 2)
 
+    @pytest.mark.gpu
+    def test_thermal_gpu_hot_prefers_cpu_for_adaptive_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            task_devices: list[str] = []
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                env = kwargs.get("env", {})
+                observed_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+                task_devices.append(observed_device)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.91},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            thermal_snapshot = SimpleNamespace(
+                cpu_temperature_celsius=55.0,
+                cpu_load_percent=40.0,
+                max_gpu_temperature_celsius=88.0,
+                max_gpu_utilization_percent=90.0,
+                warnings=(),
+            )
+            with (
+                patch("pipeline.experiments.runner.collect_thermal_snapshot", return_value=thermal_snapshot),
+                patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run),
+            ):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="adaptive",
+                        thermal_policy_enabled=True,
+                        thermal_gpu_temp_celsius_limit=80.0,
+                        thermal_cooldown_seconds=30.0,
+                        gpu_retries=0,
+                        cpu_retries=0,
+                        max_task_attempts=2,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(task_devices, ["cpu"])
+            state = runner.store.load_state()
+            self.assertEqual(state["runtime"]["thermal_state"], "gpu_hot")
+            run_events = _read_jsonl(runner.store.run_events_path)
+            phases = {row.get("event") for row in run_events}
+            self.assertIn("thermal_gpu_hot", phases)
+
+    @pytest.mark.gpu
+    def test_thermal_gpu_hot_with_zero_cooldown_still_uses_cpu(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            task_devices: list[str] = []
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                env = kwargs.get("env", {})
+                observed_device = "cpu" if env.get("CUDA_VISIBLE_DEVICES") == "-1" else "gpu"
+                task_devices.append(observed_device)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.91},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            thermal_snapshot = SimpleNamespace(
+                cpu_temperature_celsius=55.0,
+                cpu_load_percent=40.0,
+                max_gpu_temperature_celsius=88.0,
+                max_gpu_utilization_percent=90.0,
+                warnings=(),
+            )
+            with (
+                patch("pipeline.experiments.runner.collect_thermal_snapshot", return_value=thermal_snapshot),
+                patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run),
+            ):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="adaptive",
+                        thermal_policy_enabled=True,
+                        thermal_gpu_temp_celsius_limit=80.0,
+                        thermal_cooldown_seconds=0.0,
+                        gpu_retries=0,
+                        cpu_retries=0,
+                        max_task_attempts=2,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            self.assertEqual(task_devices, ["cpu"])
+
+    @pytest.mark.gpu
+    def test_thermal_both_hot_pauses_before_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.86)},
+                preprocessing_tasks=[_task("none")],
+            )
+            original_run = subprocess.run
+
+            def _fake_subprocess_run(command, **kwargs):
+                if _is_probe_runtime_command(command):
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(_probe_runtime_payload(kwargs.get("env", {}))), stderr="")
+                if "--task-id" not in command:
+                    return original_run(command, **kwargs)
+                task_id = command[command.index("--task-id") + 1]
+                runner.store.update_task_status(task_id, status="running")
+                runner.store.update_task_status(
+                    task_id,
+                    status="completed",
+                    result_summary={"best_val_acc": 0.91},
+                    duration_seconds=0.1,
+                )
+                return SimpleNamespace(returncode=0)
+
+            thermal_snapshot = SimpleNamespace(
+                cpu_temperature_celsius=86.0,
+                cpu_load_percent=95.0,
+                max_gpu_temperature_celsius=87.0,
+                max_gpu_utilization_percent=97.0,
+                warnings=(),
+            )
+            with (
+                patch("pipeline.experiments.runner.collect_thermal_snapshot", return_value=thermal_snapshot),
+                patch("pipeline.experiments.runner.subprocess.run", side_effect=_fake_subprocess_run),
+                patch.object(runner, "_sleep_with_log") as sleep_with_log,
+            ):
+                snapshot = runner.run(
+                    IterativeRunOptions(
+                        isolate_tasks=True,
+                        task_cooldown_seconds=0,
+                        device_policy="adaptive",
+                        thermal_policy_enabled=True,
+                        thermal_cpu_temp_celsius_limit=80.0,
+                        thermal_gpu_temp_celsius_limit=80.0,
+                        thermal_cooldown_seconds=7.0,
+                        gpu_retries=0,
+                        cpu_retries=0,
+                        max_task_attempts=2,
+                    )
+                )
+
+            self.assertEqual(snapshot["counts"]["completed"], 1)
+            sleep_with_log.assert_any_call(7.0, reason="thermal_both_hot")
+            state = runner.store.load_state()
+            self.assertEqual(state["runtime"]["thermal_state"], "both_hot")
+            run_events = _read_jsonl(runner.store.run_events_path)
+            phases = {row.get("event") for row in run_events}
+            self.assertIn("thermal_both_hot_pause", phases)
+
     def test_cpu_limits_are_applied_for_direct_cpu_task_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

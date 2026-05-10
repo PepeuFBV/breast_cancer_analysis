@@ -17,6 +17,8 @@ from train import build_training_config_from_args
 class ExperimentConfigTest(unittest.TestCase):
     def test_load_default_config(self) -> None:
         config = load_experiment_config()
+        default_payload = json.loads(DEFAULT_EXPERIMENT_CONFIG_PATH.read_text(encoding="utf-8"))
+        default_runner = dict(default_payload.get("runner", {}))
 
         self.assertEqual(config.source_path, DEFAULT_EXPERIMENT_CONFIG_PATH)
         self.assertEqual(config.preprocess.image_size, (224, 224))
@@ -28,8 +30,15 @@ class ExperimentConfigTest(unittest.TestCase):
         self.assertIn("custom cnn", config.models)
         self.assertEqual(config.models["custom cnn"].input_channels, 1)
         self.assertEqual(config.runner.device_policy, "adaptive")
-        self.assertEqual(config.runner.gpu_retries, 1)
-        self.assertEqual(config.runner.cpu_retries, 1)
+        self.assertEqual(config.runner.gpu_retries, int(default_runner.get("gpu_retries", 1)))
+        self.assertEqual(config.runner.cpu_retries, int(default_runner.get("cpu_retries", 1)))
+        self.assertFalse(config.runner.thermal_policy_enabled)
+        self.assertIsNone(config.runner.thermal_cpu_temp_celsius_limit)
+        self.assertIsNone(config.runner.thermal_cpu_load_percent_limit)
+        self.assertIsNone(config.runner.thermal_gpu_temp_celsius_limit)
+        self.assertIsNone(config.runner.thermal_gpu_utilization_percent_limit)
+        self.assertIsNone(config.runner.thermal_gpu_recovery_temp_celsius)
+        self.assertEqual(config.runner.thermal_cooldown_seconds, 30.0)
         self.assertIsNone(config.runner.cpu_max_threads)
         self.assertIsNone(config.runner.cpu_opencv_threads)
         self.assertIsNone(config.runner.cpu_inter_op_threads)

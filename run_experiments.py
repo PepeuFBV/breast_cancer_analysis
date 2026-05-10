@@ -130,6 +130,47 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         help="Stop retries/fallback for current task immediately when an OOM is detected.",
     )
     parser.add_argument(
+        "--thermal-policy-enabled",
+        action="store_true",
+        help="Enable thermal-aware runtime controls (CPU/GPU thresholds and cooldowns).",
+    )
+    parser.add_argument(
+        "--thermal-cpu-temp-celsius-limit",
+        type=float,
+        default=None,
+        help="Mark CPU as hot when its temperature reaches this threshold.",
+    )
+    parser.add_argument(
+        "--thermal-cpu-load-percent-limit",
+        type=float,
+        default=None,
+        help="Mark CPU as hot when estimated CPU load reaches this threshold.",
+    )
+    parser.add_argument(
+        "--thermal-gpu-temp-celsius-limit",
+        type=float,
+        default=None,
+        help="Mark GPU as hot when temperature reaches this threshold.",
+    )
+    parser.add_argument(
+        "--thermal-gpu-utilization-percent-limit",
+        type=float,
+        default=None,
+        help="Mark GPU as hot when utilization reaches this threshold.",
+    )
+    parser.add_argument(
+        "--thermal-gpu-recovery-temp-celsius",
+        type=float,
+        default=None,
+        help="Allow GPU return only when temperature is at or below this threshold.",
+    )
+    parser.add_argument(
+        "--thermal-cooldown-seconds",
+        type=float,
+        default=None,
+        help="Pause duration applied by thermal hot-state policies.",
+    )
+    parser.add_argument(
         "--max-queue-tasks",
         type=int,
         default=None,
@@ -400,7 +441,7 @@ def _build_runner(args: argparse.Namespace):
 
 def _resolve_runner_cli_options(
     args: argparse.Namespace,
-) -> tuple[bool, float, float | None, str, int, int, float, float, int, int, bool]:
+) -> tuple[bool, float, float | None, str, int, int, float, float, int, int, bool, bool, float | None, float | None, float | None, float | None, float | None, float]:
     experiment_config = load_experiment_config(args.config)
     isolate_tasks = experiment_config.runner.isolate_tasks if getattr(args, "isolate_tasks", None) is None else bool(getattr(args, "isolate_tasks"))
     cooldown_seconds = experiment_config.runner.task_cooldown_seconds if getattr(args, "task_cooldown_seconds", None) is None else float(getattr(args, "task_cooldown_seconds"))
@@ -417,6 +458,13 @@ def _resolve_runner_cli_options(
     config_max_consecutive_oom = int(getattr(experiment_config.runner, "max_consecutive_oom", 3))
     config_max_task_attempts = int(getattr(experiment_config.runner, "max_task_attempts", 4))
     config_fail_fast_on_oom = bool(getattr(experiment_config.runner, "fail_fast_on_oom", False))
+    config_thermal_policy_enabled = bool(getattr(experiment_config.runner, "thermal_policy_enabled", False))
+    config_thermal_cpu_temp_celsius_limit = getattr(experiment_config.runner, "thermal_cpu_temp_celsius_limit", None)
+    config_thermal_cpu_load_percent_limit = getattr(experiment_config.runner, "thermal_cpu_load_percent_limit", None)
+    config_thermal_gpu_temp_celsius_limit = getattr(experiment_config.runner, "thermal_gpu_temp_celsius_limit", None)
+    config_thermal_gpu_utilization_percent_limit = getattr(experiment_config.runner, "thermal_gpu_utilization_percent_limit", None)
+    config_thermal_gpu_recovery_temp_celsius = getattr(experiment_config.runner, "thermal_gpu_recovery_temp_celsius", None)
+    config_thermal_cooldown_seconds = float(getattr(experiment_config.runner, "thermal_cooldown_seconds", 30.0))
 
     device_policy = config_device_policy if getattr(args, "device_policy", None) is None else str(getattr(args, "device_policy"))
     gpu_retries = config_gpu_retries if getattr(args, "gpu_retries", None) is None else int(getattr(args, "gpu_retries"))
@@ -426,6 +474,27 @@ def _resolve_runner_cli_options(
     max_consecutive_oom = config_max_consecutive_oom if getattr(args, "max_consecutive_oom", None) is None else int(getattr(args, "max_consecutive_oom"))
     max_task_attempts = config_max_task_attempts if getattr(args, "max_task_attempts", None) is None else int(getattr(args, "max_task_attempts"))
     fail_fast_on_oom = bool(getattr(args, "fail_fast_on_oom", False) or config_fail_fast_on_oom)
+    thermal_policy_enabled = bool(getattr(args, "thermal_policy_enabled", False) or config_thermal_policy_enabled)
+    thermal_cpu_temp_celsius_limit = config_thermal_cpu_temp_celsius_limit if getattr(args, "thermal_cpu_temp_celsius_limit", None) is None else float(getattr(args, "thermal_cpu_temp_celsius_limit"))
+    thermal_cpu_load_percent_limit = config_thermal_cpu_load_percent_limit if getattr(args, "thermal_cpu_load_percent_limit", None) is None else float(getattr(args, "thermal_cpu_load_percent_limit"))
+    thermal_gpu_temp_celsius_limit = config_thermal_gpu_temp_celsius_limit if getattr(args, "thermal_gpu_temp_celsius_limit", None) is None else float(getattr(args, "thermal_gpu_temp_celsius_limit"))
+    thermal_gpu_utilization_percent_limit = config_thermal_gpu_utilization_percent_limit if getattr(args, "thermal_gpu_utilization_percent_limit", None) is None else float(getattr(args, "thermal_gpu_utilization_percent_limit"))
+    thermal_gpu_recovery_temp_celsius = config_thermal_gpu_recovery_temp_celsius if getattr(args, "thermal_gpu_recovery_temp_celsius", None) is None else float(getattr(args, "thermal_gpu_recovery_temp_celsius"))
+    thermal_cooldown_seconds = config_thermal_cooldown_seconds if getattr(args, "thermal_cooldown_seconds", None) is None else float(getattr(args, "thermal_cooldown_seconds"))
+    if thermal_cooldown_seconds < 0:
+        raise ValueError("--thermal-cooldown-seconds must be >= 0.")
+    if thermal_cpu_temp_celsius_limit is not None and thermal_cpu_temp_celsius_limit <= 0:
+        raise ValueError("--thermal-cpu-temp-celsius-limit must be > 0.")
+    if thermal_gpu_temp_celsius_limit is not None and thermal_gpu_temp_celsius_limit <= 0:
+        raise ValueError("--thermal-gpu-temp-celsius-limit must be > 0.")
+    if thermal_gpu_recovery_temp_celsius is not None and thermal_gpu_recovery_temp_celsius <= 0:
+        raise ValueError("--thermal-gpu-recovery-temp-celsius must be > 0.")
+    if thermal_cpu_load_percent_limit is not None and not 0 <= thermal_cpu_load_percent_limit <= 100:
+        raise ValueError("--thermal-cpu-load-percent-limit must be between 0 and 100.")
+    if thermal_gpu_utilization_percent_limit is not None and not 0 <= thermal_gpu_utilization_percent_limit <= 100:
+        raise ValueError("--thermal-gpu-utilization-percent-limit must be between 0 and 100.")
+    if thermal_gpu_temp_celsius_limit is not None and thermal_gpu_recovery_temp_celsius is not None and thermal_gpu_recovery_temp_celsius > thermal_gpu_temp_celsius_limit:
+        raise ValueError("--thermal-gpu-recovery-temp-celsius must be <= --thermal-gpu-temp-celsius-limit.")
     return (
         isolate_tasks,
         cooldown_seconds,
@@ -438,6 +507,13 @@ def _resolve_runner_cli_options(
         max_consecutive_oom,
         max_task_attempts,
         fail_fast_on_oom,
+        thermal_policy_enabled,
+        thermal_cpu_temp_celsius_limit,
+        thermal_cpu_load_percent_limit,
+        thermal_gpu_temp_celsius_limit,
+        thermal_gpu_utilization_percent_limit,
+        thermal_gpu_recovery_temp_celsius,
+        thermal_cooldown_seconds,
     )
 
 
@@ -622,6 +698,22 @@ def _print_status_snapshot(snapshot: dict[str, object]) -> None:
         print(f"Last successful device: {snapshot['last_successful_device']}")
     if snapshot.get("oom_policy_stop"):
         print(f"OOM policy stop: {snapshot['oom_policy_stop']}")
+    if snapshot.get("thermal_policy_enabled") is not None:
+        print(f"Thermal policy enabled: {snapshot['thermal_policy_enabled']}")
+    if snapshot.get("thermal_state") is not None:
+        print(f"Thermal state: {snapshot['thermal_state']}")
+    if snapshot.get("thermal_last_reason"):
+        print(f"Thermal reason: {snapshot['thermal_last_reason']}")
+    if snapshot.get("thermal_last_sample_at"):
+        print(f"Thermal sample at: {snapshot['thermal_last_sample_at']}")
+    if snapshot.get("thermal_last_cpu_temp_celsius") is not None:
+        print("Thermal CPU temp (C): " f"{snapshot['thermal_last_cpu_temp_celsius']}")
+    if snapshot.get("thermal_last_cpu_load_percent") is not None:
+        print("Thermal CPU load (%): " f"{snapshot['thermal_last_cpu_load_percent']}")
+    if snapshot.get("thermal_last_gpu_temp_celsius") is not None:
+        print("Thermal GPU temp (C): " f"{snapshot['thermal_last_gpu_temp_celsius']}")
+    if snapshot.get("thermal_last_gpu_utilization_percent") is not None:
+        print("Thermal GPU util (%): " f"{snapshot['thermal_last_gpu_utilization_percent']}")
     if snapshot.get("config_path"):
         print(f"Config: {snapshot['config_path']}")
     if snapshot.get("results_root"):
@@ -722,6 +814,13 @@ def _resolve_launch_preflight(args: argparse.Namespace) -> dict[str, Any]:
         _max_consecutive_oom,
         _max_task_attempts,
         _fail_fast_on_oom,
+        _thermal_policy_enabled,
+        _thermal_cpu_temp_celsius_limit,
+        _thermal_cpu_load_percent_limit,
+        _thermal_gpu_temp_celsius_limit,
+        _thermal_gpu_utilization_percent_limit,
+        _thermal_gpu_recovery_temp_celsius,
+        _thermal_cooldown_seconds,
     ) = _resolve_runner_cli_options(args)
     has_process_local_components = runner.model_builders is not None or runner.preprocessing_tasks is not None
     max_queue_tasks = _resolve_max_queue_tasks(args)
@@ -796,6 +895,13 @@ def main(argv: list[str] | None = None) -> int:
                     max_consecutive_oom,
                     max_task_attempts,
                     fail_fast_on_oom,
+                    thermal_policy_enabled,
+                    thermal_cpu_temp_celsius_limit,
+                    thermal_cpu_load_percent_limit,
+                    thermal_gpu_temp_celsius_limit,
+                    thermal_gpu_utilization_percent_limit,
+                    thermal_gpu_recovery_temp_celsius,
+                    thermal_cooldown_seconds,
                 ) = _resolve_runner_cli_options(args)
                 run_task_command_base = (
                     sys.executable,
@@ -823,6 +929,13 @@ def main(argv: list[str] | None = None) -> int:
                         max_consecutive_oom=max_consecutive_oom,
                         max_task_attempts=max_task_attempts,
                         fail_fast_on_oom=fail_fast_on_oom,
+                        thermal_policy_enabled=thermal_policy_enabled,
+                        thermal_cpu_temp_celsius_limit=thermal_cpu_temp_celsius_limit,
+                        thermal_cpu_load_percent_limit=thermal_cpu_load_percent_limit,
+                        thermal_gpu_temp_celsius_limit=thermal_gpu_temp_celsius_limit,
+                        thermal_gpu_utilization_percent_limit=thermal_gpu_utilization_percent_limit,
+                        thermal_gpu_recovery_temp_celsius=thermal_gpu_recovery_temp_celsius,
+                        thermal_cooldown_seconds=thermal_cooldown_seconds,
                         max_queue_tasks=_resolve_max_queue_tasks(args),
                         queue_export_path=args.queue_export_path,
                     )

@@ -60,7 +60,7 @@ def check_tensorflow_gpu(
         except Exception as error:
             extra_help = ""
             if isinstance(error, ModuleNotFoundError) and getattr(error, "name", None) == "tensorflow":
-                extra_help = " Install the project environment with " "`python3 scripts/bootstrap_env.py`."
+                extra_help = " Install the project environment with " "`python scripts/bootstrap_env.py`."
             return TensorFlowGpuCheck(
                 mode=mode,
                 tensorflow_available=False,

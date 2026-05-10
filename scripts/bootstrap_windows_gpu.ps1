@@ -1,5 +1,5 @@
 param(
-    [string]$VenvDir = ".venv-win-gpu",
+    [string]$VenvDir = ".venv",
     [switch]$InstallDev
 )
 

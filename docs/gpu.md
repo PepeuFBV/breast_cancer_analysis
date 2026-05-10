@@ -15,9 +15,9 @@ For native Windows GPU, use the TensorFlow 2.10 stack only:
 Quick setup:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
-.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv
+.\.venv\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
 ```
 
 If TensorFlow is `2.11+`, native Windows CUDA GPU is unsupported and the probe

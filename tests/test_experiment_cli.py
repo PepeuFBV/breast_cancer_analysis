@@ -219,6 +219,19 @@ def test_launch_worker_forwards_isolation_options_and_artifacts_dir(
             "2",
             "--cpu-nice",
             "10",
+            "--thermal-policy-enabled",
+            "--thermal-cpu-temp-celsius-limit",
+            "84",
+            "--thermal-cpu-load-percent-limit",
+            "90",
+            "--thermal-gpu-temp-celsius-limit",
+            "80",
+            "--thermal-gpu-utilization-percent-limit",
+            "95",
+            "--thermal-gpu-recovery-temp-celsius",
+            "72",
+            "--thermal-cooldown-seconds",
+            "25",
             "--models",
             "custom cnn",
             "--preprocessing",
@@ -248,6 +261,13 @@ def test_launch_worker_forwards_isolation_options_and_artifacts_dir(
     assert "--cpu-inter-op-threads" in options.run_task_command_base
     assert "--cpu-intra-op-threads" in options.run_task_command_base
     assert "--cpu-nice" in options.run_task_command_base
+    assert options.thermal_policy_enabled is True
+    assert options.thermal_cpu_temp_celsius_limit == 84.0
+    assert options.thermal_cpu_load_percent_limit == 90.0
+    assert options.thermal_gpu_temp_celsius_limit == 80.0
+    assert options.thermal_gpu_utilization_percent_limit == 95.0
+    assert options.thermal_gpu_recovery_temp_celsius == 72.0
+    assert options.thermal_cooldown_seconds == 25.0
     assert options.max_queue_tasks == 123456
     assert options.queue_export_path == "/tmp/queue-export.jsonl"
     capsys.readouterr()

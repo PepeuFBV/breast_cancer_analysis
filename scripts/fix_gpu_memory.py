@@ -5,18 +5,39 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
+
+
+def _venv_python() -> Path:
+    if os.name == "nt":
+        return PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    return PROJECT_ROOT / ".venv" / "bin" / "python"
+
+
+def _venv_command_hint(script: str) -> str:
+    if os.name == "nt":
+        return f".\\.venv\\Scripts\\python.exe {script}"
+    return f"./.venv/bin/python {script}"
 
 
 def check_gpu_memory() -> dict[str, any]:
     """Check current GPU memory usage."""
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi is None and Path("/usr/lib/wsl/lib/nvidia-smi").exists():
+        nvidia_smi = "/usr/lib/wsl/lib/nvidia-smi"
+
+    if nvidia_smi is None:
+        return {"error": "Could not query GPU memory"}
+
     try:
         result = subprocess.run(
-            ["/usr/lib/wsl/lib/nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+            [nvidia_smi, "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             check=False,
@@ -77,28 +98,28 @@ def suggest_fixes(gpu_info: dict, oom_info: dict) -> list[str]:
     suggestions = []
 
     if "error" in gpu_info:
-        suggestions.append("GPU not accessible. Run on CPU with: python3 scripts/bootstrap_env.py --gpu off")
+        suggestions.append(f"GPU not accessible. Run on CPU with: {sys.executable} scripts/bootstrap_env.py --gpu off")
         return suggestions
 
     if gpu_info["total_mb"] <= 4096:
         suggestions.append(f"GPU has limited memory ({gpu_info['total_mb']} MB). Consider:")
         suggestions.append("  1. Reduce batch size in configs/experiment.default.json (try batch_size: 4 or 2)")
         suggestions.append("  2. Limit models to smaller ones: --models 'custom cnn' bcnet mobilenetv3")
-        suggestions.append("  3. Run on CPU: python3 scripts/bootstrap_env.py --gpu off")
+        suggestions.append(f"  3. Run on CPU: {sys.executable} scripts/bootstrap_env.py --gpu off")
 
     if oom_info["oom_count"] > 0:
         suggestions.append(f"Found {oom_info['oom_count']} OOM errors in logs")
         if oom_info["models_with_oom"]:
             suggestions.append(f"  Models with OOM: {', '.join(oom_info['models_with_oom'])}")
         suggestions.append("  The pipeline now includes automatic retry with memory cleanup")
-        suggestions.append("  Rerun failed experiments: ./.venv/bin/python run_experiments.py launch --_launch-worker --rerun-failed")
+        suggestions.append(f"  Rerun failed experiments: {_venv_command_hint('run_experiments.py launch --_launch-worker --rerun-failed')}")
 
     if gpu_info["usage_percent"] > 80:
         suggestions.append(f"GPU memory is {gpu_info['usage_percent']:.1f}% full")
         suggestions.append("  Stop the runner and restart to clear memory:")
-        suggestions.append("    ./.venv/bin/python run_experiments.py stop")
+        suggestions.append(f"    {_venv_command_hint('run_experiments.py stop')}")
         suggestions.append("    Wait for current experiment to finish, then:")
-        suggestions.append("    ./.venv/bin/python run_experiments.py launch")
+        suggestions.append(f"    {_venv_command_hint('run_experiments.py launch')}")
 
     return suggestions
 
@@ -163,16 +184,16 @@ def apply_fix(fix_type: str) -> int:
 
     elif fix_type == "rerun-failed":
         result = subprocess.run(
-            [str(VENV_PYTHON), "run_experiments.py", "launch", "--_launch-worker", "--rerun-failed"],
+            [str(_venv_python()), "run_experiments.py", "launch", "--_launch-worker", "--rerun-failed"],
             cwd=PROJECT_ROOT,
         )
         return result.returncode
 
     elif fix_type == "stop-and-restart":
         print("Stopping runner...")
-        subprocess.run([str(VENV_PYTHON), "run_experiments.py", "stop"], cwd=PROJECT_ROOT)
+        subprocess.run([str(_venv_python()), "run_experiments.py", "stop"], cwd=PROJECT_ROOT)
         print("\nWait for the current experiment to finish, then run:")
-        print("  ./.venv/bin/python run_experiments.py launch")
+        print(f"  {_venv_command_hint('run_experiments.py launch')}")
         return 0
 
     else:

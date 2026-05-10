@@ -330,13 +330,20 @@
     "task_cooldown_seconds": 0,
     "task_timeout_seconds": null,
     "device_policy": "adaptive",
-    "gpu_retries": 1,
-    "cpu_retries": 1,
+    "gpu_retries": 5,
+    "cpu_retries": 5,
     "cooldown_after_oom_seconds": 15,
     "gpu_recovery_cooldown_seconds": 60,
     "max_consecutive_oom": 3,
     "max_task_attempts": 4,
-    "fail_fast_on_oom": false
+    "fail_fast_on_oom": false,
+    "thermal_policy_enabled": false,
+    "thermal_cpu_temp_celsius_limit": null,
+    "thermal_cpu_load_percent_limit": null,
+    "thermal_gpu_temp_celsius_limit": null,
+    "thermal_gpu_utilization_percent_limit": null,
+    "thermal_gpu_recovery_temp_celsius": null,
+    "thermal_cooldown_seconds": 30
   },
   "models": {
     "custom cnn": {

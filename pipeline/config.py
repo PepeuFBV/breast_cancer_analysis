@@ -167,6 +167,13 @@ class ExperimentRunnerConfig:
     max_consecutive_oom: int
     max_task_attempts: int
     fail_fast_on_oom: bool
+    thermal_policy_enabled: bool
+    thermal_cpu_temp_celsius_limit: float | None
+    thermal_cpu_load_percent_limit: float | None
+    thermal_gpu_temp_celsius_limit: float | None
+    thermal_gpu_utilization_percent_limit: float | None
+    thermal_gpu_recovery_temp_celsius: float | None
+    thermal_cooldown_seconds: float
     cpu_max_threads: int | None = None
     cpu_opencv_threads: int | None = None
     cpu_inter_op_threads: int | None = None
@@ -354,6 +361,24 @@ def _optional_positive_int(name: str, value: Any) -> int | None:
     return resolved
 
 
+def _optional_positive_float(name: str, value: Any) -> float | None:
+    if value is None:
+        return None
+    resolved = float(value)
+    if resolved <= 0:
+        raise ValueError(f"{name} must be > 0 when provided.")
+    return resolved
+
+
+def _optional_percentage(name: str, value: Any) -> float | None:
+    if value is None:
+        return None
+    resolved = float(value)
+    if resolved < 0 or resolved > 100:
+        raise ValueError(f"{name} must be between 0 and 100 when provided.")
+    return resolved
+
+
 def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     config_path = _resolve_project_relative_path(path) or DEFAULT_EXPERIMENT_CONFIG_PATH
     with config_path.open("r", encoding="utf-8") as handle:
@@ -398,6 +423,32 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
     if max_task_attempts <= 0:
         raise ValueError("runner.max_task_attempts must be > 0.")
     fail_fast_on_oom = bool(raw_runner.get("fail_fast_on_oom", False))
+    thermal_policy_enabled = bool(raw_runner.get("thermal_policy_enabled", False))
+    thermal_cpu_temp_celsius_limit = _optional_positive_float(
+        "runner.thermal_cpu_temp_celsius_limit",
+        raw_runner.get("thermal_cpu_temp_celsius_limit"),
+    )
+    thermal_cpu_load_percent_limit = _optional_percentage(
+        "runner.thermal_cpu_load_percent_limit",
+        raw_runner.get("thermal_cpu_load_percent_limit"),
+    )
+    thermal_gpu_temp_celsius_limit = _optional_positive_float(
+        "runner.thermal_gpu_temp_celsius_limit",
+        raw_runner.get("thermal_gpu_temp_celsius_limit"),
+    )
+    thermal_gpu_utilization_percent_limit = _optional_percentage(
+        "runner.thermal_gpu_utilization_percent_limit",
+        raw_runner.get("thermal_gpu_utilization_percent_limit"),
+    )
+    thermal_gpu_recovery_temp_celsius = _optional_positive_float(
+        "runner.thermal_gpu_recovery_temp_celsius",
+        raw_runner.get("thermal_gpu_recovery_temp_celsius"),
+    )
+    if thermal_gpu_temp_celsius_limit is not None and thermal_gpu_recovery_temp_celsius is not None and thermal_gpu_recovery_temp_celsius > thermal_gpu_temp_celsius_limit:
+        raise ValueError("runner.thermal_gpu_recovery_temp_celsius must be <= runner.thermal_gpu_temp_celsius_limit.")
+    thermal_cooldown_seconds = float(raw_runner.get("thermal_cooldown_seconds", 30.0))
+    if thermal_cooldown_seconds < 0:
+        raise ValueError("runner.thermal_cooldown_seconds must be >= 0.")
     cpu_limits = validate_cpu_execution_limits(
         CpuExecutionLimits(
             max_threads=_optional_positive_int("runner.cpu_max_threads", raw_runner.get("cpu_max_threads")),
@@ -452,6 +503,13 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
             max_consecutive_oom=max_consecutive_oom,
             max_task_attempts=max_task_attempts,
             fail_fast_on_oom=fail_fast_on_oom,
+            thermal_policy_enabled=thermal_policy_enabled,
+            thermal_cpu_temp_celsius_limit=thermal_cpu_temp_celsius_limit,
+            thermal_cpu_load_percent_limit=thermal_cpu_load_percent_limit,
+            thermal_gpu_temp_celsius_limit=thermal_gpu_temp_celsius_limit,
+            thermal_gpu_utilization_percent_limit=thermal_gpu_utilization_percent_limit,
+            thermal_gpu_recovery_temp_celsius=thermal_gpu_recovery_temp_celsius,
+            thermal_cooldown_seconds=thermal_cooldown_seconds,
             cpu_max_threads=cpu_limits.max_threads,
             cpu_opencv_threads=cpu_limits.opencv_threads,
             cpu_inter_op_threads=cpu_limits.inter_op_threads,
