@@ -36,3 +36,7 @@ jobs:
                       echo "Running ${test_file}"
                       python -m pytest -q "${test_file}"
                   done
+
+            - name: Run Integration Lifecycle Tests
+              run: |
+                  python -m pytest -q -o addopts="" -m integration tests/test_runner_lifecycle_integration.py
