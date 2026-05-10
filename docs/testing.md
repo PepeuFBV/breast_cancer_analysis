@@ -12,6 +12,7 @@ Useful targeted checks:
 ```bash
 python -m pytest -m unit
 python -m pytest -m smoke
+python -m pytest -o addopts="" -m integration tests/test_runner_lifecycle_integration.py
 python -m pytest -m gpu
 python -m pytest -m memory
 python -m pytest -m stress
