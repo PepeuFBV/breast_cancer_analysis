@@ -33,6 +33,14 @@ jobs:
             - name: Run Pytest
               run: |
                   for test_file in tests/test_*.py; do
+                      if [[ "${test_file}" == *"_integration.py" ]]; then
+                          echo "Skipping ${test_file} in default pytest pass (integration runs in dedicated step)."
+                          continue
+                      fi
                       echo "Running ${test_file}"
                       python -m pytest -q "${test_file}"
                   done
+
+            - name: Run Integration Lifecycle Tests
+              run: |
+                  python -m pytest -q -o addopts="" -m integration tests/test_runner_lifecycle_integration.py

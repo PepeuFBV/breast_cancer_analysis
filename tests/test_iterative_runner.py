@@ -31,6 +31,7 @@ from pipeline.experiments.runner import (
     MATERIALIZED_QUEUE_HARD_LIMIT,
     MAX_QUEUE_TASKS,
     REQUESTED_DEVICE_ENV,
+    TEST_TASK_SHIM_PATH_ENV,
     ExperimentGridCounts,
     build_experiment_record,
 )
@@ -2127,6 +2128,130 @@ class IterativeRunnerTest(unittest.TestCase):
             state = store.load_state()
             self.assertEqual(state["tasks"][0]["status"], "completed")
             self.assertGreaterEqual(int(state["tasks"][0]["attempts"]), 1)
+
+    def test_run_one_task_uses_test_task_shim_without_training_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            shim_path = root / "task-shim.json"
+            shim_path.write_text(
+                json.dumps(
+                    {
+                        "by_preproc_id": {
+                            "none": {
+                                "status": "completed",
+                                "sleep_seconds": 0.01,
+                                "result_summary": {"best_val_acc": 0.77},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            record, _ = runner.build_queue()[0]
+
+            with (
+                patch.dict(os.environ, {TEST_TASK_SHIM_PATH_ENV: str(shim_path)}),
+                patch(
+                    "pipeline.experiments.runner.run_training_task",
+                    side_effect=AssertionError("run_training_task should not be called when test shim is active"),
+                ),
+            ):
+                result = runner.run_one_task(record["id"])
+
+            self.assertEqual(result["status"], "completed")
+            store = ExperimentStateStore(project_paths)
+            state = store.load_state()
+            self.assertEqual(state["tasks"][0]["status"], "completed")
+            self.assertEqual(state["tasks"][0]["result_summary"]["best_val_acc"], 0.77)
+
+    def test_partial_results_counts_mixed_finalized_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none"), _task("none", {"variant": "second"}), _task("none", {"variant": "third"})],
+            )
+            queue_entries = runner.build_queue()
+            records = [record for record, _ in queue_entries]
+
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            state = store.sync_queue(records, config_path=Path("configs/experiment.default.json"))
+            store.update_runtime(
+                {
+                    "launch_context": {
+                        "launch_id": "launch-mixed",
+                        "started_at": "2026-05-09T00:00:00+00:00",
+                        "stream_queue_mode": False,
+                        "planned_runnable_count": 3,
+                        "skipped_count": 2,
+                        "skip_reason_counts": {
+                            "already_completed": 1,
+                            "failed_without_rerun": 0,
+                            "limit_excluded": 1,
+                        },
+                    }
+                }
+            )
+            store.update_task_status(records[0]["id"], status="completed", result_summary={"best_val_acc": 0.9})
+            store.update_task_status(records[1]["id"], status="failed", error_summary="synthetic failure")
+            store.update_task_status(records[2]["id"], status="stopped", error_summary="synthetic stop")
+
+            partial = store.partial_results(max_rows=10, all_rows=True)
+
+            self.assertEqual(partial["counts"]["completed"], 1)
+            self.assertEqual(partial["counts"]["failed"], 1)
+            self.assertEqual(partial["counts"]["stopped"], 1)
+            self.assertEqual(partial["counts"]["skipped"], 2)
+            self.assertEqual(partial["rows_returned"], 3)
+            self.assertFalse(partial["rows_capped"])
+            self.assertEqual({row["status"] for row in partial["partial_rows"]}, {"completed", "failed", "stopped"})
+
+            _ = state
+
+    def test_status_reconciles_stale_running_task_with_stop_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            record, _ = runner.build_queue()[0]
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.sync_queue([record], config_path=Path("configs/experiment.default.json"))
+            store.update_task_status(record["id"], status="running")
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
+                pid=77777,
+            )
+            store.request_stop(reason="manual-test")
+
+            with patch("pipeline.experiments.runner._is_process_alive", return_value=False):
+                snapshot = store.summarize()
+
+            self.assertEqual(snapshot["counts"]["running"], 0)
+            self.assertEqual(snapshot["counts"]["stopped"], 1)
+            self.assertEqual(snapshot["desired_state"], "paused")
+            self.assertEqual(snapshot["pause_reason"], "manual-test")
+            self.assertIn(snapshot["overall_status"], {"paused", "stopped"})
 
 
 if __name__ == "__main__":

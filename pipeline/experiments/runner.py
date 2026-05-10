@@ -57,6 +57,7 @@ ISOLATED_TASK_PARENT_PID_ENV = "BREAST_CANCER_ANALYSIS_ISOLATED_TASK_PARENT_PID"
 REQUESTED_DEVICE_ENV = "BREAST_CANCER_ANALYSIS_REQUESTED_DEVICE"
 BACKGROUND_STDOUT_LOG_ENV = "BREAST_CANCER_ANALYSIS_BACKGROUND_STDOUT_LOG_PATH"
 BACKGROUND_STDERR_LOG_ENV = "BREAST_CANCER_ANALYSIS_BACKGROUND_STDERR_LOG_PATH"
+TEST_TASK_SHIM_PATH_ENV = "BREAST_CANCER_ANALYSIS_TEST_TASK_SHIM_PATH"
 DEVICE_POLICY_VALUES = {"gpu-first", "cpu-only", "gpu-only", "adaptive"}
 GPU_HEALTH_STATES = {"healthy", "cooling_down", "unhealthy"}
 STREAMING_QUEUE_TASK_THRESHOLD = MATERIALIZED_QUEUE_HARD_LIMIT
@@ -282,6 +283,13 @@ def _load_json_file(path: Path) -> dict[str, Any] | None:
         return None
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _load_test_task_shim(path: Path) -> dict[str, Any]:
+    payload = _load_json_file(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Test task shim file must contain a JSON object: {path}")
+    return payload
 
 
 def _read_first_csv_row(path: Path) -> dict[str, Any]:
@@ -2591,12 +2599,38 @@ class IterativeExperimentRunner:
                 requested_device=next_device,
                 gpu_visible_devices=runtime_state.get("gpu_visible_devices"),
             )
-            probe_result = self._run_device_runtime_probe(
-                record=record,
-                attempt_number=total_attempts,
-                requested_device=next_device,
-                env=attempt_env,
-            )
+            if os.environ.get(TEST_TASK_SHIM_PATH_ENV):
+                probe_result = {
+                    "ok": True,
+                    "requested_device": next_device,
+                    "effective_device": ("cpu" if next_device == "cpu" else "gpu"),
+                    "cuda_visible_devices": attempt_env.get("CUDA_VISIBLE_DEVICES"),
+                    "tensorflow_visible_devices": ([] if next_device == "cpu" else ["/device:GPU:0"]),
+                    "gpu_used": next_device == "gpu",
+                    "effective_cpu_thread_env": (resolve_cpu_thread_env(self.cpu_execution_limits) if next_device == "cpu" else {}),
+                    "errors": [],
+                    "warnings": [],
+                    "payload": {},
+                    "returncode": 0,
+                }
+                self._log_structured_phase(
+                    phase="task:device_attempt_started",
+                    event="device_attempt_started",
+                    task_record=record,
+                    attempt=total_attempts,
+                    message=f"Starting {next_device} device attempt for {task_id} (test shim probe bypass).",
+                    extra={
+                        "requested_device": next_device,
+                        "probe_bypassed": True,
+                    },
+                )
+            else:
+                probe_result = self._run_device_runtime_probe(
+                    record=record,
+                    attempt_number=total_attempts,
+                    requested_device=next_device,
+                    env=attempt_env,
+                )
             if not probe_result.get("ok", False):
                 attempt_result = self._build_failed_probe_attempt_result(
                     record=record,
@@ -3050,6 +3084,146 @@ class IterativeExperimentRunner:
             )
             raise
 
+    def _resolve_test_task_shim_action(
+        self,
+        *,
+        record: dict[str, Any],
+        training_task: TrainingTask,
+    ) -> dict[str, Any] | None:
+        shim_path_raw = os.environ.get(TEST_TASK_SHIM_PATH_ENV)
+        if not shim_path_raw:
+            return None
+
+        payload = _load_test_task_shim(Path(shim_path_raw).expanduser())
+        by_task_id = payload.get("by_task_id")
+        if isinstance(by_task_id, dict):
+            resolved = by_task_id.get(str(record["id"]))
+            if isinstance(resolved, dict):
+                return dict(resolved)
+
+        by_preproc_id = payload.get("by_preproc_id")
+        if isinstance(by_preproc_id, dict):
+            resolved = by_preproc_id.get(str(training_task.preproc_id))
+            if isinstance(resolved, dict):
+                return dict(resolved)
+
+        by_param_id = payload.get("by_param_id")
+        if isinstance(by_param_id, dict):
+            resolved = by_param_id.get(str(training_task.param_id))
+            if isinstance(resolved, dict):
+                return dict(resolved)
+
+        default_action = payload.get("default")
+        if isinstance(default_action, dict):
+            return dict(default_action)
+        return None
+
+    def _execute_task_entry_with_test_shim(
+        self,
+        *,
+        record: dict[str, Any],
+        training_task: TrainingTask,
+    ) -> dict[str, Any]:
+        task_id = record["id"]
+        action = self._resolve_test_task_shim_action(
+            record=record,
+            training_task=training_task,
+        )
+        if action is None:
+            raise RuntimeError("Missing test task action while test shim is enabled.")
+
+        self.logger.info("Running %s (test shim)", training_task.label)
+        print(f"Running {training_task.label} (test shim)")
+        updated_state = self.store.update_task_status(task_id, status="running")
+        task_snapshot = next(task for task in updated_state["tasks"] if task["id"] == task_id)
+        attempt = int(task_snapshot.get("attempts", 1))
+        started_at = datetime.now(timezone.utc)
+
+        self._log_structured_phase(
+            phase="task:start",
+            task_record=record,
+            attempt=attempt,
+            message=f"Running {training_task.label} (test shim)",
+        )
+
+        sleep_seconds = max(0.0, float(action.get("sleep_seconds", 0.0)))
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+        duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        status = str(action.get("status", "completed"))
+        if status not in {"completed", "failed", "stopped"}:
+            raise ValueError(f"Unsupported test shim status: {status}")
+
+        if status == "completed":
+            result_summary = action.get("result_summary")
+            if not isinstance(result_summary, dict):
+                result_summary = {"best_val_acc": float(action.get("best_val_acc", 0.0))}
+            self.store.update_task_status(
+                task_id,
+                status="completed",
+                result_summary=result_summary,
+                duration_seconds=duration_seconds,
+            )
+            self._log_structured_phase(
+                phase="after_cleanup",
+                task_record=record,
+                attempt=attempt,
+            )
+            self._log_structured_phase(
+                phase="task:completed",
+                task_record=record,
+                attempt=attempt,
+                message=f"Completed in {duration_seconds:.2f}s (test shim)",
+                extra={"duration_seconds": duration_seconds},
+            )
+            return {
+                "task_id": task_id,
+                "status": "completed",
+                "task_label": training_task.label,
+                "duration_seconds": duration_seconds,
+                "attempt": attempt,
+            }
+
+        failure_kind = action.get("failure_kind")
+        error_summary = str(action.get("error_summary") or f"Synthetic {status} from test shim.")
+        self.store.update_task_status(
+            task_id,
+            status=status,
+            error_summary=error_summary[:500],
+            duration_seconds=duration_seconds,
+        )
+        if failure_kind:
+            self.store.update_task_execution_details(
+                task_id,
+                failure_kind=str(failure_kind),
+            )
+        self._log_structured_phase(
+            phase="after_cleanup",
+            task_record=record,
+            attempt=attempt,
+        )
+        self._log_structured_phase(
+            phase="task:failed" if status == "failed" else "task:stopped",
+            task_record=record,
+            attempt=attempt,
+            message=f"{status.capitalize()} in {duration_seconds:.2f}s (test shim)",
+            extra={
+                "duration_seconds": duration_seconds,
+                "task_label": training_task.label,
+                "failure_kind": failure_kind,
+            },
+        )
+        return {
+            "task_id": task_id,
+            "status": status,
+            "task_label": training_task.label,
+            "duration_seconds": duration_seconds,
+            "error_summary": error_summary[:500],
+            "attempt": attempt,
+            "failure_kind": (None if not failure_kind else str(failure_kind)),
+        }
+
     def run_one_task(
         self,
         task_id: str,
@@ -3133,14 +3307,20 @@ class IterativeExperimentRunner:
 
         result: dict[str, Any]
         try:
-            train_df = load_split_dataframe(self.training_config.train_split_path)
-            test_df = load_split_dataframe(self.training_config.test_split_path)
-            result = self._execute_task_entry(
-                record=record,
-                training_task=training_task,
-                train_df=train_df,
-                test_df=test_df,
-            )
+            if os.environ.get(TEST_TASK_SHIM_PATH_ENV):
+                result = self._execute_task_entry_with_test_shim(
+                    record=record,
+                    training_task=training_task,
+                )
+            else:
+                train_df = load_split_dataframe(self.training_config.train_split_path)
+                test_df = load_split_dataframe(self.training_config.test_split_path)
+                result = self._execute_task_entry(
+                    record=record,
+                    training_task=training_task,
+                    train_df=train_df,
+                    test_df=test_df,
+                )
         finally:
             self._log_structured_phase(
                 phase="run-task:finish",
