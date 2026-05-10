@@ -2569,11 +2569,12 @@ class IterativeExperimentRunner:
             options=options,
             runtime_state=runtime_state,
         )
+        thermal_forced_device = forced_thermal_device is not None
         if forced_thermal_device is not None:
             next_device = forced_thermal_device
         if policy == "adaptive":
             cooldown_until = _parse_timestamp(runtime_state.get("gpu_recovery_cooldown_until"))
-            if next_device == "cpu" and cooldown_until is not None and datetime.now(timezone.utc) >= cooldown_until:
+            if not thermal_forced_device and next_device == "cpu" and cooldown_until is not None and datetime.now(timezone.utc) >= cooldown_until:
                 next_device = "gpu"
                 runtime_state["preferred_device"] = "gpu"
                 runtime_state["gpu_health"] = "cooling_down"
@@ -3186,36 +3187,17 @@ class IterativeExperimentRunner:
             raise ValueError("max_task_attempts must be > 0.")
         if resolved_options.thermal_cooldown_seconds < 0:
             raise ValueError("thermal_cooldown_seconds must be >= 0.")
-        if (
-            resolved_options.thermal_cpu_temp_celsius_limit is not None
-            and resolved_options.thermal_cpu_temp_celsius_limit <= 0
-        ):
+        if resolved_options.thermal_cpu_temp_celsius_limit is not None and resolved_options.thermal_cpu_temp_celsius_limit <= 0:
             raise ValueError("thermal_cpu_temp_celsius_limit must be > 0 when provided.")
-        if (
-            resolved_options.thermal_gpu_temp_celsius_limit is not None
-            and resolved_options.thermal_gpu_temp_celsius_limit <= 0
-        ):
+        if resolved_options.thermal_gpu_temp_celsius_limit is not None and resolved_options.thermal_gpu_temp_celsius_limit <= 0:
             raise ValueError("thermal_gpu_temp_celsius_limit must be > 0 when provided.")
-        if (
-            resolved_options.thermal_gpu_recovery_temp_celsius is not None
-            and resolved_options.thermal_gpu_recovery_temp_celsius <= 0
-        ):
+        if resolved_options.thermal_gpu_recovery_temp_celsius is not None and resolved_options.thermal_gpu_recovery_temp_celsius <= 0:
             raise ValueError("thermal_gpu_recovery_temp_celsius must be > 0 when provided.")
-        if (
-            resolved_options.thermal_cpu_load_percent_limit is not None
-            and not 0 <= resolved_options.thermal_cpu_load_percent_limit <= 100
-        ):
+        if resolved_options.thermal_cpu_load_percent_limit is not None and not 0 <= resolved_options.thermal_cpu_load_percent_limit <= 100:
             raise ValueError("thermal_cpu_load_percent_limit must be between 0 and 100 when provided.")
-        if (
-            resolved_options.thermal_gpu_utilization_percent_limit is not None
-            and not 0 <= resolved_options.thermal_gpu_utilization_percent_limit <= 100
-        ):
+        if resolved_options.thermal_gpu_utilization_percent_limit is not None and not 0 <= resolved_options.thermal_gpu_utilization_percent_limit <= 100:
             raise ValueError("thermal_gpu_utilization_percent_limit must be between 0 and 100 when provided.")
-        if (
-            resolved_options.thermal_gpu_temp_celsius_limit is not None
-            and resolved_options.thermal_gpu_recovery_temp_celsius is not None
-            and resolved_options.thermal_gpu_recovery_temp_celsius > resolved_options.thermal_gpu_temp_celsius_limit
-        ):
+        if resolved_options.thermal_gpu_temp_celsius_limit is not None and resolved_options.thermal_gpu_recovery_temp_celsius is not None and resolved_options.thermal_gpu_recovery_temp_celsius > resolved_options.thermal_gpu_temp_celsius_limit:
             raise ValueError("thermal_gpu_recovery_temp_celsius must be <= thermal_gpu_temp_celsius_limit.")
         if resolved_options.max_queue_tasks is not None and resolved_options.max_queue_tasks <= 0:
             raise ValueError("max_queue_tasks must be > 0 when provided.")
@@ -3277,7 +3259,7 @@ class IterativeExperimentRunner:
         runtime_state["stream_queue_mode"] = use_stream_queue_mode
         runtime_state["launch_context"] = launch_context
         runtime_state["thermal_policy_enabled"] = bool(resolved_options.thermal_policy_enabled)
-        runtime_state["thermal_state"] = ("idle" if resolved_options.thermal_policy_enabled else "disabled")
+        runtime_state["thermal_state"] = "idle" if resolved_options.thermal_policy_enabled else "disabled"
         if resolved_options.device_policy == "cpu-only":
             runtime_state["preferred_device"] = "cpu"
             runtime_state["gpu_health"] = "unhealthy"
