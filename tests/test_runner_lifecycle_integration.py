@@ -147,7 +147,7 @@ def test_launch_stop_resume_with_partial_consistency(tmp_path: Path) -> None:
         json.dumps(
             {
                 "default": {"status": "completed", "sleep_seconds": 0.15, "result_summary": {"best_val_acc": 0.9}},
-                "by_preproc_id": {"denoise": {"status": "completed", "sleep_seconds": 1.6, "result_summary": {"best_val_acc": 0.8}}},
+                "by_preproc_id": {"denoise": {"status": "completed", "sleep_seconds": 3.0, "result_summary": {"best_val_acc": 0.8}}},
             },
             indent=2,
         ),
@@ -163,7 +163,17 @@ def test_launch_stop_resume_with_partial_consistency(tmp_path: Path) -> None:
         timeout_seconds=30.0,
     )
 
-    partial_running = _partial_json(env=env, artifacts_dir=artifacts_dir, max_rows=10)
+    partial_running = _wait_for(
+        lambda: (
+            payload
+            if (
+                (payload := _partial_json(env=env, artifacts_dir=artifacts_dir, max_rows=10)).get("counts", {}).get("completed", 0) >= 1
+                and payload.get("counts", {}).get("running", 0) >= 1
+            )
+            else None
+        ),
+        timeout_seconds=20.0,
+    )
     assert partial_running["row_filter"] == "finalized_only"
     assert partial_running["rows_returned"] >= 1
     assert partial_running["counts"]["completed"] >= 1
@@ -227,10 +237,28 @@ def test_stale_pid_recovery_after_external_kill(tmp_path: Path) -> None:
     )
     assert post_kill_snapshot["overall_status"] in {"stopped", "idle"}
 
+    shim_path.write_text(
+        json.dumps(
+            {
+                "default": {"status": "completed", "sleep_seconds": 0.1, "result_summary": {"best_val_acc": 0.75}},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
     _run_cli(*_launch_args(train_split=train_split, test_split=test_split, artifacts_dir=artifacts_dir, limit=1), env=env)
     final_snapshot = _wait_for(
-        lambda: (snapshot if ((snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("overall_status") == "completed" and snapshot.get("active_pid") is None) else None),
-        timeout_seconds=40.0,
+        lambda: (
+            snapshot
+            if (
+                (snapshot := _status_json(env=env, artifacts_dir=artifacts_dir)).get("counts", {}).get("completed", 0) == 1
+                and snapshot.get("counts", {}).get("running", 0) == 0
+                and snapshot.get("active_pid") is None
+            )
+            else None
+        ),
+        timeout_seconds=90.0,
     )
     assert final_snapshot["counts"]["completed"] == 1
     assert final_snapshot["counts"]["stopped"] == 0

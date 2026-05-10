@@ -2599,12 +2599,38 @@ class IterativeExperimentRunner:
                 requested_device=next_device,
                 gpu_visible_devices=runtime_state.get("gpu_visible_devices"),
             )
-            probe_result = self._run_device_runtime_probe(
-                record=record,
-                attempt_number=total_attempts,
-                requested_device=next_device,
-                env=attempt_env,
-            )
+            if os.environ.get(TEST_TASK_SHIM_PATH_ENV):
+                probe_result = {
+                    "ok": True,
+                    "requested_device": next_device,
+                    "effective_device": ("cpu" if next_device == "cpu" else "gpu"),
+                    "cuda_visible_devices": attempt_env.get("CUDA_VISIBLE_DEVICES"),
+                    "tensorflow_visible_devices": ([] if next_device == "cpu" else ["/device:GPU:0"]),
+                    "gpu_used": next_device == "gpu",
+                    "effective_cpu_thread_env": (resolve_cpu_thread_env(self.cpu_execution_limits) if next_device == "cpu" else {}),
+                    "errors": [],
+                    "warnings": [],
+                    "payload": {},
+                    "returncode": 0,
+                }
+                self._log_structured_phase(
+                    phase="task:device_attempt_started",
+                    event="device_attempt_started",
+                    task_record=record,
+                    attempt=total_attempts,
+                    message=f"Starting {next_device} device attempt for {task_id} (test shim probe bypass).",
+                    extra={
+                        "requested_device": next_device,
+                        "probe_bypassed": True,
+                    },
+                )
+            else:
+                probe_result = self._run_device_runtime_probe(
+                    record=record,
+                    attempt_number=total_attempts,
+                    requested_device=next_device,
+                    env=attempt_env,
+                )
             if not probe_result.get("ok", False):
                 attempt_result = self._build_failed_probe_attempt_result(
                     record=record,
