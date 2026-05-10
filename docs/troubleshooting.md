@@ -86,9 +86,9 @@ If `python run_experiments.py probe-runtime --device gpu` reports an
 unsupported stack with TensorFlow `2.11+`, downgrade using:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv-win-gpu
-.\.venv-win-gpu\Scripts\python.exe .\scripts\check_windows_gpu.py
-.\.venv-win-gpu\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv
+.\.venv\Scripts\python.exe .\scripts\check_windows_gpu.py
+.\.venv\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
 ```
 
 Checklist for TensorFlow 2.10 native Windows path:

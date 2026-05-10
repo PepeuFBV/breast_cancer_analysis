@@ -103,7 +103,7 @@ def run_environment_check(
     versions, missing = _distribution_versions(REQUIRED_DISTRIBUTIONS)
     details["packages"] = versions
     if missing:
-        errors.append("Missing required package(s): " f"{', '.join(missing)}. Install with " "`python3 scripts/bootstrap_env.py`.")
+        errors.append("Missing required package(s): " f"{', '.join(missing)}. Install with " "`python scripts/bootstrap_env.py`.")
 
     if not skip_tensorflow and "tensorflow" not in missing:
         try:

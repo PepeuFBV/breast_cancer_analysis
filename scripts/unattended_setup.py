@@ -8,12 +8,24 @@ everything is ready for running experiments without user intervention.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
+
+
+def _venv_python() -> Path:
+    if os.name == "nt":
+        return PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    return PROJECT_ROOT / ".venv" / "bin" / "python"
+
+
+def _venv_command_hint(script: str) -> str:
+    if os.name == "nt":
+        return f".\\.venv\\Scripts\\python.exe {script}"
+    return f"./.venv/bin/python {script}"
 
 
 def _run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
@@ -28,7 +40,7 @@ def bootstrap_environment(gpu_mode: str, install_dev: bool) -> bool:
     print("STEP 1: Bootstrapping Python environment")
     print("=" * 70)
 
-    cmd = ["python3", "scripts/bootstrap_env.py", "--gpu", gpu_mode]
+    cmd = [sys.executable, "scripts/bootstrap_env.py", "--gpu", gpu_mode]
     if install_dev:
         cmd.append("--dev")
 
@@ -42,7 +54,7 @@ def validate_dataset() -> bool:
     print("STEP 2: Validating dataset")
     print("=" * 70)
 
-    result = _run([str(VENV_PYTHON), "scripts/validate_dataset.py"], check=False)
+    result = _run([str(_venv_python()), "scripts/validate_dataset.py"], check=False)
     return result.returncode == 0
 
 
@@ -52,7 +64,7 @@ def run_smoke_tests() -> bool:
     print("STEP 3: Running smoke tests")
     print("=" * 70)
 
-    result = _run([str(VENV_PYTHON), "scripts/smoke_run.py"], check=False)
+    result = _run([str(_venv_python()), "scripts/smoke_run.py"], check=False)
     return result.returncode == 0
 
 
@@ -62,7 +74,7 @@ def preprocess_data() -> bool:
     print("STEP 4: Preprocessing dataset")
     print("=" * 70)
 
-    result = _run([str(VENV_PYTHON), "preprocess.py"], check=False)
+    result = _run([str(_venv_python()), "preprocess.py"], check=False)
     return result.returncode == 0
 
 
@@ -93,13 +105,16 @@ def print_next_steps(all_ok: bool, skip_preprocess: bool) -> None:
         print("\n✓ Setup complete! Ready for unattended execution.")
         print("\nTo run the full experiment queue:")
         if skip_preprocess:
-            print("  ./.venv/bin/python preprocess.py")
-        print("  ./.venv/bin/python run_experiments.py launch")
+            print(f"  {_venv_command_hint('preprocess.py')}")
+        print(f"  {_venv_command_hint('run_experiments.py launch')}")
         print("\nTo monitor progress:")
-        print("  ./.venv/bin/python run_experiments.py status")
-        print("  ./.venv/bin/streamlit run experiment_dashboard.py")
+        print(f"  {_venv_command_hint('run_experiments.py status')}")
+        if os.name == "nt":
+            print("  .\\.venv\\Scripts\\streamlit.exe run experiment_dashboard.py")
+        else:
+            print("  ./.venv/bin/streamlit run experiment_dashboard.py")
         print("\nTo generate the final report after completion:")
-        print("  ./.venv/bin/python evaluate.py")
+        print(f"  {_venv_command_hint('evaluate.py')}")
     else:
         print("\n✗ Setup incomplete. Please fix the errors above.")
         print("\nFor troubleshooting:")

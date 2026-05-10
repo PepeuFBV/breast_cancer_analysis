@@ -23,18 +23,20 @@ class BootstrapError(RuntimeError):
 
 @dataclass(frozen=True)
 class BootstrapPlan:
-    tensorflow_requirement: str
+    tensorflow_requirement: str | None
+    requirements_path: Path
     require_gpu_check: bool
     gpu_driver_visible: bool
+    gpu_check_script: str
 
 
 def _command_environment() -> dict[str, str]:
     environment = dict(os.environ)
     if WSL_DRIVER_DIR.exists():
-        path_entries = [entry for entry in environment.get("PATH", "").split(":") if entry]
+        path_entries = [entry for entry in environment.get("PATH", "").split(os.pathsep) if entry]
         driver_dir = str(WSL_DRIVER_DIR)
         if driver_dir not in path_entries:
-            environment["PATH"] = ":".join([driver_dir, *path_entries])
+            environment["PATH"] = os.pathsep.join([driver_dir, *path_entries])
     return environment
 
 
@@ -43,6 +45,8 @@ def _run(command: list[str], *, cwd: Path = PROJECT_ROOT) -> None:
 
 
 def _venv_python(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
 
 
@@ -94,24 +98,49 @@ def resolve_bootstrap_plan(
     if gpu_mode == "off":
         return BootstrapPlan(
             tensorflow_requirement="tensorflow",
+            requirements_path=PROJECT_ROOT / "requirements.txt",
             require_gpu_check=False,
             gpu_driver_visible=driver_visible,
+            gpu_check_script="check_gpu.py",
+        )
+
+    if platform_name == "win32":
+        if gpu_mode == "required" and not driver_visible:
+            raise BootstrapError("No NVIDIA GPU driver is visible on native Windows. " "Check `nvidia-smi` before using `--gpu required`.")
+        if driver_visible:
+            return BootstrapPlan(
+                tensorflow_requirement=None,
+                requirements_path=PROJECT_ROOT / "requirements-windows-gpu.txt",
+                require_gpu_check=(gpu_mode == "required" or gpu_mode == "auto"),
+                gpu_driver_visible=True,
+                gpu_check_script="check_windows_gpu.py",
+            )
+        return BootstrapPlan(
+            tensorflow_requirement="tensorflow",
+            requirements_path=PROJECT_ROOT / "requirements.txt",
+            require_gpu_check=False,
+            gpu_driver_visible=driver_visible,
+            gpu_check_script="check_gpu.py",
         )
 
     if platform_name != "linux":
         if gpu_mode == "required":
-            raise BootstrapError("TensorFlow GPU bootstrap in this script is only supported on Linux/WSL2. " "For native Windows TensorFlow 2.10 GPU, use `powershell -File scripts/bootstrap_windows_gpu.ps1`.")
+            raise BootstrapError("TensorFlow GPU bootstrap in this script is only supported on Linux/WSL2 and native Windows.")
         return BootstrapPlan(
             tensorflow_requirement="tensorflow",
+            requirements_path=PROJECT_ROOT / "requirements.txt",
             require_gpu_check=False,
             gpu_driver_visible=driver_visible,
+            gpu_check_script="check_gpu.py",
         )
 
     if driver_visible:
         return BootstrapPlan(
             tensorflow_requirement="tensorflow[and-cuda]",
+            requirements_path=PROJECT_ROOT / "requirements.txt",
             require_gpu_check=True,
             gpu_driver_visible=True,
+            gpu_check_script="check_gpu.py",
         )
 
     if gpu_mode == "required":
@@ -119,8 +148,10 @@ def resolve_bootstrap_plan(
 
     return BootstrapPlan(
         tensorflow_requirement="tensorflow",
+        requirements_path=PROJECT_ROOT / "requirements.txt",
         require_gpu_check=False,
         gpu_driver_visible=False,
+        gpu_check_script="check_gpu.py",
     )
 
 
@@ -160,40 +191,46 @@ def render_requirements(requirements_text: str, tensorflow_requirement: str) -> 
 def install_runtime(
     *,
     venv_python: Path,
-    tensorflow_requirement: str,
+    requirements_path: Path,
+    tensorflow_requirement: str | None,
     install_dev: bool,
 ) -> None:
-    requirements_path = PROJECT_ROOT / "requirements.txt"
-    requirements_text = requirements_path.read_text(encoding="utf-8")
-    rendered_requirements = render_requirements(
-        requirements_text=requirements_text,
-        tensorflow_requirement=tensorflow_requirement,
-    )
+    if not requirements_path.exists():
+        raise BootstrapError(f"Requirements file not found: {requirements_path}")
 
     _run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"])
 
-    with tempfile.NamedTemporaryFile(
-        "w",
-        suffix=".requirements.txt",
-        delete=False,
-        encoding="utf-8",
-    ) as handle:
-        handle.write(rendered_requirements)
-        temp_requirements = Path(handle.name)
-
-    try:
-        _run(
-            [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "-r",
-                str(temp_requirements),
-            ]
+    if tensorflow_requirement is None:
+        _run([str(venv_python), "-m", "pip", "install", "-r", str(requirements_path)])
+    else:
+        requirements_text = requirements_path.read_text(encoding="utf-8")
+        rendered_requirements = render_requirements(
+            requirements_text=requirements_text,
+            tensorflow_requirement=tensorflow_requirement,
         )
-    finally:
-        temp_requirements.unlink(missing_ok=True)
+
+        with tempfile.NamedTemporaryFile(
+            "w",
+            suffix=".requirements.txt",
+            delete=False,
+            encoding="utf-8",
+        ) as handle:
+            handle.write(rendered_requirements)
+            temp_requirements = Path(handle.name)
+
+        try:
+            _run(
+                [
+                    str(venv_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(temp_requirements),
+                ]
+            )
+        finally:
+            temp_requirements.unlink(missing_ok=True)
 
     _run([str(venv_python), "-m", "pip", "install", "-e", str(PROJECT_ROOT)])
 
@@ -221,6 +258,7 @@ def run_validation_checks(
     raw_data_dir: Path,
     artifacts_dir: Path | None,
     skip_dataset: bool,
+    gpu_check_script: str,
 ) -> bool:
     """Run validation checks and return True if all passed, False otherwise."""
     environment_check = [
@@ -236,8 +274,8 @@ def run_validation_checks(
         environment_check.append("--skip-dataset")
     _run(environment_check)
 
-    gpu_check = [str(venv_python), str(PROJECT_ROOT / "scripts" / "check_gpu.py")]
-    if require_gpu:
+    gpu_check = [str(venv_python), str(PROJECT_ROOT / "scripts" / gpu_check_script)]
+    if require_gpu and gpu_check_script == "check_gpu.py":
         gpu_check.append("--require-gpu")
 
     result = subprocess.run(
@@ -306,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         venv_python = _ensure_virtualenv(venv_dir, args.python)
         install_runtime(
             venv_python=venv_python,
+            requirements_path=plan.requirements_path,
             tensorflow_requirement=plan.tensorflow_requirement,
             install_dev=args.dev,
         )
@@ -318,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
                 raw_data_dir=raw_data_dir,
                 artifacts_dir=artifacts_dir,
                 skip_dataset=args.skip_dataset_check,
+                gpu_check_script=plan.gpu_check_script,
             )
     except BootstrapError as error:
         print(f"Bootstrap failed: {error}", file=sys.stderr)
@@ -330,7 +370,9 @@ def main(argv: list[str] | None = None) -> int:
         return error.returncode or 1
 
     print(f"Bootstrap complete. Virtualenv: {venv_dir}")
-    print(f"TensorFlow requirement: {plan.tensorflow_requirement}")
+    print(f"Requirements file: {plan.requirements_path.name}")
+    if plan.tensorflow_requirement is not None:
+        print(f"TensorFlow requirement: {plan.tensorflow_requirement}")
     if plan.require_gpu_check:
         if gpu_check_passed:
             print("GPU validation: required and passed")

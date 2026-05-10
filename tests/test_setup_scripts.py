@@ -170,7 +170,7 @@ def test_gpu_check_missing_tensorflow_points_to_bootstrap() -> None:
         result = check_gpu.check_tensorflow_gpu()
 
     assert not result.ok
-    assert "python3 scripts/bootstrap_env.py" in result.errors[0]
+    assert "python scripts/bootstrap_env.py" in result.errors[0]
 
 
 @pytest.mark.smoke
