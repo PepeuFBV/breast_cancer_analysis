@@ -49,4 +49,3 @@ def test_collect_thermal_snapshot_handles_gpu_probe_errors() -> None:
     assert snapshot.max_gpu_utilization_percent is None
     assert len(snapshot.warnings) == 1
     assert "probe failed" in snapshot.warnings[0]
-

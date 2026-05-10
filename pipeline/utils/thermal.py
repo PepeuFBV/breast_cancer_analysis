@@ -142,4 +142,3 @@ def collect_thermal_snapshot() -> ThermalSnapshot:
         max_gpu_utilization_percent=max_gpu_utilization_percent,
         warnings=tuple(warnings),
     )
-

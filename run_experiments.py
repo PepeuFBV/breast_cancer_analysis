@@ -475,36 +475,12 @@ def _resolve_runner_cli_options(
     max_task_attempts = config_max_task_attempts if getattr(args, "max_task_attempts", None) is None else int(getattr(args, "max_task_attempts"))
     fail_fast_on_oom = bool(getattr(args, "fail_fast_on_oom", False) or config_fail_fast_on_oom)
     thermal_policy_enabled = bool(getattr(args, "thermal_policy_enabled", False) or config_thermal_policy_enabled)
-    thermal_cpu_temp_celsius_limit = (
-        config_thermal_cpu_temp_celsius_limit
-        if getattr(args, "thermal_cpu_temp_celsius_limit", None) is None
-        else float(getattr(args, "thermal_cpu_temp_celsius_limit"))
-    )
-    thermal_cpu_load_percent_limit = (
-        config_thermal_cpu_load_percent_limit
-        if getattr(args, "thermal_cpu_load_percent_limit", None) is None
-        else float(getattr(args, "thermal_cpu_load_percent_limit"))
-    )
-    thermal_gpu_temp_celsius_limit = (
-        config_thermal_gpu_temp_celsius_limit
-        if getattr(args, "thermal_gpu_temp_celsius_limit", None) is None
-        else float(getattr(args, "thermal_gpu_temp_celsius_limit"))
-    )
-    thermal_gpu_utilization_percent_limit = (
-        config_thermal_gpu_utilization_percent_limit
-        if getattr(args, "thermal_gpu_utilization_percent_limit", None) is None
-        else float(getattr(args, "thermal_gpu_utilization_percent_limit"))
-    )
-    thermal_gpu_recovery_temp_celsius = (
-        config_thermal_gpu_recovery_temp_celsius
-        if getattr(args, "thermal_gpu_recovery_temp_celsius", None) is None
-        else float(getattr(args, "thermal_gpu_recovery_temp_celsius"))
-    )
-    thermal_cooldown_seconds = (
-        config_thermal_cooldown_seconds
-        if getattr(args, "thermal_cooldown_seconds", None) is None
-        else float(getattr(args, "thermal_cooldown_seconds"))
-    )
+    thermal_cpu_temp_celsius_limit = config_thermal_cpu_temp_celsius_limit if getattr(args, "thermal_cpu_temp_celsius_limit", None) is None else float(getattr(args, "thermal_cpu_temp_celsius_limit"))
+    thermal_cpu_load_percent_limit = config_thermal_cpu_load_percent_limit if getattr(args, "thermal_cpu_load_percent_limit", None) is None else float(getattr(args, "thermal_cpu_load_percent_limit"))
+    thermal_gpu_temp_celsius_limit = config_thermal_gpu_temp_celsius_limit if getattr(args, "thermal_gpu_temp_celsius_limit", None) is None else float(getattr(args, "thermal_gpu_temp_celsius_limit"))
+    thermal_gpu_utilization_percent_limit = config_thermal_gpu_utilization_percent_limit if getattr(args, "thermal_gpu_utilization_percent_limit", None) is None else float(getattr(args, "thermal_gpu_utilization_percent_limit"))
+    thermal_gpu_recovery_temp_celsius = config_thermal_gpu_recovery_temp_celsius if getattr(args, "thermal_gpu_recovery_temp_celsius", None) is None else float(getattr(args, "thermal_gpu_recovery_temp_celsius"))
+    thermal_cooldown_seconds = config_thermal_cooldown_seconds if getattr(args, "thermal_cooldown_seconds", None) is None else float(getattr(args, "thermal_cooldown_seconds"))
     if thermal_cooldown_seconds < 0:
         raise ValueError("--thermal-cooldown-seconds must be >= 0.")
     if thermal_cpu_temp_celsius_limit is not None and thermal_cpu_temp_celsius_limit <= 0:
@@ -517,11 +493,7 @@ def _resolve_runner_cli_options(
         raise ValueError("--thermal-cpu-load-percent-limit must be between 0 and 100.")
     if thermal_gpu_utilization_percent_limit is not None and not 0 <= thermal_gpu_utilization_percent_limit <= 100:
         raise ValueError("--thermal-gpu-utilization-percent-limit must be between 0 and 100.")
-    if (
-        thermal_gpu_temp_celsius_limit is not None
-        and thermal_gpu_recovery_temp_celsius is not None
-        and thermal_gpu_recovery_temp_celsius > thermal_gpu_temp_celsius_limit
-    ):
+    if thermal_gpu_temp_celsius_limit is not None and thermal_gpu_recovery_temp_celsius is not None and thermal_gpu_recovery_temp_celsius > thermal_gpu_temp_celsius_limit:
         raise ValueError("--thermal-gpu-recovery-temp-celsius must be <= --thermal-gpu-temp-celsius-limit.")
     return (
         isolate_tasks,

@@ -444,14 +444,8 @@ def load_experiment_config(path: str | Path | None = None) -> ExperimentConfig:
         "runner.thermal_gpu_recovery_temp_celsius",
         raw_runner.get("thermal_gpu_recovery_temp_celsius"),
     )
-    if (
-        thermal_gpu_temp_celsius_limit is not None
-        and thermal_gpu_recovery_temp_celsius is not None
-        and thermal_gpu_recovery_temp_celsius > thermal_gpu_temp_celsius_limit
-    ):
-        raise ValueError(
-            "runner.thermal_gpu_recovery_temp_celsius must be <= runner.thermal_gpu_temp_celsius_limit."
-        )
+    if thermal_gpu_temp_celsius_limit is not None and thermal_gpu_recovery_temp_celsius is not None and thermal_gpu_recovery_temp_celsius > thermal_gpu_temp_celsius_limit:
+        raise ValueError("runner.thermal_gpu_recovery_temp_celsius must be <= runner.thermal_gpu_temp_celsius_limit.")
     thermal_cooldown_seconds = float(raw_runner.get("thermal_cooldown_seconds", 30.0))
     if thermal_cooldown_seconds < 0:
         raise ValueError("runner.thermal_cooldown_seconds must be >= 0.")
