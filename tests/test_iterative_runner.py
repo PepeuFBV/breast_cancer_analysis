@@ -2253,6 +2253,80 @@ class IterativeRunnerTest(unittest.TestCase):
             self.assertEqual(snapshot["pause_reason"], "manual-test")
             self.assertIn(snapshot["overall_status"], {"paused", "stopped"})
 
+    def test_status_reconciles_stream_queue_expected_counts_and_current_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            record, _ = runner.build_queue()[0]
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.sync_queue([record], config_path=Path("configs/experiment.default.json"))
+            store.set_expected_queue_totals(total_experiments=10)
+            store.update_runtime({"stream_queue_mode": True})
+            store.update_task_status(record["id"], status="running")
+            store.write_pid_record(
+                config_path=Path("configs/experiment.default.json"),
+                command=["python", "run_experiments.py", "launch", "--_launch-worker"],
+                pid=88888,
+            )
+
+            with patch("pipeline.experiments.runner._is_process_alive", return_value=False):
+                snapshot = store.summarize()
+
+            self.assertEqual(snapshot["counts"]["running"], 0)
+            self.assertEqual(snapshot["counts"]["stopped"], 1)
+            self.assertEqual(snapshot["counts"]["pending"], 9)
+            self.assertIsNone(snapshot["current_task"])
+
+            state = store.load_state()
+            self.assertIsNone(state["current_task_id"])
+            self.assertEqual(int(state["expected_counts"]["running"]), 0)
+            self.assertEqual(int(state["expected_counts"]["stopped"]), 1)
+
+    def test_status_reconciles_stream_queue_stale_expected_running_without_running_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config, project_paths = _build_training_config(root)
+            runner = IterativeExperimentRunner(
+                config_path=Path("configs/experiment.default.json"),
+                project_paths=project_paths,
+                training_config=config,
+                model_builders={"custom cnn": lambda *args, **kwargs: _CountingModel(0.8)},
+                preprocessing_tasks=[_task("none")],
+            )
+            record, _ = runner.build_queue()[0]
+            store = ExperimentStateStore(project_paths)
+            store.ensure_dirs()
+            store.sync_queue([record], config_path=Path("configs/experiment.default.json"))
+            store.set_expected_queue_totals(total_experiments=10)
+            store.update_runtime({"stream_queue_mode": True})
+            store.update_task_status(record["id"], status="stopped", error_summary="simulated stop")
+
+            state = store.load_state()
+            state["current_task_id"] = record["id"]
+            state["expected_counts"]["running"] = 1
+            state["expected_counts"]["stopped"] = 0
+            store._persist_state(state, full_snapshot_sync=True)
+
+            snapshot = store.summarize()
+
+            self.assertEqual(snapshot["counts"]["running"], 0)
+            self.assertEqual(snapshot["counts"]["stopped"], 1)
+            self.assertEqual(snapshot["counts"]["pending"], 9)
+            self.assertIsNone(snapshot["current_task"])
+
+            updated_state = store.load_state()
+            self.assertIsNone(updated_state["current_task_id"])
+            self.assertEqual(int(updated_state["expected_counts"]["running"]), 0)
+            self.assertEqual(int(updated_state["expected_counts"]["stopped"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

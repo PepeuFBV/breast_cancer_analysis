@@ -736,14 +736,34 @@ class ExperimentStateStore:
         self._persist_state(state, snapshot_task_ids={str(record["id"])})
         return state
 
-    def _reconcile_running_tasks(self, state: dict[str, Any]) -> None:
+    def _reconcile_running_tasks(self, state: dict[str, Any]) -> set[str]:
         now = _timestamp_now()
+        reconciled_running_count = 0
+        reconciled_task_ids: set[str] = set()
         for task in state["tasks"]:
             if task.get("status") == "running":
                 task["status"] = "stopped"
                 task["updated_at"] = now
                 task["finished_at"] = task.get("finished_at") or now
                 task["error_summary"] = task.get("error_summary") or "Runner interrupted before experiment completion."
+                reconciled_running_count += 1
+                reconciled_task_ids.add(str(task.get("id")))
+
+        if reconciled_running_count <= 0:
+            return set()
+
+        current_task_id = state.get("current_task_id")
+        if current_task_id:
+            current_task = next((task for task in state["tasks"] if task.get("id") == current_task_id), None)
+            if current_task is None or str(current_task.get("status")) != "running":
+                state["current_task_id"] = None
+
+        expected_counts = state.get("expected_counts")
+        if not isinstance(expected_counts, dict):
+            return reconciled_task_ids
+        expected_counts["running"] = max(0, int(expected_counts.get("running", 0)) - reconciled_running_count)
+        expected_counts["stopped"] = int(expected_counts.get("stopped", 0)) + reconciled_running_count
+        return reconciled_task_ids
 
     def _reconcile_artifacts(self, state: dict[str, Any]) -> None:
         now = _timestamp_now()
@@ -1083,9 +1103,34 @@ class ExperimentStateStore:
         stdout_log_path = None if pid_record is None else pid_record.get("stdout_log_path")
         stderr_log_path = None if pid_record is None else pid_record.get("stderr_log_path")
         active_run = _is_process_alive(active_pid)
+        state_changed = False
+        reconciled_task_ids: set[str] = set()
         if not active_run and any(task.get("status") == "running" for task in state["tasks"]):
-            self._reconcile_running_tasks(state)
-            self._persist_state(state, full_snapshot_sync=True)
+            reconciled_task_ids = self._reconcile_running_tasks(state)
+            state_changed = True
+
+        if not active_run:
+            current_task_id = state.get("current_task_id")
+            if current_task_id:
+                current_task = next((task for task in state["tasks"] if task.get("id") == current_task_id), None)
+                if current_task is None or str(current_task.get("status")) != "running":
+                    state["current_task_id"] = None
+                    state_changed = True
+            expected_counts = state.get("expected_counts")
+            if isinstance(expected_counts, dict):
+                expected_running = max(0, int(expected_counts.get("running", 0)))
+                actual_running = sum(1 for task in state["tasks"] if str(task.get("status")) == "running")
+                if expected_running > actual_running:
+                    drift = expected_running - actual_running
+                    expected_counts["running"] = actual_running
+                    expected_counts["stopped"] = int(expected_counts.get("stopped", 0)) + drift
+                    state_changed = True
+
+        if state_changed:
+            if reconciled_task_ids:
+                self._persist_state(state, snapshot_task_ids=reconciled_task_ids)
+            else:
+                self._persist_state(state)
 
         counts = {status: 0 for status in TASK_STATUSES}
         for task in state["tasks"]:
