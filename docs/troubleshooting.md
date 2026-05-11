@@ -1,255 +1,163 @@
 # Troubleshooting
 
-## `No module named venv`
+This guide is symptom-first and links to authoritative setup/execution references. Commands assume `.venv` is activated.
 
-Install the venv package:
+## Purpose
 
-```bash
-sudo apt install python3-venv
-```
+Provide compact symptom -> cause -> action entries without duplicating full setup or execution manuals.
 
-## `pip` Is Missing
+## Read this when
 
-Install pip:
+- A setup, runtime, launch, or report step fails.
+- You need the shortest path from observed symptom to corrective action.
 
-```bash
-sudo apt install python3-pip
-```
+## Source of truth
 
-## Build or Wheel Errors
+- `scripts/check_environment.py`
+- `scripts/check_gpu.py`
+- `scripts/check_runtime.py`
+- `scripts/check_windows_gpu.py`
+- `run_experiments.py`
+- `pipeline/experiments/runner.py`
+- `evaluate.py`
 
-Install build tools and Python headers:
+## Environment check fails
 
-```bash
-sudo apt install build-essential python3-dev
-```
+Symptom:
 
-Also confirm you are using Python 3.10, 3.11, or 3.12:
+- `python scripts/check_environment.py --require-venv` reports missing packages, invalid Python range, or write-permission issues.
 
-```bash
-python --version
-```
+Cause:
 
-## Dataset Validation Fails
+- Incomplete bootstrap or unsupported interpreter.
 
-Run:
-
-```bash
-python scripts/validate_dataset.py
-```
-
-The expected layout is:
-
-```text
-data/INbreast Release 1.0/
-  INbreast.csv
-  AllDICOMs/*.dcm
-```
-
-## TensorFlow Imports but GPU Is Not Visible
-
-Repair the environment first:
+Action:
 
 ```bash
-python3 scripts/bootstrap_env.py --gpu auto
+python scripts/bootstrap_env.py --gpu auto --dev
+python scripts/check_environment.py --require-venv
 ```
 
-If the run must use GPU:
+## Dataset validation fails
+
+Symptom:
+
+- `python scripts/validate_dataset.py` reports missing `INbreast.csv` or missing `AllDICOMs/*.dcm`.
+
+Cause:
+
+- Dataset not placed at configured `raw_data_dir`.
+
+Action:
+
+- Place dataset under `data/INbreast Release 1.0/` or update config/CLI path.
+- Re-run `python scripts/validate_dataset.py`.
+
+## GPU required checks fail
+
+Symptom:
+
+- `--require-gpu` checks fail, or `probe-runtime --device gpu` fails.
+
+Cause:
+
+- Driver/runtime mismatch, unsupported native Windows TensorFlow version, or no visible GPU.
+
+Action:
+
+- Run:
 
 ```bash
-python3 scripts/bootstrap_env.py --gpu required
-```
-
-Then re-run:
-
-```bash
-./.venv/bin/python scripts/check_gpu.py
-./.venv/bin/python scripts/check_gpu.py --require-gpu
-```
-
-And verify runner probe output:
-
-```bash
+python scripts/check_gpu.py --require-gpu
+python scripts/check_runtime.py --device gpu --require-gpu
 python run_experiments.py probe-runtime --device gpu
 ```
 
-Optional mode exits successfully on CPU and prints a warning. Required mode
-fails if no GPU is visible.
+- For native Windows, follow [windows_gpu_setup.md](windows_gpu_setup.md).
+- For WSL/Linux, follow [wsl_gpu_setup.md](wsl_gpu_setup.md).
 
-For WSL2-specific GPU setup, see [`wsl_gpu_setup.md`](wsl_gpu_setup.md).
+## Launch behaves unexpectedly with large grids
 
-### Native Windows 11 + TensorFlow
+Symptom:
 
-Native Windows CUDA GPU requires TensorFlow `2.10.x` only.
+- Launch startup takes long, rerun flags fail, or queue size is larger than expected.
 
-If `python run_experiments.py probe-runtime --device gpu` reports an
-unsupported stack with TensorFlow `2.11+`, downgrade using:
+Cause:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv
-.\.venv\Scripts\python.exe .\scripts\check_windows_gpu.py
-.\.venv\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
-```
+- Large grid dimensions and/or streamed huge-queue mode.
 
-Checklist for TensorFlow 2.10 native Windows path:
-
-- Python `3.10.x`
-- TensorFlow `2.10.x`
-- CUDA Toolkit `11.2`
-- cuDNN `8.1` (`cudnn64_8.dll`)
-- CUDA bin directories present in `%PATH%`
-
-If the checker reports missing CUDA/cuDNN DLLs, fix those first and rerun
-`scripts/check_windows_gpu.py` before any `gpu-only` run.
-
-## TensorFlow Is Missing or Fails to Import
-
-Run:
+Action:
 
 ```bash
-python3 scripts/bootstrap_env.py --gpu auto
+python run_experiments.py count
+python run_experiments.py launch --max-queue-tasks 50000
+python run_experiments.py launch --queue-export-path artifacts/experiments/state/queue-export.jsonl
 ```
 
-That command recreates or repairs `.venv`, installs the project requirements,
-and re-runs the setup checks.
+- Narrow grid with `--models`, `--preprocessing`, `--no-combined-preprocessing`, and `--augmentations-per-image`.
 
-## Runner Stops or Some Tasks Fail
+## `status` cannot resolve the active runner
 
-Check status and logs:
+Symptom:
+
+- Control command asks you to choose between multiple active runners.
+
+Cause:
+
+- Multiple artifacts roots have active runner PID/state files.
+
+Action:
 
 ```bash
-python run_experiments.py status
+python run_experiments.py status --config configs/experiment.low-memory.json
+python run_experiments.py status --artifacts-dir artifacts-low-memory
+```
+
+## Repeated OOM or unstable long runs
+
+Symptom:
+
+- Tasks fail after several combinations or frequent GPU fallback/OOM events.
+
+Cause:
+
+- Device memory pressure, queue size, or runtime policy mismatches.
+
+Action:
+
+```bash
+python scripts/validate_long_runner.py --combinations 20 --device cpu
+python run_experiments.py launch --isolate-tasks --device-policy adaptive --gpu-retries 1 --cpu-retries 1
 python run_experiments.py status --json
+python run_experiments.py partial --max-rows 200
 ```
 
-Key files:
+- Inspect `artifacts/experiments/logs/run-events.jsonl` and task memory/event logs.
 
-- `artifacts/experiments/state/runner_state.json`
-- `artifacts/experiments/summary/experiment_runs.csv`
-- `artifacts/experiments/logs/iterative-runner.log`
-- `artifacts/experiments/logs/run-events.jsonl`
-- `artifacts/experiments/logs/tasks/exp-*.events.jsonl`
-- `artifacts/experiments/logs/tasks/exp-*.memory.jsonl`
-- `artifacts/experiments/logs/tasks/exp-*.log`
-- `artifacts/experiments/tasks/*.json`
+## `evaluate.py` finds no history files
 
-If failures appear after several combinations, inspect memory snapshots in
-`iterative-runner.log` (`[memory] before:*` and `[memory] after:*`) and compare
-task-level JSON snapshots to identify where failures started.
+Symptom:
 
-### Structured Memory Diagnostics
+- `evaluate.py` fails with no history CSV files found.
 
-Use `run-events.jsonl` for global timeline and `logs/tasks/` for per-task detail.
+Cause:
 
-1. Find recent failures:
+- No completed training artifacts in selected history directory/config.
+
+Action:
+
+- Confirm completed runs with `python run_experiments.py status`.
+- Confirm history files under `artifacts/runs/history/`.
+- Re-run with matching config/artifacts root:
 
 ```bash
-tail -n 200 artifacts/experiments/logs/run-events.jsonl | rg '"phase":"task:failed"'
+python evaluate.py --config configs/experiment.smoke.json
 ```
 
-2. Inspect one failed task timeline:
+## Related docs
 
-```bash
-task_id="exp-<id>"
-rg '"phase":"(task:start|after_cleanup|task:failed)"' \
-  "artifacts/experiments/logs/tasks/${task_id}.memory.jsonl"
-```
-
-3. Compare memory drift between task boundaries:
-
-- `task:start` shows baseline before training.
-- `after_cleanup` shows post-release memory for that task.
-- `task:failed` captures memory at failure with error metadata and traceback summary.
-
-Failed tasks are not rerun by default:
-
-```bash
-python run_experiments.py launch --rerun-failed
-```
-
-Reset only orchestration state:
-
-```bash
-python run_experiments.py reset
-```
-
-Reset state and saved run outputs:
-
-```bash
-python run_experiments.py reset --purge-results
-```
-
-## Long Runs Fail After 8-10 Combinations
-
-Use smoke validation instead of jumping directly to the full queue:
-
-```bash
-./.venv/bin/python scripts/check_runtime.py --device auto
-./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device cpu
-```
-
-CPU-only mode is supported:
-
-```bash
-./.venv/bin/python scripts/check_runtime.py --device cpu
-```
-
-GPU is optional unless `--require-gpu` is passed.
-
-Use the long-run validator before retrying the full queue:
-
-```bash
-./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device auto
-```
-
-For production long runs, use adaptive per-task subprocess policy:
-
-```bash
-./.venv/bin/python run_experiments.py launch \
-  --isolate-tasks \
-  --device-policy adaptive \
-  --gpu-retries 1 \
-  --cpu-retries 1 \
-  --cooldown-after-oom-seconds 15 \
-  --gpu-recovery-cooldown-seconds 60 \
-  --max-consecutive-oom 3
-```
-
-GPU-only policy must fail when GPU is unavailable:
-
-```bash
-python run_experiments.py launch --device-policy gpu-only --limit 1
-```
-
-Quick adaptive smoke:
-
-```bash
-python run_experiments.py launch --device-policy adaptive --isolate-tasks --limit 10
-```
-
-Augmentation dimension smoke:
-
-```bash
-python run_experiments.py launch --augmentations-per-image 1 2 3 --limit 10
-```
-
-Count large grids before running:
-
-```bash
-python run_experiments.py count --combined-preprocessing --augmentations-per-image 1 2 3
-```
-
-How adaptive fallback behaves:
-
-- GPU is preferred for each new task.
-- GPU OOM retries happen in fresh subprocesses.
-- If GPU keeps failing, the same task falls back to CPU (`CUDA_VISIBLE_DEVICES=-1`).
-- Later tasks retry GPU after recovery cooldown.
-- Runner stops safely when `--max-consecutive-oom` is reached.
-
-Inspect OOM/fallback attempts:
-
-```bash
-rg '"event":"(gpu_oom_detected|gpu_retry_scheduled|cpu_fallback_scheduled|cpu_fallback_succeeded|gpu_recovery_probe_scheduled|gpu_recovered|oom_policy_stop|task_attempt_finished)"' \
-  artifacts/experiments/logs/run-events.jsonl
-```
+- Setup and readiness: [setup.md](setup.md)
+- Runtime/GPU policy and setup: [gpu.md](gpu.md)
+- Runner command reference: [execution.md](execution.md)
+- Validation and tests: [testing.md](testing.md)
+- Artifact file map: [artifacts.md](artifacts.md)

@@ -1,65 +1,68 @@
 # Setup
 
-Use Python 3.10, 3.11, or 3.12. The project metadata intentionally excludes
-Python 3.13 until the TensorFlow wheel stack is validated there.
+This document covers environment bootstrap and readiness checks for this repository. It is setup-only and does not cover experiment orchestration details.
 
-## OS Packages
+## Purpose
 
-Debian/Ubuntu:
+Establish a validated local environment, confirm dataset placement, and verify runtime readiness before preprocessing or training.
 
-```bash
-sudo apt update
-sudo apt install python3 python3-venv python3-pip build-essential python3-dev
-```
+## Read this when
 
-On other Linux distributions, install the equivalent Python, venv, pip, compiler,
-and Python header packages.
+- You are setting up this repository on a new machine.
+- You need to revalidate an existing environment after dependency or driver changes.
 
-## Python Environment
+## Source of truth
 
-Recommended unattended bootstrap:
+- `pyproject.toml`
+- `scripts/bootstrap_env.py`
+- `scripts/check_environment.py`
+- `scripts/validate_dataset.py`
+- `scripts/check_gpu.py`
+- `scripts/check_runtime.py`
+- `configs/experiment.default.json`
 
-```bash
-python3 scripts/bootstrap_env.py --gpu auto
-```
+## Python and virtual environment
 
-Use `--gpu required` to fail if TensorFlow cannot be configured for GPU, and
-add `--dev` to install development dependencies in the same pass.
-
-After bootstrapping, either activate the environment or use `./.venv/bin/python`
-directly.
-
-Manual fallback:
+Supported Python range is `>=3.10,<3.13`.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -r requirements-dev.txt
-python -m pip install -e .
+python -m venv .venv
 ```
 
-For tests and formatting:
+Activate before running commands in this documentation set:
+
+- Linux/macOS: `source .venv/bin/activate`
+- PowerShell: `.venv\Scripts\Activate.ps1`
+
+## Bootstrap dependencies
+
+Default (GPU optional, CPU fallback allowed):
 
 ```bash
-python3 scripts/bootstrap_env.py --gpu auto --dev
+python scripts/bootstrap_env.py --gpu auto
 ```
 
-The full `run_experiments.py launch` battery can take hours. For default setup
-validation, run smoke and long-run checks first:
+Require GPU during bootstrap validation:
 
 ```bash
-./.venv/bin/python scripts/check_runtime.py --device auto
-./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device cpu
+python scripts/bootstrap_env.py --gpu required
 ```
 
-CPU-only validation is supported. GPU is optional unless you explicitly pass a
-`--require-gpu` flag to the runtime checks.
+Force CPU-only stack:
 
-## Dataset
+```bash
+python scripts/bootstrap_env.py --gpu off
+```
 
-Place INbreast here:
+Install development dependencies too:
+
+```bash
+python scripts/bootstrap_env.py --gpu auto --dev
+```
+
+## Dataset placement
+
+Expected layout:
 
 ```text
 data/INbreast Release 1.0/
@@ -67,22 +70,36 @@ data/INbreast Release 1.0/
   AllDICOMs/*.dcm
 ```
 
-Validate it:
+Validate dataset layout:
 
 ```bash
 python scripts/validate_dataset.py
 ```
 
-## Setup Check
+## Readiness checks
 
-Run this before preprocessing or training:
-
-```bash
-./.venv/bin/python scripts/check_environment.py --require-venv
-```
-
-If the dataset is not present yet:
+Environment and writable artifact paths:
 
 ```bash
-./.venv/bin/python scripts/check_environment.py --require-venv --skip-dataset
+python scripts/check_environment.py --require-venv
 ```
+
+Runtime and device checks:
+
+```bash
+python scripts/check_gpu.py
+python scripts/check_runtime.py --device auto
+```
+
+If dataset is not present yet:
+
+```bash
+python scripts/check_environment.py --require-venv --skip-dataset
+```
+
+## Related docs
+
+- First successful run paths: [quickstart.md](quickstart.md)
+- Runner commands and lifecycle: [execution.md](execution.md)
+- GPU-specific setup: [gpu.md](gpu.md)
+- Troubleshooting setup failures: [troubleshooting.md](troubleshooting.md)

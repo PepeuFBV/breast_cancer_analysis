@@ -1,75 +1,82 @@
 # Testing
 
-Default pytest runs fast deterministic tests and excludes `slow` and
-`integration` markers.
+This document groups validation commands by speed and purpose. Commands assume `.venv` is activated.
+
+## Purpose
+
+Provide exact command sets for fast checks, pytest markers, smoke validation, and long-run validation.
+
+## Read this when
+
+- You want confidence before large experiment launches.
+- You need the default pytest behavior and marker-specific runs.
+
+## Source of truth
+
+- `pyproject.toml`
+- `scripts/check_environment.py`
+- `scripts/check_runtime.py`
+- `scripts/check_gpu.py`
+- `scripts/smoke_run.py`
+- `scripts/validate_long_runner.py`
+- `tests/`
+
+## Fast validation
 
 ```bash
+python scripts/check_environment.py --require-venv
+python scripts/check_runtime.py --device auto
 python -m pytest
 ```
 
-Useful targeted checks:
+## Pytest markers
+
+Default `python -m pytest` behavior is defined by `pyproject.toml`:
+
+- includes tests under `tests/`
+- excludes markers `slow`, `integration`, and `gpu` by default
+
+Useful marker runs:
 
 ```bash
 python -m pytest -m unit
 python -m pytest -m smoke
-python -m pytest -o addopts="" -m integration tests/test_runner_lifecycle_integration.py
 python -m pytest -m gpu
-python -m pytest -m memory
-python -m pytest -m stress
+python -m pytest -m integration -o addopts=""
 python -m pytest -m "not slow and not integration and not gpu"
-python -m pytest tests/test_iterative_runner.py
-python -m pytest tests/test_long_execution_regression.py -v
-python -m pytest tests/test_memory_cleanup.py -v
 ```
 
-Marker intent:
+## Smoke validation
 
-- `unit`: fast deterministic coverage
-- `smoke`: quick end-to-end synthetic validation
-- `memory`: cleanup and bounded-growth checks
-- `stress`: longer mocked queue/resume coverage
-- `gpu`: mocked GPU/runtime behavior checks
-
-Formatting and lint:
+Synthetic end-to-end smoke path:
 
 ```bash
-python -m ruff check .
-python -m black --check .
+python scripts/smoke_run.py
 ```
 
-Project smoke checks:
+Smoke run with explicit config/artifacts root:
 
 ```bash
-./.venv/bin/python scripts/check_environment.py --require-venv
-./.venv/bin/python scripts/validate_dataset.py
-./.venv/bin/python scripts/check_gpu.py
-./.venv/bin/python scripts/check_runtime.py --device cpu
-./.venv/bin/python scripts/check_runtime.py --device auto
-./.venv/bin/python scripts/check_runtime.py --device gpu || true
-./.venv/bin/python scripts/smoke_run.py
-./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device cpu
-./.venv/bin/python scripts/validate_long_runner.py --combinations 20 --device auto
+python scripts/smoke_run.py --config configs/experiment.smoke.json --artifacts-dir artifacts-smoke
 ```
 
-`scripts/smoke_run.py` uses synthetic data and a tiny mocked model path. It
-checks config resolution, runner state, training artifact writing, and
-evaluation report generation without the full INbreast experiment grid.
+## Long-run validation
 
-`scripts/validate_long_runner.py` uses tiny real training tasks and should be
-the default validation path for long-run stability beyond 8 or 9 combinations.
-
-After `python preprocess.py`, you can run one real training task:
+Tiny real-training runner validation:
 
 ```bash
-./.venv/bin/python run_experiments.py launch \
-  --models "custom cnn" \
-  --preprocessing none \
-  --no-combined-preprocessing \
-  --folds 0 \
-  --epochs 1 \
-  --limit 1
+python scripts/validate_long_runner.py --combinations 20 --device cpu
 ```
 
-Do not use the full default experiment queue as the default validation path.
-It can take hours. Use smoke/memory checks first and only run the full queue
-after validation passes.
+If GPU availability should be enforced:
+
+```bash
+python scripts/validate_long_runner.py --combinations 20 --device gpu --require-gpu
+```
+
+## Related docs
+
+- Setup and readiness prerequisites: [setup.md](setup.md)
+- Runner lifecycle commands: [execution.md](execution.md)
+- GPU/runtime setup: [gpu.md](gpu.md)
+- Failure diagnosis paths: [troubleshooting.md](troubleshooting.md)
