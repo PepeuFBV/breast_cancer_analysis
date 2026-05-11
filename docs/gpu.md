@@ -1,96 +1,76 @@
-# GPU Validation
+# GPU and Runtime
 
-TensorFlow can run on CPU. GPU is optional unless you explicitly require it for
-an experiment.
+This document explains runtime device behavior and GPU requirement levels for this project. It is the policy overview, not the OS-specific install procedure.
 
-## Native Windows 11 (TensorFlow 2.10)
+## Purpose
 
-For native Windows GPU, use the TensorFlow 2.10 stack only:
+Clarify optional versus required GPU usage, runtime probe commands, and device policy behavior in `run_experiments.py`.
 
-- Python `3.10.x`
-- TensorFlow `2.10.x`
-- CUDA `11.2`
-- cuDNN `8.1`
+## Read this when
 
-Quick setup:
+- You need to decide between CPU, GPU-first, adaptive fallback, or GPU-only execution.
+- You need to validate runtime visibility before launching experiments.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows_gpu.ps1 -VenvDir .venv
-.\.venv\Scripts\python.exe .\scripts\check_windows_gpu.py
-.\.venv\Scripts\python.exe .\run_experiments.py probe-runtime --device gpu
-```
+## Source of truth
 
-If TensorFlow is `2.11+`, native Windows CUDA GPU is unsupported and the probe
-must fail until the stack is downgraded.
+- `scripts/bootstrap_env.py`
+- `scripts/check_gpu.py`
+- `scripts/check_runtime.py`
+- `run_experiments.py`
+- `pipeline/utils/runtime_device.py`
+- `pipeline/utils/runtime_probe.py`
 
-Recommended setup on Linux/WSL2:
+## Optional GPU vs required GPU
 
-```bash
-python3 scripts/bootstrap_env.py --gpu auto
-```
+- GPU is optional for pipeline execution unless you explicitly require it.
+- `bootstrap_env.py --gpu auto` installs a working runtime for CPU/GPU-available systems.
+- `bootstrap_env.py --gpu required` fails setup when GPU validation cannot pass.
 
-Require a working GPU stack during bootstrap:
+## Runtime probe commands
 
 ```bash
-python3 scripts/bootstrap_env.py --gpu required
+python scripts/check_gpu.py
+python scripts/check_runtime.py --device auto
+python run_experiments.py probe-runtime --device auto
 ```
 
-The bootstrap script creates or repairs `.venv`, installs the project
-dependencies, and switches the TensorFlow requirement to
-`tensorflow[and-cuda]` when an NVIDIA driver is visible from Linux/WSL.
-
-For detailed WSL2 GPU setup instructions, see [`wsl_gpu_setup.md`](wsl_gpu_setup.md).
-For native Windows setup instructions, see [`windows_gpu_setup.md`](windows_gpu_setup.md).
-
-CPU/GPU optional check:
+Require visible and usable GPU:
 
 ```bash
-./.venv/bin/python scripts/check_gpu.py
-./.venv/bin/python scripts/check_runtime.py --device auto
-```
-
-CPU-only check:
-
-```bash
-./.venv/bin/python scripts/check_gpu.py --cpu-only
-./.venv/bin/python scripts/check_runtime.py --device cpu
-```
-
-Require a visible GPU:
-
-```bash
-./.venv/bin/python scripts/check_gpu.py --require-gpu
-./.venv/bin/python scripts/check_runtime.py --device gpu --require-gpu
-```
-
-If you want GPU when available but do not want the check to fail on CPU-only
-machines, use:
-
-```bash
-./.venv/bin/python scripts/check_runtime.py --device gpu
-```
-
-Device policy behavior in `run_experiments.py launch`:
-
-- `gpu-only`: requires a visible and usable GPU before launching tasks; fails fast when GPU is unavailable.
-- `gpu-first`: starts on GPU, then falls back to CPU for task-level GPU failure when retries are exhausted.
-- `adaptive`: GPU-first with CPU fallback and GPU recovery probes after cooldown.
-- `cpu-only`: forces `CUDA_VISIBLE_DEVICES=-1` and never schedules GPU attempts.
-
-Runtime probe command:
-
-```bash
+python scripts/check_gpu.py --require-gpu
+python scripts/check_runtime.py --device gpu --require-gpu
 python run_experiments.py probe-runtime --device gpu
 ```
 
-The required check fails when TensorFlow cannot see a GPU. That usually means
-one of these is missing or mismatched:
+CPU-only validation:
 
-- NVIDIA driver
-- CUDA/cuDNN libraries compatible with the installed TensorFlow wheel
-- WSL2 GPU passthrough, when using WSL
-- `CUDA_VISIBLE_DEVICES` configuration
+```bash
+python scripts/check_gpu.py --cpu-only
+python scripts/check_runtime.py --device cpu
+python run_experiments.py probe-runtime --device cpu
+```
 
-The project includes WSL CUDA library path bootstrapping in
-`pipeline/utils/gpu_env.py`, but the host driver and TensorFlow-compatible CUDA
-stack still need to be installed correctly.
+## Device policies in `launch`
+
+- `cpu-only`: run tasks on CPU only.
+- `gpu-only`: require usable GPU; fail if GPU policy cannot be satisfied.
+- `gpu-first`: prefer GPU, with CPU fallback when retries are exhausted.
+- `adaptive`: GPU-first plus recovery probes and CPU fallback behavior.
+
+Example:
+
+```bash
+python run_experiments.py launch --device-policy adaptive --isolate-tasks
+```
+
+## Windows and WSL setup locations
+
+- Native Windows TensorFlow 2.10 path: [windows_gpu_setup.md](windows_gpu_setup.md)
+- WSL/Linux GPU path: [wsl_gpu_setup.md](wsl_gpu_setup.md)
+
+## Related docs
+
+- Environment bootstrap and readiness: [setup.md](setup.md)
+- Runner command details: [execution.md](execution.md)
+- Quick launch paths: [quickstart.md](quickstart.md)
+- GPU-related failures: [troubleshooting.md](troubleshooting.md)
