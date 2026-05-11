@@ -1,10 +1,19 @@
 # Audit Notes
 
-- Clean Python 3.12 setup initially failed on `tensorflow-addons`; the package is
-  unused by the project and was removed from runtime requirements.
-- Runner checks now cover stale `running` state, keyboard interruption, stop and
-  resume, failed task bookkeeping, and a 12-combination regression that continues
-  beyond the 10th task after one failure.
-- Full experiment execution was intentionally not run because the default grid
-  can take hours. Validation uses environment checks, mocked/synthetic smoke
-  paths, and focused unit tests.
+This file keeps brief historical audit outcomes from branch validation work. It is a development note, not an operational runbook.
+
+## Purpose
+
+Record high-signal findings that influenced dependency/runtime and regression coverage decisions.
+
+## Notes
+
+- Clean Python 3.12 setup initially failed on `tensorflow-addons`; that dependency was removed from runtime requirements.
+- Runner checks were expanded to cover stale `running` state, interruption/recovery, and failed-task bookkeeping.
+- Full default-grid execution was intentionally not used as baseline validation due runtime duration; smoke and targeted regression checks were used instead.
+
+## Related docs
+
+- Canonical docs map: [../index.md](../index.md)
+- Testing and validation commands: [../testing.md](../testing.md)
+- Architecture overview: [../architecture.md](../architecture.md)
